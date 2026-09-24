@@ -83,7 +83,7 @@ Validation (hard failure at startup when ACS is active):
 
 ### 3.3 Per-call lifecycle: `app/providers/acs/call_session.py` (new)
 
-The one idea behind this design: **every way a call can end goes through `CallSession.terminate()`, which runs once and then no-ops.** The session is the only place per-call state lives, including `closing_reason`; the media handler holds a reference to its session and never keeps its own copy.
+The one idea behind this design: **every way a call can end goes through `CallSession.request_end()`, which acts once and then no-ops.** The session is the only place per-call state lives, including `terminated_reason`; the media handler holds a reference to its session and never keeps its own copy.
 
 ```
 CallSession:
@@ -93,7 +93,9 @@ CallSession:
   masked_caller, masked_called
   handler             AcsMediaHandler | None
   ws_used             bool (media URL is single-use)
-  terminated_reason   None until terminate() runs; set once, never changed
+  terminated_reason   None until request_end() runs; set once, never changed
+  disconnected        bool, set on CallDisconnected
+  hangup_after_play   bool
   _timers             set of asyncio tasks (media watchdog, play safety timer, grace timer)
   _connected          asyncio.Event, set on CallConnected
   _answered           asyncio.Event, set when call_connection_id is known
