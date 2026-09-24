@@ -1,6 +1,6 @@
 # Telephony Bridge — Design (Step 3 code changes)
 
-Date: 2026-09-25 · Status: rev 3 (after two Opus design reviews) · Source requirements: [TELEPHONY_BRIDGE_SPEC.md](../../../TELEPHONY_BRIDGE_SPEC.md) §5, [HANDOFF.md](../../../HANDOFF.md)
+Date: 2026-09-25 · Status: rev 4 (after three Opus design reviews) · Source requirements: [TELEPHONY_BRIDGE_SPEC.md](../../../TELEPHONY_BRIDGE_SPEC.md) §5, [HANDOFF.md](../../../HANDOFF.md)
 
 ## 1. Scope
 
@@ -59,9 +59,11 @@ Rule for keeping upstream merges clean: new logic goes into **new files**. Edits
 | `VOICE_LIVE_API_VERSION` | unset (SDK default) | Pinned and recorded in the README |
 
 Validation (hard failure at startup when ACS is active):
-- the routing JSON parses;
-- every key is normalized, and duplicates after normalizing are rejected;
-- every entry has `project`, `agent` and a `version` that is not empty and not `"latest"` (mod 2);
+- the routing JSON parses with `object_pairs_hook`, and **raw duplicate keys are rejected** (plain `json.loads` silently keeps the last one);
+- every key normalizes to `^\+\d{8,15}$`, or startup fails; this catches typos such as a dropped digit;
+- duplicates *after* normalizing are rejected;
+- every entry has `project` and `agent` as non-empty strings;
+- `version` must be a **string of digits only** (`^\d+$` after stripping). This rejects `"latest"`, `"Latest"`, `" latest "`, empty strings and JSON integers, which enforces mod 2's pinning strictly;
 - the token is at least 32 characters;
 - the Cognitive Services endpoint is set.
 
@@ -96,38 +98,62 @@ CallSession:
   _connected          asyncio.Event, set on CallConnected
   _answered           asyncio.Event, set when call_connection_id is known
 
-terminate(reason, message: str | None):
-  if terminated_reason is not None: return            # first reason wins, idempotent
-  terminated_reason = reason
-  cancel all _timers (except the play safety timer started below)
-  if handler: handler.stop_forwarding_agent_audio(); await close_voicelive(handler)   # §3.4
-  if reason == "caller_hangup": registry.remove(self); return     # the call is already gone
+request_end(reason, message) -> None:            # the ONLY entry point; never blocks
+  if terminated_reason is not None: return          # first reason wins
+  terminated_reason = reason                        # set synchronously, before any await
+  create_task(_terminate(message))                  # runs in its own task, never inside a timer or webhook
+
+_terminate(message):                              # never raises; every step is try/except and logged
+  cancel all _timers                                # safe: this task is not one of the timers
+  if handler:
+      handler.stop_forwarding_agent_audio()
+      create_task(close_voicelive(handler))         # §3.4, runs ALONGSIDE the play, so no dead air
+  if disconnected: return                           # caller already gone, nothing to play or hang up
   if message:
-      await _answered (≤5 s); await _connected (≤5 s)
-      hangup_after_play = True; play_media(TextSource(message)); start 15 s safety timer → hang_up
+      ok = await wait(_answered, 5 s) and await wait(_connected, 5 s)
+      if not ok: await _safe_hang_up(); return      # no connection to play on → just hang up
+      hangup_after_play = True
+      start 15 s safety timer → _safe_hang_up       # started BEFORE play_media
+      try: play_media(TextSource(message))
+      except (call gone / 404 / 8522): log; await _safe_hang_up()
   else:
-      hang_up
-  (the registry entry is removed on CallDisconnected, or by the sweep)
+      await _safe_hang_up()
+
+_safe_hang_up():  if not disconnected and call_connection_id: hang_up(is_for_everyone=True), swallowing 404/8522
+
+on_call_disconnected():                           # the CallDisconnected callback
+  disconnected = True
+  request_end("caller_hangup", None)                # no-op if another reason already won
+  cancel all _timers, including the play safety timer
+  (background) await close_voicelive if still open, then registry.remove(self)   # ALWAYS removed here
+
+on_play_done():                                   # PlayCompleted / PlayFailed
+  if hangup_after_play: cancel the play safety timer; await _safe_hang_up()
 ```
 
-`CallSessionRegistry`: `by_key`, `by_conn`. Entries are **added before `answer_call()`** and indexed by connection id once `answer_call` returns. Callbacks and the media WebSocket are keyed by `call_key` in the URL path, so they always find the session even if they arrive before `answer_call` returns. The sweep calls `terminate("stale", None)` and then removes any entry older than `MAX_CALL_SECONDS + 120`.
+`CallSessionRegistry`: `by_key`, `by_conn`.
+- Entries are **added before `answer_call()`** and indexed by connection id once `answer_call` returns. Callbacks and the media WebSocket are keyed by `call_key` in the URL path, so they always find the session even if they arrive before `answer_call` returns.
+- **Removal always happens in `on_call_disconnected`**, whichever reason ended the call.
+- The sweep is only a safety net for a lost `CallDisconnected`: `request_end("stale", None)`, then remove entries older than `MAX_CALL_SECONDS + 120`.
 
-Every timer callback first checks `terminated_reason is None` (or, for the play safety timer, that the session still exists), so a timer never acts on a finished call.
+**Webhook handlers never await the end of a call.** Each ACS callback handler updates the session flags (`_connected.set()` comes *first* on CallConnected), calls `request_end(...)` or `on_*` as needed, and returns 200 right away. That way ACS never times out and retries.
 
-**Every end path goes through `terminate`:**
+**Every timer checks its own condition when it fires** and does nothing if the session is terminated or removed.
 
-| Trigger | `terminate(reason, message)` |
+**Every end path goes through `request_end`:**
+
+| Trigger | `request_end(reason, message)` |
 | --- | --- |
-| `CallDisconnected` callback | `("caller_hangup", None)` |
+| `CallDisconnected` callback | via `on_call_disconnected()` → `("caller_hangup", None)` |
 | Call cap (`is_expired` → `"duration"`) | `("call_cap", GOODBYE_MESSAGE)` |
 | Idle expiry (`is_expired` → `"idle"`) | `("idle", FALLBACK_MESSAGE)` |
 | Voice Live connect raises | `("voicelive_connect_failed", FALLBACK_MESSAGE)` |
 | Voice Live receiver ends while the session isn't terminated | `("voicelive_dropped", FALLBACK_MESSAGE)` |
 | ACS media WebSocket closes while the session isn't terminated | start a **2 s grace timer**; if `CallDisconnected` hasn't arrived by then → `("media_lost", FALLBACK_MESSAGE)`. This avoids trying to play into a call the caller just hung up. |
-| Media watchdog (no media WebSocket within `MEDIA_CONNECT_TIMEOUT_SECONDS` of `CallConnected`) | `("media_timeout", FALLBACK_MESSAGE)` |
+| Media watchdog: armed when `answer_call` returns (route hit), fires after `MEDIA_CONNECT_TIMEOUT_SECONDS`, **does nothing if `ws_used` is already true**. The media WebSocket can connect before `CallConnected`, so the watchdog is keyed to "has media arrived", not to event order. | `("media_timeout", FALLBACK_MESSAGE)` |
 | Route miss, on `CallConnected` | `("route_miss", FALLBACK_MESSAGE)` |
 | Stale sweep | `("stale", None)` |
-| `PlayCompleted` / `PlayFailed` with `hangup_after_play` | `hang_up` directly (the session is already terminated) |
+| `PlayCompleted` / `PlayFailed` | `on_play_done()` (the session is already terminated) |
 
 ### 3.4 Closing Voice Live, bounded (mod 8)
 
@@ -137,8 +163,10 @@ Every timer callback first checks `terminated_reason is None` (or, for the play 
 
 ### 3.5 Media WebSocket security (mod 5)
 
-- The media URL is `wss://<host>/acs/ws/{call_key}/{sig}`, where `sig = HMAC-SHA256(MEDIA_WS_TOKEN, call_key)` as hex. The secret itself never goes into a URL. A signature that leaks into access logs is useless: it's tied to one `call_key`, single-use, and dead once the call ends. Everything is hex, so there are no URL-encoding problems.
-- The callback URL is `https://<host>/acs/callbacks/{call_key}`. There is **no caller number in any URL**; this removes the upstream `callerId` query parameter.
+- The media URL is `wss://<host>/acs/ws/{call_key}/{sig_ws}`, where `sig_ws = HMAC-SHA256(MEDIA_WS_TOKEN, "ws:" + call_key)` as hex. The secret itself never goes into a URL. A signature that leaks into access logs is useless: it's tied to one `call_key`, single-use, and dead once the call ends. Everything is hex, so there are no URL-encoding problems.
+- The callback URL is `https://<host>/acs/callbacks/{call_key}/{sig_cb}`, where `sig_cb = HMAC-SHA256(MEDIA_WS_TOKEN, "cb:" + call_key)`. The two derivations are separate, so a leaked media URL can't be used to forge callbacks. Callbacks with a missing or wrong `sig_cb` get a 403 and have no effect.
+- On top of that, callbacks validate the **ACS-signed JWT** in the `Authorization` header: the signature against the ACS JWKS, and the audience set to the ACS resource. That way even someone who can read the ingress logs can't forge `CallDisconnected` or `PlayCompleted`. If the JWT details can't be confirmed during implementation (open check 5), the HMAC path alone is the pilot control, and that is recorded in the README as a production item.
+- There is **no caller number in any URL**; this removes the upstream `callerId` query parameter.
 - The check runs before accept:
   - the session exists;
   - `hmac.compare_digest` passes;
@@ -207,23 +235,33 @@ The imported upstream SHA and how to pull updates; the Voice Live API and SDK ve
 Unit tests (pytest, `server/tests/`), no Azure access needed:
 - `routing`: 10-digit, 11-digit `1…`, `+1…`, formatted and `rawId` (`4:+1…`) input normalize to the same key; garbage input doesn't match.
 - `bridge_config`:
-  - keys normalized, duplicates rejected;
-  - `"latest"` rejected;
+  - keys normalized;
+  - raw and normalized duplicates rejected;
+  - a key that doesn't normalize to E.164 (e.g. 9 digits) rejected;
+  - `version` values `"latest"`, `"Latest"`, `" latest "`, `""` and `10` (an int) rejected, `"10"` accepted;
   - bad JSON rejected;
   - token length checked;
   - spec variable names win.
 - `log_mask`: normal, short, `None` and `rawId` input.
-- `CallSession.terminate`:
-  - idempotent (the second call is a no-op and the first reason is kept);
-  - cancels the watchdog and grace timers;
+- `CallSession`:
+  - `request_end` is idempotent (the first reason is kept) and returns without blocking;
+  - a timer that triggers `request_end` still completes the play and hang-up (it doesn't cancel itself);
   - `caller_hangup` does not play;
   - a message path plays and then hangs up;
-  - the safety timer hangs up when no play event arrives.
+  - the safety timer hangs up when no play event arrives;
+  - `PlayCompleted` cancels the safety timer (no second hang-up);
+  - the registry entry is removed on `CallDisconnected` for **every** end reason;
+  - `play_media` raising "call gone" leads to a hang-up attempt, and nothing escapes;
+  - an `_answered` timeout leads to a plain hang-up;
+  - goodbye `play_media` starts without waiting for `close_voicelive`.
 - Races:
   - a callback arriving before `answer_call` returns still finds the session;
   - `CallDisconnected` during the grace window means no fallback;
-  - a WebSocket arriving after `terminate` is rejected;
-  - a timer firing after removal is a no-op.
+  - a WebSocket arriving after `request_end` is rejected;
+  - a timer firing after removal is a no-op;
+  - a media WebSocket arriving **before** `CallConnected` means the watchdog never fires;
+  - webhook handlers return before `_terminate` finishes.
+- Callbacks: a missing or wrong `sig_cb` gets a 403 and changes no state.
 - Media WebSocket:
   - a valid signature is accepted;
   - a wrong signature, unknown key, reused key or terminated session is rejected;
@@ -245,3 +283,4 @@ The live acceptance tests 1–9 (spec §8) run after step 4.
 2. Whether agent mode needs, allows or ignores `input_audio_format`/`output_audio_format` in `session.update`.
 3. Whether ACS `MediaStreamingOptions.transport_url` keeps path segments exactly.
 4. How to force-abort the SDK connection's underlying WebSocket (for §3.4).
+5. The ACS Call Automation callback JWT: the header, JWKS URL and expected audience (for §3.5).
