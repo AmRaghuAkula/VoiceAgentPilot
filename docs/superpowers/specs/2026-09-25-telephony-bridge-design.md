@@ -1,26 +1,31 @@
 # Telephony Bridge — Design (Step 3 code changes)
 
-Date: 2026-09-25 · Status: draft for review · Source requirements: [TELEPHONY_BRIDGE_SPEC.md](../../../TELEPHONY_BRIDGE_SPEC.md) §5, [HANDOFF.md](../../../HANDOFF.md)
+Date: 2026-09-25 · Status: rev 2 (after Opus design review) · Source requirements: [TELEPHONY_BRIDGE_SPEC.md](../../../TELEPHONY_BRIDGE_SPEC.md) §5, [HANDOFF.md](../../../HANDOFF.md)
 
 ## 1. Scope
 
-**In scope (this work unit):** import Microsoft's Call Center Voice Agent Accelerator with git history, then make the code changes for spec §5 modifications 1–10. Anything not yet known (the ACS connection string, the test phone number, the Voice Live endpoint) is read from config and has no real value yet.
+**In scope (this work unit):** import Microsoft's Call Center Voice Agent Accelerator with git history, then make the code changes for spec §5 modifications 1–10. Anything not yet known (the ACS connection string, the test phone number, the endpoints) is read from config and has no real value yet.
 
 **Out of scope (blocked or deferred):**
-- Anything under spec §6 (Bicep changes, Key Vault secrets, Event Grid subscription, `azd up`). This is blocked because the ACS resource and test number don't exist yet (HANDOFF §5).
+- Spec §6 (Bicep, Key Vault secrets, Event Grid subscription, `azd up`). This is blocked until the ACS resource and test number exist (HANDOFF §5).
 - Everything in spec §7 "Do not build".
 
 **Decisions already made:**
 - Phone number provider: Option B, a separate pay-as-you-go subscription for ACS in the same Entra tenant.
-- Import method: `upstream` remote plus a merge that keeps history, so later `git pull upstream main` stays clean.
-- Environment variable names: keep the accelerator's names wherever one already exists (e.g. `MAX_CALL_DURATION`, not spec's `MAX_CALL_SECONDS`). The mapping is recorded in the README (§5 below).
+- Import method: `upstream` remote plus a merge that keeps history.
+- Environment variable names: keep the accelerator's variables. Where spec §6 or §8 names a variable, the bridge **also reads the spec's name, and the spec's name wins**. Spec §6 lists its names as ours, and acceptance test 8 sets `MAX_CALL_SECONDS`. The aliases live in `bridge_config.py`, so upstream files aren't renamed.
+
+| Spec name (wins) | Accelerator name (fallback) |
+| --- | --- |
+| `MAX_CALL_SECONDS` | `MAX_CALL_DURATION` |
+| `VOICE_LIVE_ENDPOINT` | `AZURE_VOICE_LIVE_ENDPOINT` |
 
 ## 2. Import
 
 1. `git remote add upstream https://github.com/Azure-Samples/call-center-voice-agent-accelerator.git`
 2. `git fetch upstream` then `git merge upstream/main --allow-unrelated-histories`
-3. Resolve the merge conflict in `README.md`: keep our pilot README at the top and link to the accelerator's README (move theirs to `docs/ACCELERATOR_README.md`).
-4. Record in the README which upstream commit SHA was imported.
+3. Resolve the merge conflict in `README.md`: keep our pilot README at the top and move the accelerator's README to `docs/ACCELERATOR_README.md`.
+4. Record the imported upstream commit SHA in the README.
 
 What the import brings in, used as-is:
 
@@ -31,106 +36,190 @@ What the import brings in, used as-is:
 | `server/app/handler/voicelive_media_handler.py` | Voice Live SDK connection and event loop (base class) |
 | `server/app/providers/acs/` | ACS IncomingCall handling, callbacks, media WebSocket, audio conversion |
 | `server/app/providers/{twilio,bandwidth,genesys,infobip,sinch}/` | Left in place and unused (spec §7). Inactive unless their credential environment variable is set. |
-| `infra/`, `hooks/`, `azure.yaml` | azd/Bicep deploy. Not changed in this work unit. |
+| `infra/`, `hooks/`, `azure.yaml` | azd/Bicep. Not changed in this work unit. |
 
-## 3. Code changes (modifications 1–10)
+## 3. Design
 
-Rule for keeping upstream merges clean: new logic goes into **new files** (`app/routing.py`, `app/bridge_config.py`, `app/log_mask.py`). Edits to upstream files should be small calls into those new files.
+Rule for keeping upstream merges clean: new logic goes into **new files**. Edits to upstream files should be small calls into those new files.
 
 ### 3.1 New files
 
-**`server/app/bridge_config.py`** loads and validates the pilot-specific configuration once, at startup:
+**`server/app/bridge_config.py`** loads and validates the pilot configuration once, at startup.
 
-| Variable | Type / default | Purpose |
+| Variable | Default | Purpose |
 | --- | --- | --- |
-| `AGENT_ROUTING_JSON` | JSON object, required when ACS is active | Called number → `{project, agent, version}` |
-| `FALLBACK_MESSAGE` | str, default `"Sorry, we're having trouble right now. Please call back in a few minutes."` | Played on failure or when the called number has no routing entry |
-| `GOODBYE_MESSAGE` | str, default `"We've reached the time limit for this call. Thank you for calling, goodbye."` | Played at the call cap |
-| `MEDIA_WS_TOKEN` | str, required when ACS is active, ≥32 chars | Media WebSocket auth |
-| `INTERIM_RESPONSE_JSON` | JSON, optional, unset by default | Only used if acceptance test 4 fails (mod 3 exception) |
-| `VOICE_LIVE_API_VERSION` | str, optional | Pins the API version and is recorded in the README |
+| `AGENT_ROUTING_JSON` | required when ACS is active | Called number → `{project, agent, version}` |
+| `MEDIA_WS_TOKEN` | required when ACS is active, ≥32 chars | Secret used to sign the token for each call (§3.4) |
+| `ACS_COGNITIVE_SERVICES_ENDPOINT` | required when ACS is active | Passed to **every** `answer_call` so ACS text-to-speech (goodbye, fallback) works on every call |
+| `FALLBACK_MESSAGE` | "Sorry, we're having trouble right now. Please call back in a few minutes." | Failure path and number with no route |
+| `GOODBYE_MESSAGE` | "We've reached the time limit for this call. Thank you for calling, goodbye." | Call cap |
+| `MAX_CALL_SECONDS` | falls back to `MAX_CALL_DURATION`, then 600 | Passed into the existing `CallManager(max_duration=…)` |
+| `MEDIA_CONNECT_TIMEOUT_SECONDS` | 10 | Watchdog: the call is connected but no media WebSocket arrives → fallback |
+| `INTERIM_RESPONSE_JSON` | unset | Only used if acceptance test 4 fails (mod 3 exception) |
+| `VOICE_LIVE_API_VERSION` | unset (SDK default) | Pinned and recorded in the README |
 
-Validation (hard failure at startup when the ACS provider is active):
+Validation (hard failure at startup when ACS is active):
 - the routing JSON parses;
+- every **key** is normalized with `normalize_number()`, and duplicates after normalizing are rejected;
 - every entry has `project`, `agent` and `version`;
-- `version` is a non-empty string and not `"latest"` (mod 2);
-- the token is at least 32 characters.
+- `version` is not empty and not `"latest"` (mod 2);
+- the token is at least 32 characters;
+- the Cognitive Services endpoint is set.
 
 **`server/app/routing.py`**
-- `normalize_number(raw: str) -> str` converts a number to E.164. It strips spaces, dashes and parentheses. A bare 10-digit number gets `+1` added.
-- `resolve_route(called_number) -> AgentRoute | None` returns a frozen dataclass `AgentRoute(project, agent, version)`.
+- `normalize_number(raw) -> str` converts to E.164. It strips everything except digits and a leading `+`. A 10-digit number becomes `+1XXXXXXXXXX`, and an 11-digit number starting with `1` becomes `+1XXXXXXXXXX`. A value that already starts with `+` is kept. Anything else is returned unchanged, so it won't match any route.
+- `resolve_route(called_number) -> AgentRoute | None` returns a frozen `AgentRoute(project, agent, version)`.
 
 **`server/app/log_mask.py`**
-- `mask_number(n) -> "***1234"` keeps the last 4 digits only (mod 9, PIPEDA). It handles `None`/empty input and ACS `rawId` strings.
+- `mask_number(value) -> "***1234"` keeps the last 4 digits (mod 9, PIPEDA). It handles `None`/empty input, short strings and ACS `rawId` (`4:+1…`).
 
-### 3.2 Modified upstream files
+**`server/app/providers/acs/call_registry.py`** is the single source of per-call state. It is in-memory, which is fine because the pilot runs max 1 replica.
 
-| # | File | Change |
-| --- | --- | --- |
-| 1 | `handler/voicelive_media_handler.py` → `connect_voicelive()` | If a route was supplied, connect in **agent mode** with `agent_name`, `project_name` and `agent_version` from the route, per the Voice Live agents quickstart. Otherwise fall back to the current model mode, so the `/web/ws` debug client keeps working. First check what connect parameters the installed `azure-ai-voicelive` version supports for agent mode, and pin that SDK version in `pyproject.toml`. Agent mode only accepts Entra ID, so no API key is used on the agent path. |
-| 1 | same → credential | Agent mode uses `DefaultAzureCredential` (see §4, Identity). |
-| 2 | same | The version always comes from `AgentRoute.version`, never a default. |
-| 3 | same → `_session_config()` | In agent mode, send a `session.update` that contains **only** audio format fields (`input_audio_format`, `output_audio_format` PCM16), because the ACS media stream needs them. Send no `instructions`, `voice`, `turn_detection`, noise or echo settings. If `INTERIM_RESPONSE_JSON` is set, add only `interim_response`. Model mode keeps the upstream config unchanged. **Open check:** confirm against the SDK/docs whether audio format is allowed and required in agent mode. If the agent's own metadata already sets PCM16 at 24 kHz, send nothing at all. |
-| 1, 9 | same → `_receiver_loop()` | On `SESSION_CREATED`, store `self.conversation_id` and log it with the call id. This lets a phone call be matched to its Foundry trace. |
-| 7 | same → `_receiver_loop()` `finally` | Before closing the client WebSocket after an **unexpected** drop, call a new hook `on_voicelive_failure()`. The base class does nothing; the ACS subclass plays the fallback message. `connect_voicelive()` exceptions go through the same hook. |
-| 4 | `providers/acs/event_handler.py` → `process_incoming_call` | Read `event.data["to"]["phoneNumber"]["value"]` and call `resolve_route()`. **Match:** answer with media streaming and put a `route` key (the routing entry's number, not the agent details) in the callback and WebSocket URL query. **No match:** answer *without* media streaming, remember the call connection id as "fallback-only", and on `CallConnected` play `FALLBACK_MESSAGE` through `play_media` with `TextSource`, then hang up when `PlayCompleted`/`PlayFailed` arrives. Log it with the masked number. |
-| 5 | same | Add `token=<MEDIA_WS_TOKEN>` to the query string of the `wss://…/acs/ws` transport URL. |
-| 5 | `providers/acs/__init__.py` → `/acs/ws` route | Before accepting, compare `websocket.args["token"]` to the configured token using `hmac.compare_digest`. On mismatch, close with code 4401 and log it; never log the token. The Event Grid validation handshake already exists upstream and is reused. |
-| 9 | `providers/acs/event_handler.py` | Every log line that prints caller or called numbers uses `mask_number()`. Remove the full `event.data` dump from the "Incoming call received" log, because it contains the full numbers. |
-| 6 | `call_manager.py` / `call_loop.py` | Reuse the existing `max_duration` (`MAX_CALL_DURATION`, pilot value 600). When `is_expired()` is true because of **max duration**, `call_loop` calls a new handler hook `on_call_cap()` instead of just closing. The ACS subclass cancels the Voice Live response, plays `GOODBYE_MESSAGE` through ACS text-to-speech, then hangs up. Idle expiry keeps the upstream behavior. `is_expired()` is extended to return a reason (`"duration"` / `"idle"` / `None`); the existing truthiness is kept. |
-| 8 | `providers/acs/event_handler.py` → `CallDisconnected` | Find the active media handler for this call through a small registry in the ACS provider (a dict from call connection id to handler, filled when the WebSocket connects) and call `handler.cleanup()` with `asyncio.wait_for(…, 5)`. Log the time between the disconnect event and the end of cleanup (acceptance test 6). |
-| 10 | `.env.sample` | `AMBIENT_PRESET=none`. This is already the upstream default, so no code change is needed. |
+```
+CallState:
+  call_key: str                 # bridge-generated uuid4 hex
+  route: AgentRoute | None      # None = route miss
+  call_connection_id: str       # set from answer_call() return value, synchronously
+  masked_caller, masked_called: str
+  handler: AcsMediaHandler | None   # attached when the media WS is accepted
+  ws_used: bool                 # media token is single-use
+  hangup_after_play: bool       # set before any goodbye/fallback play_media
+  closing_reason: None | "caller_hangup" | "call_cap" | "failure" | "route_miss"
+  created_at: float
+Registry: by_key: dict[call_key, CallState]; by_conn: dict[call_connection_id, call_key]
+remove(call_key): drops both indexes
+```
 
-### 3.3 Linking the ACS callback, the WebSocket and the handler
+Entries are added in `process_incoming_call` just after `answer_call()` returns. They are removed after `CallDisconnected` cleanup finishes. A sweep also removes any entry older than `MAX_CALL_SECONDS + 120`, as a safety net against leaks.
 
-The ACS media WebSocket does not carry the call connection id by default. Plan:
-- Pass `route` and a bridge-generated `call_key` (a UUID) as query parameters on both the callback URL and the media transport URL.
-- The WebSocket handler registers `call_key → handler`.
-- The callback handler maps `call_connection_id → call_key` when `CallConnected` arrives.
-- The ACS side (`CallDisconnected`, playing TTS on cap or failure) looks the handler up through these maps.
+### 3.2 Call flows
 
-All of this lives inside `providers/acs/`. The maps are in-memory, which is fine because the pilot runs max 1 replica (spec §6).
+**Route hit (normal call)**
+1. Handle the IncomingCall event. Mask the numbers, then call `resolve_route(to)`, which finds a match.
+2. Create a `call_key`. The callback URL is `/acs/callbacks/{call_key}`, with **no caller number in the query**. This removes the upstream `callerId` query parameter, which put the full number into access logs. The media URL is `wss://…/acs/ws/{call_key}/{sig}`, where `sig = HMAC-SHA256(MEDIA_WS_TOKEN, call_key)` as hex (§3.4).
+3. `answer_call(..., media_streaming=…, cognitive_services_endpoint=ACS_COGNITIVE_SERVICES_ENDPOINT)`. Save the returned `call_connection_id` in the registry right away.
+4. Start the media-connect watchdog task.
+5. When the media WebSocket connects: verify the signature, check `ws_used` is false, then set it true. Attach the handler, cancel the watchdog, and call `connect_voicelive(route=state.route)`.
 
-## 4. Identity
+**Route miss**
+1. Answer **without** media streaming, but with `cognitive_services_endpoint`. Set `closing_reason="route_miss"` and save the connection id.
+2. On `CallConnected`, set `hangup_after_play=True` and `play_media(TextSource(FALLBACK_MESSAGE))`.
+3. On `PlayCompleted`/`PlayFailed`, hang up. Log `route_miss` with the masked called number.
 
-The upstream code uses `ManagedIdentityCredential(client_id=AZURE_USER_ASSIGNED_IDENTITY_CLIENT_ID)`, and its Bicep creates a **user-assigned** identity. Spec §6 says **system-assigned**. Decisions for this work unit:
-- Code uses `DefaultAzureCredential`. It picks up `AZURE_CLIENT_ID` when set (user-assigned), falls back to system-assigned, and uses `az login` locally.
-- Bicep is not touched now. At deploy time (step 4) we decide: keep the user-assigned identity and grant it Foundry User on `hireastra-resource`, or switch to system-assigned as the spec says. This will be raised with Raghu then; it doesn't block the code.
+**Voice Live failure (connect raises, or an unexpected drop mid-call)**
+- The handler calls `on_voicelive_failure()` **only when `closing_reason is None`**. Any intentional close (caller hang-up or call cap) sets `closing_reason` *before* it closes Voice Live, so an intentional close is never treated as a failure.
+- The ACS subclass sets `closing_reason="failure"`, stops forwarding agent audio, sets `hangup_after_play=True` and plays `FALLBACK_MESSAGE`. It looks up `call_connection_id` in the registry, which is always present because it's saved at answer time.
+- The same path is used when the media-connect watchdog fires.
+
+**Call cap (mod 6)**
+- `is_expired()` returns a reason (`"duration"` / `"idle"` / `None`), and existing truthiness checks keep working.
+- On `"duration"`, `call_loop` calls `handler.on_call_cap()`. The **base class** does the upstream behavior (close), so `/web/ws` is still capped.
+- The ACS subclass:
+  1. sets `closing_reason="call_cap"`;
+  2. **closes the Voice Live session first**, so no new agent response can play over the goodbye;
+  3. sets `hangup_after_play=True` and plays `GOODBYE_MESSAGE`;
+  4. hangs up on `PlayCompleted`/`PlayFailed`.
+- A 15-second safety timer hangs up even if no play event arrives.
+
+**Caller hang-up (mod 8)**
+- On `CallDisconnected`:
+  1. set `closing_reason="caller_hangup"`;
+  2. `await asyncio.wait_for(handler.cleanup(), 5)`;
+  3. log the time from the event to the end of cleanup in ms (acceptance test 6);
+  4. remove the registry entry.
+- If no handler is attached (route miss, or the WebSocket never came), just remove the entry.
+
+**Hang-up after play**
+- The callback handler checks `state.hangup_after_play` on `PlayCompleted`/`PlayFailed` and calls `hang_up(is_for_everyone=True)`.
+
+### 3.3 Voice Live handler changes (`handler/voicelive_media_handler.py`)
+
+| Mod | Change |
+| --- | --- |
+| 1 | `connect_voicelive(route: AgentRoute \| None = None)`. **With a route: agent mode** (`agent_name`, `project_name`, `agent_version` from the route, following the installed SDK's agent-mode API). **Without a route: upstream model mode.** Only `/web/ws` calls it without a route. The ACS path **always** passes a route and never falls back to model mode; if there's no route, it goes to the route-miss flow. |
+| 1 | Credential on the agent path: `DefaultAzureCredential(managed_identity_client_id=os.getenv("AZURE_USER_ASSIGNED_IDENTITY_CLIENT_ID") or None)`. This matches the upstream Bicep, which creates a user-assigned identity and sets that variable, and still works with a system-assigned identity or `az login` locally. No API key on the agent path; agent mode only accepts Entra ID. |
+| 2 | The version always comes from `AgentRoute.version`. |
+| 3 | In agent mode, `_session_config()` sends only the audio-format fields the ACS stream needs (PCM16 in and out). It sends no `instructions`, `voice`, `turn_detection`, noise or echo settings, and adds `interim_response` only when `INTERIM_RESPONSE_JSON` is set. If the SDK or docs show audio format is taken from agent metadata, it sends nothing (see open check 2). Model mode is unchanged. |
+| 9 | On `SESSION_CREATED`, store `self.conversation_id` and log it with the call id and `call_key`. This matches a phone call to its Foundry trace. |
+| 7 | New `closing_reason` attribute and new hooks `on_voicelive_failure()` and `on_call_cap()`. In the base class, `on_voicelive_failure()` keeps the current behavior (close the client WebSocket) and `on_call_cap()` closes. `cleanup()` sets `closing_reason="cleanup"` if nothing set it already, so the receiver loop's `finally` sees an intentional close. |
+
+### 3.4 Media WebSocket security (mod 5)
+
+- The token is derived per call: `sig = hmac_sha256(MEDIA_WS_TOKEN, call_key).hexdigest()`. The secret itself never goes into a URL. A signature that leaks into access logs is useless because it's tied to one `call_key`, is single-use, and its registry entry is gone after the call.
+- The signature and `call_key` go in the **path** (`/acs/ws/{call_key}/{sig}`), not the query string, and they are hex only, so there are no URL-encoding problems.
+- The check runs before accept:
+  - the `call_key` exists in the registry;
+  - `hmac.compare_digest(sig, expected)` passes;
+  - `ws_used` is false.
+- On any failure, the connection is **not accepted**. Under ASGI, Quart returns an HTTP 403 handshake rejection. We log `media_ws_rejected` with the reason and only a masked `call_key` prefix, never the signature or the secret.
+- Any rejection of **ACS's own** media connection leaves the caller without audio. The media-connect watchdog (10 s) turns that into the fallback message and a hang-up, never silence.
+- The upstream `/acs/ws` route without a path parameter is replaced. The Event Grid validation handshake on `/acs/incomingcall` already exists upstream and is reused.
+
+### 3.5 Logging (mod 9)
+
+- Every log line that shows caller or called numbers uses `mask_number()`.
+- Remove the upstream `logger.info("... data=%s", event.data)` dump of the IncomingCall event and the `caller id` log, because both contain full numbers.
+- No phone numbers in any URL (callback or media), so ingress and access logs can't leak them.
+- Keep the upstream per-call correlation id. Log `call_key`, `call_connection_id` and the Voice Live `conversation_id` together once they're known.
+
+### 3.6 Ambient (mod 10)
+
+`AMBIENT_PRESET=none` is already the upstream default. It is set explicitly in `.env.sample`, with no code change.
+
+## 4. Identity and deploy-time items (not built now, listed so nothing is lost)
+
+- Upstream Bicep creates a **user-assigned** identity; spec §6 says **system-assigned**. The code works with both (§3.3). At step 4, Raghu decides which one gets **Foundry User** on `hireastra-resource`.
+- ACS text-to-speech needs the ACS resource linked to `hireastra-resource` (ACS managed identity with a Cognitive Services role on the AI resource). Deploy-time config.
+- Event Grid subscription to `/acs/incomingcall`, filtered to the test number. Key Vault holds `ACS_CONNECTION_STRING` and `MEDIA_WS_TOKEN`.
 
 ## 5. README additions
 
-- The imported upstream commit SHA and how to pull updates from Microsoft's copy.
-- The Voice Live API version and SDK version in use, and whether agent mode is GA or preview (spec mod 1 and the risk table).
-- Environment variable mapping: spec `MAX_CALL_SECONDS` → `MAX_CALL_DURATION`; spec `VOICE_LIVE_ENDPOINT` → `AZURE_VOICE_LIVE_ENDPOINT`.
+- The imported upstream SHA and how to pull updates from Microsoft's copy.
+- The Voice Live API version and SDK version, and whether agent mode is GA or preview.
+- The environment variable alias table (§1).
 - Whether `interim_response` is set from config (only after acceptance test 4).
 
 ## 6. Error handling summary
 
-| Failure | Caller experience | Log |
+| Failure | Caller hears | Log |
 | --- | --- | --- |
-| Called number has no routing entry | Fallback message, hang-up | `route_miss` + masked number |
-| Voice Live connect fails (e.g. wrong agent version, acceptance test 7) | Fallback message, hang-up | Exception + call id |
-| Voice Live drops mid-call | Fallback message, hang-up | Drop + call id + conversation id |
-| Media WebSocket bad or missing token | (the WebSocket is not ACS's; no caller impact) | Reject 4401 |
-| Call reaches `MAX_CALL_DURATION` | Goodbye message, hang-up | `call_cap` + duration |
-| Caller hangs up | — | Cleanup duration in ms |
-| TTS playback itself fails | Hang-up anyway | `PlayFailed` details |
+| Called number has no route | Fallback, then hang-up | `route_miss` + masked number |
+| Voice Live connect fails (e.g. wrong version, acceptance test 7) | Fallback, then hang-up | Exception + `call_key` |
+| Voice Live drops mid-call | Fallback, then hang-up | Drop + `call_key` + `conversation_id` |
+| Media WebSocket never arrives or is rejected | Fallback after 10 s, then hang-up | `media_ws_timeout` / `media_ws_rejected` |
+| Call reaches `MAX_CALL_SECONDS` | Goodbye, then hang-up (Voice Live already closed) | `call_cap` + duration |
+| Caller hangs up | — | Cleanup ms; no fallback attempted |
+| TTS playback fails | Hang-up anyway | `PlayFailed` details |
+| No play event within 15 s after cap or fallback | Hang-up anyway | `hangup_timeout` |
 
 ## 7. Testing
 
 Unit tests (pytest, new `server/tests/`), with no Azure access needed:
-- `routing`: normalization variants, hit, miss, rejection of `"latest"`, bad JSON.
-- `log_mask`: normal numbers, short strings, `None`, `rawId` input.
-- `bridge_config`: required keys when ACS is active, token length.
-- WebSocket token check: correct, wrong and missing token (Quart test client).
-- `call_manager.is_expired` reason values.
-- `_session_config()` in agent mode contains no `instructions`/`voice`/`turn_detection`.
-- ACS `process_incoming_call` with a mocked `CallAutomationClient`: the route hit answers with media streaming, and the transport URL contains the token. The route miss answers without streaming.
+- `routing`: normalization of 10-digit, 11-digit `1…`, `+1…`, formatted, `rawId` and garbage input; hit and miss.
+- `bridge_config`:
+  - routing keys normalized at load and duplicates rejected;
+  - `"latest"` rejected;
+  - bad JSON rejected;
+  - token length checked;
+  - spec variable names win over accelerator names.
+- `log_mask`: normal, short, `None` and `rawId` input.
+- `call_registry`: add, look up by key and by connection id, remove, stale sweep.
+- Media WebSocket (Quart test client):
+  - a valid signature is accepted;
+  - a wrong signature, unknown `call_key` or reused `call_key` is rejected (handshake not accepted);
+  - the signature is never logged.
+- `is_expired()` reason values; the base `on_call_cap()` closes the web client.
+- `closing_reason`: after `cleanup()`, the receiver loop's `finally` does **not** call `on_voicelive_failure()`.
+- ACS `process_incoming_call` with a mocked `CallAutomationClient`:
+  - a hit answers with streaming plus the Cognitive Services endpoint, and the media URL contains no phone number or secret;
+  - a miss answers without streaming;
+  - the registry is filled from the `answer_call` return value.
+- `agent`-mode `_session_config()` has no `instructions`, `voice` or `turn_detection`.
 
-Things that can't be tested until deploy are the live acceptance tests 1–9 in spec §8. They will run after step 4.
+The live acceptance tests 1–9 (spec §8) run after step 4.
 
-## 8. Open checks before or while implementing
+## 8. Open checks during implementation
 
-1. What the installed `azure-ai-voicelive` SDK's agent-mode connect signature looks like, and whether it is GA or preview. Record the answer in the README.
-2. Whether agent mode accepts or requires `input_audio_format`/`output_audio_format` in `session.update`.
-3. Whether ACS `answer_call` without media streaming, followed by `play_media` with `TextSource`, needs a Cognitive Services link on the ACS resource (`cognitive_services_endpoint` in `answer_call`). If it does, that's a deploy-time config item, `ACS_COGNITIVE_SERVICES_ENDPOINT` pointing at `hireastra-resource`.
+1. What the installed `azure-ai-voicelive` SDK's agent-mode API looks like, and whether it's GA or preview. Record the answer in the README.
+2. Whether agent mode needs, allows or ignores `input_audio_format`/`output_audio_format` in `session.update`.
+3. Whether the ACS `MediaStreamingOptions.transport_url` keeps path segments exactly. If it doesn't, fall back to hex query parameters on a route that strips the query from logging.
