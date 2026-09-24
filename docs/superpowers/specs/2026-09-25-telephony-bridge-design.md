@@ -1,6 +1,6 @@
 # Telephony Bridge — Design (Step 3 code changes)
 
-Date: 2026-09-25 · Status: rev 4 (after three Opus design reviews) · Source requirements: [TELEPHONY_BRIDGE_SPEC.md](../../../TELEPHONY_BRIDGE_SPEC.md) §5, [HANDOFF.md](../../../HANDOFF.md)
+Date: 2026-09-25 · Status: rev 5 (after four Opus design reviews) · Source requirements: [TELEPHONY_BRIDGE_SPEC.md](../../../TELEPHONY_BRIDGE_SPEC.md) §5, [HANDOFF.md](../../../HANDOFF.md)
 
 ## 1. Scope
 
@@ -54,13 +54,15 @@ Rule for keeping upstream merges clean: new logic goes into **new files**. Edits
 | `MAX_CALL_SECONDS` | falls back to `MAX_CALL_DURATION`, then 600 | Call cap |
 | `VOICE_LIVE_ENDPOINT` | falls back to `AZURE_VOICE_LIVE_ENDPOINT` | Voice Live / Foundry resource |
 | `MEDIA_CONNECT_TIMEOUT_SECONDS` | 10 | Watchdog for the media WebSocket |
+| `VOICE_LIVE_CONNECT_TIMEOUT_SECONDS` | 8 | A Voice Live or agent connect that stalls → fallback |
+| `MEDIA_LOST_GRACE_SECONDS` | 5 | Wait for `CallDisconnected` after the media WebSocket closes before treating it as `media_lost` |
 | `ENABLE_WEB_CLIENT` | `false` | Registers `/web/ws` and `/` only when `true` (§3.7) |
 | `INTERIM_RESPONSE_JSON` | unset | Only used if acceptance test 4 fails (mod 3 exception) |
 | `VOICE_LIVE_API_VERSION` | unset (SDK default) | Pinned and recorded in the README |
 
 Validation (hard failure at startup when ACS is active):
 - the routing JSON parses with `object_pairs_hook`, and **raw duplicate keys are rejected** (plain `json.loads` silently keeps the last one);
-- every key normalizes to `^\+\d{8,15}$`, or startup fails; this catches typos such as a dropped digit;
+- every key must normalize to a valid E.164 number: **`^\+1\d{10}$` for `+1` (North American) numbers**, and `^\+[2-9]\d{7,14}$` for other country codes. Otherwise startup fails. This catches a dropped or extra digit in both `+`-prefixed and bare formats for the pilot's +1 numbers;
 - duplicates *after* normalizing are rejected;
 - every entry has `project` and `agent` as non-empty strings;
 - `version` must be a **string of digits only** (`^\d+$` after stripping). This rejects `"latest"`, `"Latest"`, `" latest "`, empty strings and JSON integers, which enforces mod 2's pinning strictly;
@@ -105,17 +107,21 @@ request_end(reason, message) -> None:            # the ONLY entry point; never b
   terminated_reason = reason                        # set synchronously, before any await
   create_task(_terminate(message))                  # runs in its own task, never inside a timer or webhook
 
+ensure_voicelive_closed() -> Task:                # single close task per session, idempotent
+  if _close_task is None and handler: _close_task = create_task(close_voicelive(handler))
+  return _close_task                                # every caller awaits the SAME task
+
 _terminate(message):                              # never raises; every step is try/except and logged
+  log terminated_reason (exactly once, here)
   cancel all _timers                                # safe: this task is not one of the timers
-  if handler:
-      handler.stop_forwarding_agent_audio()
-      create_task(close_voicelive(handler))         # §3.4, runs ALONGSIDE the play, so no dead air
-  if disconnected: return                           # caller already gone, nothing to play or hang up
+  if handler: handler.stop_forwarding_agent_audio(); ensure_voicelive_closed()   # runs ALONGSIDE the play
+  if disconnected: return
   if message:
       ok = await wait(_answered, 5 s) and await wait(_connected, 5 s)
+      if disconnected: return                       # re-check after every await
       if not ok: await _safe_hang_up(); return      # no connection to play on → just hang up
       hangup_after_play = True
-      start 15 s safety timer → _safe_hang_up       # started BEFORE play_media
+      start 15 s safety timer → _safe_hang_up (logs `hangup_timeout`)   # started BEFORE play_media
       try: play_media(TextSource(message))
       except (call gone / 404 / 8522): log; await _safe_hang_up()
   else:
@@ -123,15 +129,25 @@ _terminate(message):                              # never raises; every step is 
 
 _safe_hang_up():  if not disconnected and call_connection_id: hang_up(is_for_everyone=True), swallowing 404/8522
 
-on_call_disconnected():                           # the CallDisconnected callback
+attach_and_connect(handler):                      # called from the accepted media WebSocket
+  self.handler = handler
+  try: await wait_for(handler.connect_voicelive(route), VOICE_LIVE_CONNECT_TIMEOUT_SECONDS)
+  except (Exception, TimeoutError): request_end("voicelive_connect_failed", FALLBACK_MESSAGE); return
+  if terminated_reason is not None: ensure_voicelive_closed()   # the call ended while connect was in flight
+
+on_call_disconnected():                           # the CallDisconnected callback (webhook)
   disconnected = True
   request_end("caller_hangup", None)                # no-op if another reason already won
   cancel all _timers, including the play safety timer
-  (background) await close_voicelive if still open, then registry.remove(self)   # ALWAYS removed here
+  create_task(_finalize())                          # the webhook returns 200 right away
 
-on_play_done():                                   # PlayCompleted / PlayFailed
-  if hangup_after_play: cancel the play safety timer; await _safe_hang_up()
+_finalize():  if handler: await ensure_voicelive_closed(); registry.remove(self)   # ALWAYS removed here
+
+on_play_done():                                   # PlayCompleted / PlayFailed (webhook)
+  if hangup_after_play: cancel the play safety timer; create_task(_safe_hang_up())   # never awaited inline
 ```
+
+**`answer_call()` raising:** log `answer_failed` with the masked numbers, set `terminated_reason="answer_failed"`, and remove the session from the registry right away. The call was never answered, so there is nothing to hang up.
 
 `CallSessionRegistry`: `by_key`, `by_conn`.
 - Entries are **added before `answer_call()`** and indexed by connection id once `answer_call` returns. Callbacks and the media WebSocket are keyed by `call_key` in the URL path, so they always find the session even if they arrive before `answer_call` returns.
@@ -149,9 +165,9 @@ on_play_done():                                   # PlayCompleted / PlayFailed
 | `CallDisconnected` callback | via `on_call_disconnected()` → `("caller_hangup", None)` |
 | Call cap (`is_expired` → `"duration"`) | `("call_cap", GOODBYE_MESSAGE)` |
 | Idle expiry (`is_expired` → `"idle"`) | `("idle", FALLBACK_MESSAGE)` |
-| Voice Live connect raises | `("voicelive_connect_failed", FALLBACK_MESSAGE)` |
+| Voice Live connect raises **or takes longer than `VOICE_LIVE_CONNECT_TIMEOUT_SECONDS` (default 8)** | `("voicelive_connect_failed", FALLBACK_MESSAGE)` |
 | Voice Live receiver ends while the session isn't terminated | `("voicelive_dropped", FALLBACK_MESSAGE)` |
-| ACS media WebSocket closes while the session isn't terminated | start a **2 s grace timer**; if `CallDisconnected` hasn't arrived by then → `("media_lost", FALLBACK_MESSAGE)`. This avoids trying to play into a call the caller just hung up. |
+| ACS media WebSocket closes while the session isn't terminated | start a grace timer of **`MEDIA_LOST_GRACE_SECONDS` (default 5)**; if `CallDisconnected` hasn't arrived by then → `("media_lost", FALLBACK_MESSAGE)`. This avoids trying to play into a call the caller just hung up. If the callback arrives even later, the play and hang-up hit a call that's gone, which is swallowed as 404/8522; the Voice Live close ms is still logged either way. |
 | Media watchdog: armed when `answer_call` returns (route hit), fires after `MEDIA_CONNECT_TIMEOUT_SECONDS`, **does nothing if `ws_used` is already true**. The media WebSocket can connect before `CallConnected`, so the watchdog is keyed to "has media arrived", not to event order. | `("media_timeout", FALLBACK_MESSAGE)` |
 | Route miss, on `CallConnected` | `("route_miss", FALLBACK_MESSAGE)` |
 | Stale sweep | `("stale", None)` |
@@ -187,9 +203,9 @@ on_play_done():                                   # PlayCompleted / PlayFailed
 | 2 | The version always comes from `AgentRoute.version`. |
 | 3 | In agent mode, `_session_config()` sends only the PCM16 audio-format fields the stream needs, plus `interim_response` if `INTERIM_RESPONSE_JSON` is set. No `instructions`, `voice`, `turn_detection`, noise or echo settings. If audio format is taken from agent metadata, send nothing (open check 2). Model mode is unchanged. |
 | 9 | On `SESSION_CREATED`, store `conversation_id` and log it with `call_key` and `call_connection_id`. |
-| 7 | New hooks with defaults that keep upstream behavior: `on_voicelive_ended()` (base: close the client WebSocket, as upstream does) and `on_call_cap()` / `on_idle()` (base: close). The ACS subclass overrides them to call `session.terminate(...)`. New `stop_forwarding_agent_audio()` sets a flag that `on_audio_delta` checks. |
+| 7 | New hooks with defaults that keep upstream behavior: `on_voicelive_ended()` (base: close the client WebSocket, as upstream does) and `on_call_cap()` / `on_idle()` (base: close). The ACS subclass overrides them to call `session.request_end(reason, message)`; there is no other end path. New `stop_forwarding_agent_audio()` sets a flag that `on_audio_delta` checks. |
 
-`call_loop.py`: `is_expired()` returns `"duration"` / `"idle"` / `None`, and existing truthiness checks keep working. The loop calls `handler.on_call_cap()` or `handler.on_idle()` accordingly. When the loop exits because the client (ACS media) WebSocket closed, it calls `handler.on_client_ws_closed()`. Base: no-op. ACS: start the 2 s grace timer.
+`call_loop.py`: `is_expired()` returns `"duration"` / `"idle"` / `None`, and existing truthiness checks keep working. The loop calls `handler.on_call_cap()` or `handler.on_idle()` accordingly. When the loop exits because the client (ACS media) WebSocket closed, it calls `handler.on_client_ws_closed()`. Base: no-op. ACS: start the media-lost grace timer.
 
 ### 3.7 Web debug client (`/web/ws`)
 
@@ -219,18 +235,28 @@ The imported upstream SHA and how to pull updates; the Voice Live API and SDK ve
 
 ## 6. Error handling summary
 
-| Failure | Caller hears | Log (`terminated_reason`) |
+`terminated_reason` is set once per call and logged once. Other conditions are separate **log events** and never change `terminated_reason`.
+
+| Failure | Caller hears | `terminated_reason` |
 | --- | --- | --- |
+| `answer_call` fails | (never answered) | `answer_failed` |
 | No route | Fallback, then hang-up | `route_miss` |
-| Voice Live connect fails (acceptance test 7) | Fallback, then hang-up | `voicelive_connect_failed` |
+| Voice Live connect fails or times out (acceptance test 7) | Fallback, then hang-up | `voicelive_connect_failed` |
 | Voice Live drops mid-call | Fallback, then hang-up | `voicelive_dropped` |
 | Media WebSocket never arrives or is rejected | Fallback after ≤10 s, then hang-up | `media_timeout` |
-| ACS media WebSocket drops mid-call | Fallback, then hang-up (after a 2 s grace period) | `media_lost` |
+| ACS media WebSocket drops mid-call | Fallback, then hang-up (after the grace period) | `media_lost` |
 | No audio for the idle timeout | Fallback, then hang-up | `idle` |
-| `MAX_CALL_SECONDS` reached | Goodbye, then hang-up (Voice Live already closed) | `call_cap` |
-| Caller hangs up | — | `caller_hangup` + Voice Live close ms |
-| TTS fails, or no play event within 15 s | Hang-up | `PlayFailed` / `hangup_timeout` |
-| Voice Live close takes >5 s | — | `voicelive_force_closed` |
+| `MAX_CALL_SECONDS` reached | Agent audio stops at once, goodbye plays while Voice Live closes in parallel, then hang-up | `call_cap` |
+| Caller hangs up | — | `caller_hangup` |
+| Lost `CallDisconnected` | — | `stale` |
+
+| Log event (in addition to the reason above) | When |
+| --- | --- |
+| `voicelive_closed_ms` | Every call that had a Voice Live session (acceptance test 6) |
+| `voicelive_force_closed` | Voice Live close took >5 s |
+| `play_failed` | `PlayFailed` callback |
+| `hangup_timeout` | No play event within 15 s; a hang-up is forced |
+| `media_ws_rejected` | Media WebSocket failed a check (§3.5) |
 
 ## 7. Testing
 
@@ -239,7 +265,7 @@ Unit tests (pytest, `server/tests/`), no Azure access needed:
 - `bridge_config`:
   - keys normalized;
   - raw and normalized duplicates rejected;
-  - a key that doesn't normalize to E.164 (e.g. 9 digits) rejected;
+  - a key that doesn't normalize to E.164 rejected, including a 9-digit bare number and `"+1416555123"` (a `+1` number missing a digit);
   - `version` values `"latest"`, `"Latest"`, `" latest "`, `""` and `10` (an int) rejected, `"10"` accepted;
   - bad JSON rejected;
   - token length checked;
@@ -255,7 +281,14 @@ Unit tests (pytest, `server/tests/`), no Azure access needed:
   - the registry entry is removed on `CallDisconnected` for **every** end reason;
   - `play_media` raising "call gone" leads to a hang-up attempt, and nothing escapes;
   - an `_answered` timeout leads to a plain hang-up;
-  - goodbye `play_media` starts without waiting for `close_voicelive`.
+  - goodbye `play_media` starts without waiting for `close_voicelive`;
+  - `close_voicelive` runs **once** even when `_terminate` and `on_call_disconnected` both ask for it;
+  - `CallDisconnected` during the `_answered`/`_connected` wait means no `play_media` and no new timer;
+  - the call ending while `connect_voicelive` is in flight means the new session is closed once connect returns;
+  - a `connect_voicelive` that stalls → `voicelive_connect_failed` after the timeout;
+  - `answer_call` raising → `answer_failed`, and the session is removed;
+  - the `on_play_done` webhook returns before the hang-up finishes;
+  - `terminated_reason` is logged exactly once per call.
 - Races:
   - a callback arriving before `answer_call` returns still finds the session;
   - `CallDisconnected` during the grace window means no fallback;
