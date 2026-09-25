@@ -2,7 +2,7 @@ import json
 import math
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from types import MappingProxyType
 
 from app.log_mask import mask_number
@@ -25,7 +25,7 @@ class BridgeConfigError(ValueError):
 @dataclass(frozen=True)
 class BridgeConfig:
     routes: Mapping[str, AgentRoute]
-    media_ws_token: str
+    media_ws_token: str = field(repr=False)
     acs_cognitive_services_endpoint: str
     fallback_message: str
     goodbye_message: str
