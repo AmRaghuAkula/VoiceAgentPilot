@@ -226,3 +226,48 @@ def test_nested_duplicate_field_reports_honestly_not_as_phone_collision():
     with pytest.raises(BridgeConfigError) as exc:
         parse_routing(raw)
     assert "4165551234" not in str(exc.value)
+
+
+def test_duplicate_key_with_digits_but_invalid_e164_is_still_masked():
+    """A digit-bearing but not-strictly-E.164 duplicate key (e.g. with an extension) must still be masked."""
+    raw = '{"tel:+14165550123 x9": {"project": "p", "agent": "a", "version": "1"}, "tel:+14165550123 x9": {"project": "p", "agent": "a", "version": "1"}}'
+    with pytest.raises(BridgeConfigError) as exc:
+        parse_routing(raw)
+    assert "4165550123" not in str(exc.value)
+
+
+@pytest.mark.parametrize("value", ["9" * 400, "9" * 4000, "999999"])
+def test_huge_and_over_cap_numbers_rejected_without_overflow_error(value):
+    with pytest.raises(BridgeConfigError, match="MAX_CALL_SECONDS"):
+        load_bridge_config(acs_env(MAX_CALL_SECONDS=value), acs_active=True)
+
+
+@pytest.mark.parametrize("value", ["٥", "1_000", "1e3", "0x10"])
+def test_non_ascii_and_non_plain_digit_numbers_rejected(value):
+    with pytest.raises(BridgeConfigError, match="MAX_CALL_SECONDS"):
+        load_bridge_config(acs_env(MAX_CALL_SECONDS=value), acs_active=True)
+
+
+@pytest.mark.parametrize("body", ['{"x": NaN}', '{"x": Infinity}', '{"x": -Infinity}'])
+def test_interim_response_rejects_non_finite_json_constants(body):
+    with pytest.raises(BridgeConfigError, match="INTERIM_RESPONSE_JSON"):
+        load_bridge_config(acs_env(INTERIM_RESPONSE_JSON=body), acs_active=True)
+
+
+def test_interim_response_is_frozen_recursively():
+    cfg = load_bridge_config(
+        acs_env(INTERIM_RESPONSE_JSON='{"a": {"b": 1}, "c": [1, 2, 3]}'), acs_active=True
+    )
+    from types import MappingProxyType
+
+    assert isinstance(cfg.interim_response["a"], MappingProxyType)
+    assert cfg.interim_response["c"] == (1, 2, 3)
+    with pytest.raises(TypeError):
+        cfg.interim_response["a"]["b"] = 2
+
+
+def test_bridge_config_error_from_duplicate_hook_is_not_double_wrapped():
+    raw = '{"+14165551234": {"project": "p", "agent": "a", "version": "1"}, "+14165551234": {"project": "p", "agent": "a", "version": "2"}}'
+    with pytest.raises(BridgeConfigError) as exc:
+        parse_routing(raw)
+    assert not str(exc.value).startswith("AGENT_ROUTING_JSON could not be parsed")

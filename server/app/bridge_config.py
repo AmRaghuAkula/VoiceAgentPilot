@@ -1,5 +1,4 @@
 import json
-import math
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -12,7 +11,9 @@ DEFAULT_FALLBACK_MESSAGE = "Sorry, we're having trouble right now. Please call b
 DEFAULT_GOODBYE_MESSAGE = "We've reached the time limit for this call. Thank you for calling, goodbye."
 DEFAULT_TTS_VOICE = "en-US-JennyNeural"
 MIN_TOKEN_LENGTH = 32
+MAX_NUMERIC_VALUE = 86_400  # 24h; generous upper bound for any timeout/duration setting here
 _VERSION = re.compile(r"\A[1-9][0-9]*\Z", re.ASCII)
+_NUMERIC = re.compile(r"\A[0-9]+(\.[0-9]+)?\Z", re.ASCII)
 
 
 class BridgeConfigError(ValueError):
@@ -38,11 +39,14 @@ class BridgeConfig:
     callback_jwt_audience: str | None
 
 
+_FOUR_OR_MORE_DIGITS = re.compile(r"\d{4,}")
+
+
 def _reject_duplicate_keys(pairs):
     result = {}
     for key, value in pairs:
         if key in result:
-            label = mask_number(key) if is_valid_e164(normalize_number(key)) else key
+            label = mask_number(key) if _FOUR_OR_MORE_DIGITS.search(key) else key
             raise BridgeConfigError(f"duplicate JSON key {label!r}")
         result[key] = value
     return result
@@ -53,6 +57,8 @@ def parse_routing(raw: str) -> dict[str, AgentRoute]:
         data = json.loads(raw, object_pairs_hook=_reject_duplicate_keys)
     except json.JSONDecodeError as exc:
         raise BridgeConfigError(f"AGENT_ROUTING_JSON is not valid JSON: {exc.msg}") from exc
+    except BridgeConfigError:
+        raise
     except (ValueError, RecursionError) as exc:
         raise BridgeConfigError(f"AGENT_ROUTING_JSON could not be parsed: {exc}") from exc
     if not isinstance(data, dict) or not data:
@@ -81,6 +87,14 @@ def parse_routing(raw: str) -> dict[str, AgentRoute]:
     return routes
 
 
+def _deep_freeze(value):
+    if isinstance(value, dict):
+        return MappingProxyType({k: _deep_freeze(v) for k, v in value.items()})
+    if isinstance(value, list):
+        return tuple(_deep_freeze(v) for v in value)
+    return value
+
+
 def _get(env: Mapping[str, str], name: str) -> str | None:
     value = env.get(name)
     if value is None:
@@ -93,14 +107,16 @@ def _positive(env: Mapping[str, str], name: str, default, cast):
     raw = _get(env, name)
     if raw is None:
         return default
+    if not _NUMERIC.match(raw):
+        raise BridgeConfigError(f"{name} must be a number")
     try:
         value = cast(raw)
-    except ValueError as exc:
+    except (ValueError, OverflowError) as exc:
         raise BridgeConfigError(f"{name} must be a number") from exc
-    if not math.isfinite(value):
-        raise BridgeConfigError(f"{name} must be a finite number")
     if value <= 0:
         raise BridgeConfigError(f"{name} must be positive")
+    if value > MAX_NUMERIC_VALUE:
+        raise BridgeConfigError(f"{name} must be at most {MAX_NUMERIC_VALUE}")
     return value
 
 
@@ -127,15 +143,22 @@ def load_bridge_config(env: Mapping[str, str], *, acs_active: bool) -> BridgeCon
     interim = None
     interim_raw = _get(env, "INTERIM_RESPONSE_JSON")
     if interim_raw:
+        def _reject_non_finite(_text: str):
+            raise BridgeConfigError("INTERIM_RESPONSE_JSON must not contain NaN/Infinity")
+
         try:
-            interim = json.loads(interim_raw, object_pairs_hook=_reject_duplicate_keys)
+            interim = json.loads(
+                interim_raw, object_pairs_hook=_reject_duplicate_keys, parse_constant=_reject_non_finite
+            )
         except json.JSONDecodeError as exc:
             raise BridgeConfigError("INTERIM_RESPONSE_JSON is not valid JSON") from exc
+        except BridgeConfigError:
+            raise
         except (ValueError, RecursionError) as exc:
             raise BridgeConfigError(f"INTERIM_RESPONSE_JSON could not be parsed: {exc}") from exc
         if not isinstance(interim, dict):
             raise BridgeConfigError("INTERIM_RESPONSE_JSON must be a JSON object")
-        interim = MappingProxyType(interim)
+        interim = _deep_freeze(interim)
 
     return BridgeConfig(
         routes=MappingProxyType(routes),
