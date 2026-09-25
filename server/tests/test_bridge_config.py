@@ -42,13 +42,27 @@ def test_normalized_duplicate_keys_rejected():
         parse_routing(raw)
 
 
-@pytest.mark.parametrize("key", ["416555123", "+1416555123", "not-a-number"])
+@pytest.mark.parametrize("key", ["416555123", "+1416555123", "not-a-number", "1416555123"])
 def test_invalid_e164_key_rejected(key):
     with pytest.raises(BridgeConfigError, match="E.164"):
         parse_routing('{"%s": {"project": "p", "agent": "a", "version": "10"}}' % key)
 
 
-@pytest.mark.parametrize("version", ['"latest"', '"Latest"', '" latest "', '""', "10", "null"])
+def test_dropped_digit_nanp_key_rejected_end_to_end():
+    """D-022: a bare 11-digit key with a dropped digit must not silently start up (U03's own bug class)."""
+    with pytest.raises(BridgeConfigError, match="E.164"):
+        load_bridge_config(acs_env(AGENT_ROUTING_JSON='{"1416555123": {"project": "p", "agent": "a", "version": "10"}}'), acs_active=True)
+
+
+@pytest.mark.parametrize(
+    "version",
+    [
+        '"latest"', '"Latest"', '" latest "', '""', "10", "null",
+        '"0"', '"007"', '"00"',
+        '"١٢"',  # Arabic-Indic digits
+        '"１０"',  # fullwidth 10
+    ],
+)
 def test_unpinned_versions_rejected(version):
     with pytest.raises(BridgeConfigError, match="version"):
         parse_routing('{"+14165551234": {"project": "p", "agent": "a", "version": %s}}' % version)
@@ -118,10 +132,32 @@ def test_accelerator_names_used_as_fallback():
     assert cfg.voice_live_endpoint == "https://accel.example"
 
 
-@pytest.mark.parametrize("value", ["abc", "0", "-5"])
+def test_whitespace_only_spec_name_falls_through_to_accelerator_name():
+    cfg = load_bridge_config(
+        acs_env(MAX_CALL_SECONDS="   ", MAX_CALL_DURATION="900", VOICE_LIVE_ENDPOINT="  ", AZURE_VOICE_LIVE_ENDPOINT="https://accel.example"),
+        acs_active=True,
+    )
+    assert cfg.max_call_seconds == 900
+    assert cfg.voice_live_endpoint == "https://accel.example"
+
+
+def test_whitespace_only_secrets_rejected():
+    with pytest.raises(BridgeConfigError, match="MEDIA_WS_TOKEN"):
+        load_bridge_config(acs_env(MEDIA_WS_TOKEN=" " * 40), acs_active=True)
+    with pytest.raises(BridgeConfigError, match="ACS_COGNITIVE_SERVICES_ENDPOINT"):
+        load_bridge_config(acs_env(ACS_COGNITIVE_SERVICES_ENDPOINT="   "), acs_active=True)
+
+
+@pytest.mark.parametrize("value", ["abc", "0", "-5", "60.5"])
 def test_bad_numbers_rejected(value):
     with pytest.raises(BridgeConfigError, match="MAX_CALL_SECONDS"):
         load_bridge_config(acs_env(MAX_CALL_SECONDS=value), acs_active=True)
+
+
+@pytest.mark.parametrize("value", ["inf", "-inf", "nan", "-5", "0"])
+def test_non_finite_and_non_positive_timeouts_rejected(value):
+    with pytest.raises(BridgeConfigError, match="MEDIA_CONNECT_TIMEOUT_SECONDS"):
+        load_bridge_config(acs_env(MEDIA_CONNECT_TIMEOUT_SECONDS=value), acs_active=True)
 
 
 def test_optional_fields():
@@ -140,9 +176,22 @@ def test_optional_fields():
     assert cfg.callback_jwt_audience == "acs-resource-id"
 
 
-def test_interim_response_must_be_object():
+@pytest.mark.parametrize("value", ["[1]", '"just a string"', "123", "null"])
+def test_interim_response_must_be_object(value):
     with pytest.raises(BridgeConfigError, match="INTERIM_RESPONSE_JSON"):
-        load_bridge_config(acs_env(INTERIM_RESPONSE_JSON="[1]"), acs_active=True)
+        load_bridge_config(acs_env(INTERIM_RESPONSE_JSON=value), acs_active=True)
+
+
+def test_interim_response_duplicate_keys_rejected():
+    with pytest.raises(BridgeConfigError):
+        load_bridge_config(acs_env(INTERIM_RESPONSE_JSON='{"a": 1, "a": 2}'), acs_active=True)
+
+
+def test_interim_response_is_read_only():
+    from types import MappingProxyType
+
+    cfg = load_bridge_config(acs_env(INTERIM_RESPONSE_JSON='{"type": "llm_interim_response"}'), acs_active=True)
+    assert isinstance(cfg.interim_response, MappingProxyType)
 
 
 def test_routes_mapping_is_read_only():
@@ -153,3 +202,27 @@ def test_routes_mapping_is_read_only():
 
 def test_valid_routing_constant_is_valid():
     assert parse_routing(VALID_ROUTING)
+
+
+def test_acs_inactive_still_validates_provided_routing():
+    with pytest.raises(BridgeConfigError):
+        load_bridge_config({"AGENT_ROUTING_JSON": "not json"}, acs_active=False)
+
+
+@pytest.mark.parametrize("value", ["true", "  true  ", "True", "TRUE ", " TrUe"])
+def test_enable_web_client_case_and_whitespace_insensitive(value):
+    cfg = load_bridge_config(acs_env(ENABLE_WEB_CLIENT=value), acs_active=True)
+    assert cfg.enable_web_client is True
+
+
+@pytest.mark.parametrize("value", ["yes", "1", "on", "false", ""])
+def test_enable_web_client_rejects_non_true_values(value):
+    cfg = load_bridge_config(acs_env(ENABLE_WEB_CLIENT=value), acs_active=True)
+    assert cfg.enable_web_client is False
+
+
+def test_nested_duplicate_field_reports_honestly_not_as_phone_collision():
+    raw = '{"+14165551234": {"project": "p", "project": "q", "agent": "a", "version": "10"}}'
+    with pytest.raises(BridgeConfigError) as exc:
+        parse_routing(raw)
+    assert "4165551234" not in str(exc.value)
