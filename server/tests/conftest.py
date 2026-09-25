@@ -62,13 +62,15 @@ class _ListHandler(logging.Handler):
 @pytest.fixture
 def logs():
     handler = _ListHandler()
-    app_logger = logging.getLogger("app")
-    old_level = app_logger.level
-    app_logger.addHandler(handler)
-    app_logger.setLevel(logging.DEBUG)
+    loggers = [logging.getLogger("app"), logging.getLogger("server")]
+    old_levels = [logger.level for logger in loggers]
+    for logger in loggers:
+        logger.addHandler(handler)
+        logger.setLevel(logging.DEBUG)
     yield handler
-    app_logger.removeHandler(handler)
-    app_logger.setLevel(old_level)
+    for logger, old_level in zip(loggers, old_levels):
+        logger.removeHandler(handler)
+        logger.setLevel(old_level)
 
 
 class FakeConnection:

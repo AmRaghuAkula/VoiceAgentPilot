@@ -45,7 +45,7 @@ The solution includes:
 > You can also try the Voice Live API via [Azure AI Foundry](https://ai.azure.com/foundry) for quick experimentation before deploying this template to your own Azure subscription.
 
 ### Architecture diagram
-|![Architecture Diagram](./docs/images/architecture_v0.0.6.png)|
+|![Architecture Diagram](./images/architecture_v0.0.6.png)|
 |---|
 
 <br/>
@@ -256,7 +256,7 @@ The `IncomingCall` Event Grid subscription is **created automatically** by the p
 
 📸 Refer to the screenshot below for guidance:
 
-![Event Subscription screenshot](./docs/images/acs_eventsubscription_v0.0.1.png)
+![Event Subscription screenshot](./images/acs_eventsubscription_v0.0.1.png)
 
 </details>
 
@@ -499,7 +499,7 @@ Dial your Bandwidth phone number. The call connects to the real-time voice agent
 
 Once the environment has been deployed with `azd up` you can also run the application locally.
 
-Please follow the instructions in [the server README](./server/README.md).
+Please follow the instructions in [the server README](../server/README.md).
 
 <br/>
 
@@ -591,7 +591,7 @@ You can add your own ambient audio files:
 
 ## Troubleshooting
 
-See the [Troubleshooting Guide](./docs/troubleshooting.md) for common deployment issues and solutions, including:
+See the [Troubleshooting Guide](./troubleshooting.md) for common deployment issues and solutions, including:
 - Docker Hub rate limits during remote builds
 - RequestConflict errors from concurrent deployments
 - Soft-deleted resource recovery
@@ -620,7 +620,7 @@ Provider-native IDs (Twilio call SID, ACS call connection ID, Genesys conversati
 
 ## Production Readiness
 
-Before using this accelerator for production traffic, review the [Production Readiness Guide](./docs/production-readiness.md). It covers design changes to consider for scaling, shared state, WebSocket lifecycle, provider-specific reliability, observability, security, privacy, and multi-replica deployments.
+Before using this accelerator for production traffic, review the [Production Readiness Guide](./production-readiness.md). It covers design changes to consider for scaling, shared state, WebSocket lifecycle, provider-specific reliability, observability, security, privacy, and multi-replica deployments.
 
 <br/>
 
