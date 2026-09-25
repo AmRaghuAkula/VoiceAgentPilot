@@ -1,4 +1,5 @@
 import json
+import math
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -11,7 +12,8 @@ DEFAULT_FALLBACK_MESSAGE = "Sorry, we're having trouble right now. Please call b
 DEFAULT_GOODBYE_MESSAGE = "We've reached the time limit for this call. Thank you for calling, goodbye."
 DEFAULT_TTS_VOICE = "en-US-JennyNeural"
 MIN_TOKEN_LENGTH = 32
-MAX_NUMERIC_VALUE = 86_400  # 24h; generous upper bound for any timeout/duration setting here
+MAX_CALL_SECONDS_CEILING = 3600  # 1h; matches the upstream accelerator's own MAX_CALL_DURATION default
+MAX_CONNECT_TIMEOUT_CEILING = 60  # connect/grace timeouts are meant to be single-digit-to-low-double-digit seconds
 _VERSION = re.compile(r"\A[1-9][0-9]*\Z", re.ASCII)
 _NUMERIC = re.compile(r"\A[0-9]+(\.[0-9]+)?\Z", re.ASCII)
 
@@ -39,27 +41,33 @@ class BridgeConfig:
     callback_jwt_audience: str | None
 
 
-_FOUR_OR_MORE_DIGITS = re.compile(r"\d{4,}")
+_HAS_DIGIT = re.compile(r"\d")
 
 
-def _reject_duplicate_keys(pairs):
-    result = {}
-    for key, value in pairs:
-        if key in result:
-            label = mask_number(key) if _FOUR_OR_MORE_DIGITS.search(key) else key
-            raise BridgeConfigError(f"duplicate JSON key {label!r}")
-        result[key] = value
-    return result
+def _duplicate_key_hook(source: str):
+    def hook(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                # Any key containing a digit is masked, since it could be a phone number in any
+                # format (with separators, an extension, a typo) — mask_number()'s own "***"
+                # fallback keeps a key with no digits (a field name like "project") readable.
+                label = mask_number(key) if _HAS_DIGIT.search(key) else key
+                raise BridgeConfigError(f"{source} has a duplicate JSON key {label!r}")
+            result[key] = value
+        return result
+
+    return hook
 
 
 def parse_routing(raw: str) -> dict[str, AgentRoute]:
     try:
-        data = json.loads(raw, object_pairs_hook=_reject_duplicate_keys)
+        data = json.loads(raw, object_pairs_hook=_duplicate_key_hook("AGENT_ROUTING_JSON"))
     except json.JSONDecodeError as exc:
         raise BridgeConfigError(f"AGENT_ROUTING_JSON is not valid JSON: {exc.msg}") from exc
     except BridgeConfigError:
         raise
-    except (ValueError, RecursionError) as exc:
+    except RecursionError as exc:
         raise BridgeConfigError(f"AGENT_ROUTING_JSON could not be parsed: {exc}") from exc
     if not isinstance(data, dict) or not data:
         raise BridgeConfigError("AGENT_ROUTING_JSON must be a non-empty JSON object")
@@ -103,7 +111,7 @@ def _get(env: Mapping[str, str], name: str) -> str | None:
     return value if value else None
 
 
-def _positive(env: Mapping[str, str], name: str, default, cast):
+def _positive(env: Mapping[str, str], name: str, default, cast, *, ceiling: float):
     raw = _get(env, name)
     if raw is None:
         return default
@@ -115,8 +123,8 @@ def _positive(env: Mapping[str, str], name: str, default, cast):
         raise BridgeConfigError(f"{name} must be a number") from exc
     if value <= 0:
         raise BridgeConfigError(f"{name} must be positive")
-    if value > MAX_NUMERIC_VALUE:
-        raise BridgeConfigError(f"{name} must be at most {MAX_NUMERIC_VALUE}")
+    if value > ceiling:
+        raise BridgeConfigError(f"{name} must be at most {ceiling}")
     return value
 
 
@@ -146,19 +154,28 @@ def load_bridge_config(env: Mapping[str, str], *, acs_active: bool) -> BridgeCon
         def _reject_non_finite(_text: str):
             raise BridgeConfigError("INTERIM_RESPONSE_JSON must not contain NaN/Infinity")
 
+        def _finite_float(text: str) -> float:
+            value = float(text)
+            if not math.isfinite(value):
+                raise BridgeConfigError("INTERIM_RESPONSE_JSON must not contain NaN/Infinity")
+            return value
+
         try:
             interim = json.loads(
-                interim_raw, object_pairs_hook=_reject_duplicate_keys, parse_constant=_reject_non_finite
+                interim_raw,
+                object_pairs_hook=_duplicate_key_hook("INTERIM_RESPONSE_JSON"),
+                parse_constant=_reject_non_finite,
+                parse_float=_finite_float,
             )
+            if not isinstance(interim, dict):
+                raise BridgeConfigError("INTERIM_RESPONSE_JSON must be a JSON object")
+            interim = _deep_freeze(interim)
         except json.JSONDecodeError as exc:
             raise BridgeConfigError("INTERIM_RESPONSE_JSON is not valid JSON") from exc
         except BridgeConfigError:
             raise
-        except (ValueError, RecursionError) as exc:
+        except RecursionError as exc:
             raise BridgeConfigError(f"INTERIM_RESPONSE_JSON could not be parsed: {exc}") from exc
-        if not isinstance(interim, dict):
-            raise BridgeConfigError("INTERIM_RESPONSE_JSON must be a JSON object")
-        interim = _deep_freeze(interim)
 
     return BridgeConfig(
         routes=MappingProxyType(routes),
@@ -167,11 +184,11 @@ def load_bridge_config(env: Mapping[str, str], *, acs_active: bool) -> BridgeCon
         fallback_message=_get(env, "FALLBACK_MESSAGE") or DEFAULT_FALLBACK_MESSAGE,
         goodbye_message=_get(env, "GOODBYE_MESSAGE") or DEFAULT_GOODBYE_MESSAGE,
         tts_voice=_get(env, "ACS_TTS_VOICE") or DEFAULT_TTS_VOICE,
-        max_call_seconds=_positive(env, max_name, 600, int),
+        max_call_seconds=_positive(env, max_name, 600, int, ceiling=MAX_CALL_SECONDS_CEILING),
         voice_live_endpoint=_get(env, "VOICE_LIVE_ENDPOINT") or _get(env, "AZURE_VOICE_LIVE_ENDPOINT"),
-        media_connect_timeout=_positive(env, "MEDIA_CONNECT_TIMEOUT_SECONDS", 10.0, float),
-        voice_live_connect_timeout=_positive(env, "VOICE_LIVE_CONNECT_TIMEOUT_SECONDS", 8.0, float),
-        media_lost_grace=_positive(env, "MEDIA_LOST_GRACE_SECONDS", 5.0, float),
+        media_connect_timeout=_positive(env, "MEDIA_CONNECT_TIMEOUT_SECONDS", 10.0, float, ceiling=MAX_CONNECT_TIMEOUT_CEILING),
+        voice_live_connect_timeout=_positive(env, "VOICE_LIVE_CONNECT_TIMEOUT_SECONDS", 8.0, float, ceiling=MAX_CONNECT_TIMEOUT_CEILING),
+        media_lost_grace=_positive(env, "MEDIA_LOST_GRACE_SECONDS", 5.0, float, ceiling=MAX_CONNECT_TIMEOUT_CEILING),
         enable_web_client=(env.get("ENABLE_WEB_CLIENT") or "").strip().lower() == "true",
         interim_response=interim,
         voice_live_api_version=_get(env, "VOICE_LIVE_API_VERSION"),

@@ -236,10 +236,42 @@ def test_duplicate_key_with_digits_but_invalid_e164_is_still_masked():
     assert "4165550123" not in str(exc.value)
 
 
-@pytest.mark.parametrize("value", ["9" * 400, "9" * 4000, "999999"])
+def test_separator_formatted_duplicate_key_with_no_run_of_4_digits_is_still_masked():
+    """No group of 4+ consecutive digits, but it's still a phone-shaped key with digits and must be masked."""
+    raw = '{"416-555-123": {"project": "p", "agent": "a", "version": "1"}, "416-555-123": {"project": "p", "agent": "a", "version": "1"}}'
+    with pytest.raises(BridgeConfigError) as exc:
+        parse_routing(raw)
+    assert "416-555-123" not in str(exc.value)
+    assert "416" not in str(exc.value)
+
+
+def test_duplicate_key_error_names_the_source_variable():
+    with pytest.raises(BridgeConfigError, match=r"^AGENT_ROUTING_JSON"):
+        parse_routing('{"+14165551234": {"project": "p", "agent": "a", "version": "1"}, "+14165551234": {"project": "p", "agent": "a", "version": "2"}}')
+    with pytest.raises(BridgeConfigError, match=r"^INTERIM_RESPONSE_JSON"):
+        load_bridge_config(acs_env(INTERIM_RESPONSE_JSON='{"a": 1, "a": 2}'), acs_active=True)
+
+
+@pytest.mark.parametrize("value", ["9" * 400, "9" * 4000, "999999", "7200"])
 def test_huge_and_over_cap_numbers_rejected_without_overflow_error(value):
     with pytest.raises(BridgeConfigError, match="MAX_CALL_SECONDS"):
         load_bridge_config(acs_env(MAX_CALL_SECONDS=value), acs_active=True)
+
+
+def test_max_call_seconds_ceiling_accepts_at_boundary():
+    cfg = load_bridge_config(acs_env(MAX_CALL_SECONDS="3600"), acs_active=True)
+    assert cfg.max_call_seconds == 3600
+
+
+@pytest.mark.parametrize("value", ["61", "50000", "3600"])
+def test_connect_timeout_ceiling_rejects_over_60_seconds(value):
+    with pytest.raises(BridgeConfigError, match="MEDIA_CONNECT_TIMEOUT_SECONDS"):
+        load_bridge_config(acs_env(MEDIA_CONNECT_TIMEOUT_SECONDS=value), acs_active=True)
+
+
+def test_connect_timeout_ceiling_accepts_at_boundary():
+    cfg = load_bridge_config(acs_env(MEDIA_CONNECT_TIMEOUT_SECONDS="60"), acs_active=True)
+    assert cfg.media_connect_timeout == 60.0
 
 
 @pytest.mark.parametrize("value", ["٥", "1_000", "1e3", "0x10"])
@@ -248,10 +280,21 @@ def test_non_ascii_and_non_plain_digit_numbers_rejected(value):
         load_bridge_config(acs_env(MAX_CALL_SECONDS=value), acs_active=True)
 
 
-@pytest.mark.parametrize("body", ['{"x": NaN}', '{"x": Infinity}', '{"x": -Infinity}'])
+@pytest.mark.parametrize("body", ['{"x": NaN}', '{"x": Infinity}', '{"x": -Infinity}', '{"x": 1e999}', '{"x": -1e400}'])
 def test_interim_response_rejects_non_finite_json_constants(body):
     with pytest.raises(BridgeConfigError, match="INTERIM_RESPONSE_JSON"):
         load_bridge_config(acs_env(INTERIM_RESPONSE_JSON=body), acs_active=True)
+
+
+def test_interim_response_true_false_null_pass_through():
+    cfg = load_bridge_config(acs_env(INTERIM_RESPONSE_JSON='{"a": true, "b": false, "c": null}'), acs_active=True)
+    assert dict(cfg.interim_response) == {"a": True, "b": False, "c": None}
+
+
+def test_deeply_nested_interim_response_does_not_leak_recursion_error():
+    nested = '{"a":' * 998 + "1" + "}" * 998
+    with pytest.raises(BridgeConfigError):
+        load_bridge_config(acs_env(INTERIM_RESPONSE_JSON=nested), acs_active=True)
 
 
 def test_interim_response_is_frozen_recursively():
