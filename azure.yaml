@@ -1,0 +1,52 @@
+name: voice-live-agent
+metadata:
+  template: voice-live-agent@0.1.0
+requiredVersions:
+  azd: ">=1.14.0"
+infra:
+  provider: bicep
+  path: infra
+services:
+  app:
+    project: server
+    host: containerapp
+    language: python
+    docker:
+      path: Dockerfile
+      remoteBuild: true
+      buildArgs:
+        - TELEPHONY=${TELEPHONY_PROVIDER}
+hooks:
+  preprovision:
+    shell: pwsh
+    run: ./hooks/preprovision.ps1
+    interactive: true
+    continueOnError: false
+  predeploy:
+    shell: pwsh
+    run: ./hooks/predeploy.ps1
+    continueOnError: false
+  postdeploy:
+    shell: pwsh
+    run: ./hooks/postdeploy.ps1
+    interactive: true
+    continueOnError: true
+pipeline:
+  variables:
+    - AZURE_LOCATION
+    - AZURE_RESOURCE_GROUP
+    - AZURE_CONTAINER_REGISTRY_ENDPOINT
+    - SERVICE_API_ENDPOINTS
+    - AZURE_VOICE_LIVE_ENDPOINT
+    - AZURE_VOICE_LIVE_MODEL
+    - TWILIO_ACCOUNT_SID
+    - INFOBIP_API_BASE_URL
+    - SINCH_APPLICATION_KEY
+    - BANDWIDTH_ACCOUNT_ID
+    - BANDWIDTH_CLIENT_ID
+    - BANDWIDTH_APPLICATION_ID
+  secrets:
+    - TWILIO_AUTH_TOKEN
+    - INFOBIP_API_KEY
+    - SINCH_APPLICATION_SECRET
+    - BANDWIDTH_CLIENT_SECRET
