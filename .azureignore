@@ -1,0 +1,11 @@
+server/.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.log
+*.tmp
+*.bak
+.devcontainer/
+.github/
+docs/
+infra/
