@@ -43,15 +43,20 @@ def _number_from_identifier(identifier: object) -> str | None:
         return None
     phone_number = identifier.get("phoneNumber")
     phone = phone_number.get("value") if isinstance(phone_number, Mapping) else None
+    phone = phone if isinstance(phone, str) else None
     raw_id = identifier.get("rawId")
     return phone or (raw_id if isinstance(raw_id, str) else None)
 
 
-def called_number_from_event(data: Mapping) -> str | None:
+def called_number_from_event(data: object) -> str | None:
+    if not isinstance(data, Mapping):
+        return None
     return _number_from_identifier(data.get("to"))
 
 
-def caller_number_from_event(data: Mapping) -> str | None:
+def caller_number_from_event(data: object) -> str | None:
+    if not isinstance(data, Mapping):
+        return None
     return _number_from_identifier(data.get("from"))
 
 

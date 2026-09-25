@@ -51,6 +51,7 @@ def test_garbage_stays_unmatchable(raw, expected):
         ("+25551234", True),
         ("+2555123", False),
         ("+25551234567890", True),
+        ("+255512345678901", True),
         ("+2555123456789012", False),
         # an 11-digit non-NANP number is still valid via the "other" pattern
         ("+25551234567", True),
@@ -99,3 +100,13 @@ def test_event_extraction_non_dict_identifier_does_not_raise():
     assert called_number_from_event({"to": "4:+14165551234"}) is None
     assert called_number_from_event({"to": {"phoneNumber": "+14165551234"}}) is None
     assert called_number_from_event({"to": []}) is None
+
+
+def test_event_extraction_non_dict_payload_does_not_raise():
+    assert called_number_from_event(None) is None
+    assert caller_number_from_event(None) is None
+    assert called_number_from_event("not-a-dict") is None
+
+
+def test_event_extraction_non_string_phone_value_is_ignored():
+    assert called_number_from_event({"to": {"phoneNumber": {"value": 14165551234}, "rawId": "4:+14165551234"}}) == "4:+14165551234"
