@@ -19,6 +19,13 @@ def test_valid_acs_config():
     assert cfg.enable_web_client is False
 
 
+def test_media_ws_token_excluded_from_repr():
+    # BridgeConfig is stored in app.config["BRIDGE"] (U05), reachable from anywhere in the app,
+    # so its repr must never leak the media websocket secret via a stray log/traceback.
+    cfg = load_bridge_config(acs_env(), acs_active=True)
+    assert TOKEN not in repr(cfg)
+
+
 def test_routing_keys_are_normalized():
     routes = parse_routing('{"(416) 555-1234": {"project": "p", "agent": "a", "version": "10"}}')
     assert list(routes) == ["+14165551234"]
