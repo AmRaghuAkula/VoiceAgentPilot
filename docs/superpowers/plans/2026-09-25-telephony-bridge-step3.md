@@ -12,6 +12,7 @@
 
 ## Global Constraints
 
+- **Each task below is one unit: one session, one branch, one PR** (D-011, D-012 in `docs/DECISIONS.md`). The branch names are in `docs/STATUS.md` §1. Cut the branch from the latest `main` at the start of the task. At the end, run the full suite, the Opus `/code-review`, and `cso` on Opus, then open the PR, merge it, delete the branch, and **stop**. The `git commit` steps inside a task all land on that task's single branch. Follow [CLAUDE.md](../../../CLAUDE.md) §4–§6 around every task.
 - There must be **no real-estate words, agent names, project names or phone numbers in code**. Test fixtures use neutral values such as `"proj"`, `"agent-a"` and `+14165551234`.
 - The agent version must be pinned. A routing `version` must match `^\d+$` (as a string); `"latest"` is never allowed.
 - The bridge sends **no `instructions`, `voice`, `turn_detection`, noise or echo settings** to Voice Live in agent mode. The only optional extra field is `interim_response`, taken from `INTERIM_RESPONSE_JSON`.
@@ -72,15 +73,17 @@
 **Interfaces:**
 - Produces: the `load_server`, `logs` and `fake_acs` fixtures in `server/tests/conftest.py`, used by every later task.
 
-- [ ] **Step 1: Install uv and rename the branch** (repo root)
+- [ ] **Step 1: Install uv and cut the unit branch from the latest `main`** (repo root)
 
 ```bash
 python -m pip install --user uv
 python -m uv --version
-git status --short
-git branch -m design/telephony-bridge feat/telephony-bridge-step3
+git fetch --prune origin
+git checkout main && git pull --ff-only origin main
+git branch -a
+git checkout -b feat/tb-t00-foundation
 ```
-Expected: the uv version prints and `git status` is clean.
+Expected: the uv version prints, and `git branch -a` shows only `main`/`origin/main` before the checkout. If any other branch exists, stop (CLAUDE.md §4).
 
 - [ ] **Step 2: Merge the upstream accelerator**
 
