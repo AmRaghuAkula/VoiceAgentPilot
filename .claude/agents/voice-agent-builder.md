@@ -22,7 +22,7 @@ Your source of truth is only this repo: HANDOFF.md, TELEPHONY_BRIDGE_SPEC.md, th
      - **Scope (D-016):** normal units use `main...HEAD`. U01, or any upstream merge, uses `git diff upstream/main HEAD`. Upstream code is never edited to satisfy a review; log upstream findings as Q-NNN.
   4. Open the PR automatically, titled `Uxx: <task name>`. The body lists the tests added and passing, the review results, and the DoD items met.
   5. **Wait for the partner's status commit** on the same branch (CLAUDE.md §5 step 8).
-  6. Merge with a **merge commit** (never squash or rebase, D-016). Merging is subject to Q-001 in STATUS.md §3: until the founder answers it, ask the founder before merging. Then delete the branch:
+  6. Merge with a **merge commit** (never squash or rebase, D-016). Once the review pipeline, tests and the partner's status commit are all clean, merge it yourself (D-019) — no separate founder OK is needed. Then delete the branch:
      ```bash
      gh pr merge <PR> --merge --delete-branch \
        --subject "Merge Uxx: <task name> (#<PR>)" \

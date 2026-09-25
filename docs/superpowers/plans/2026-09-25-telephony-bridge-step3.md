@@ -19,11 +19,10 @@
     2. `/code-review` and `cso`, both on Opus.
     3. Open the PR.
     4. The partner's status commit on the same branch.
-    5. The founder's OK to merge (while Q-001 is open).
-    6. Merge commit.
-    7. Delete the branch.
-    8. Daily email.
-    9. **Stop.**
+    5. Merge commit (the builder merges its own PR, D-019).
+    6. Delete the branch.
+    7. Daily email.
+    8. **Stop.**
 - **Commit trailers:** every `git commit -m "…"` in this plan is shorthand. Append `-m "Co-Authored-By: <the real trailer of the model doing the work>"` to it.
 - There must be **no real-estate words, agent names, project names or phone numbers in code**. Test fixtures use neutral values such as `"proj"`, `"agent-a"` and `+14165551234`.
 - The agent version must be pinned. A routing `version` must match `^\d+$` (as a string); `"latest"` is never allowed.

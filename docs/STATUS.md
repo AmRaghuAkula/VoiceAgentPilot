@@ -64,7 +64,7 @@ Status values: `OPEN` · `ANSWERED` (record the answer and link a D-NNN if it be
 
 | ID | Question | Owner | Blocks | Status |
 | --- | --- | --- | --- | --- |
-| Q-001 | **Who merges PRs?** Proposed default: the builder merges its own PR once the Opus review, `cso` and tests all pass, then deletes the branch. That lets a session close with a single branch. The alternative is that the founder merges every PR, which leaves each session open until the founder acts. | Founder | Closing every unit, U00 onwards | OPEN |
+| Q-001 | Who merges PRs? | Founder | Closing every unit, U00 onwards | ANSWERED: the builder merges its own PR once Opus review, `cso` and tests all pass, then deletes the branch (see D-019). |
 | Q-002 | Buy the ACS test number (Option B subscription). | Founder + Cowork | M6 | OPEN |
 | Q-003 | Confirm the region of `hireastra-resource`. | Cowork | M6 | OPEN |
 | Q-004 | Bridge identity at deploy: keep the accelerator's user-assigned identity, or switch to system-assigned (spec §6)? Whichever is chosen gets Foundry User. | Founder | M6 | OPEN |

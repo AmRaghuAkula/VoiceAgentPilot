@@ -100,7 +100,7 @@ Once U01 has merged (after that, `server/` exists), also run: `cd server && pyth
    Log any finding in upstream code as a Q-NNN for the production security review. Never edit upstream code to satisfy a review.
 7. **Builder — open the PR** (automatically, once both reviews pass). Title: `Uxx: <task name>`. The body lists the unit, the tests added and passing, the review results, and the DoD items met.
 8. **Partner — status updates on the same branch.** Update STATUS.md: this unit becomes `CLOSED` with its PR number, the next unit becomes `NEXT`, and the §2 audit rows and §3 questions are updated. Append any DECISIONS.md entries. Commit and push to the unit's branch. This is **part of the unit's PR, not a new branch.**
-9. **Builder — merge with a merge commit, then delete the branch** (D-016: never squash or rebase, because that would break the upstream history). Merging is subject to Q-001 in STATUS.md §3: until the founder answers it, ask the founder before merging.
+9. **Builder — merge with a merge commit, then delete the branch** (D-016: never squash or rebase, because that would break the upstream history). The builder merges its own PR once every gate above is clean (D-019) — no separate founder OK is needed.
    ```bash
    gh pr merge <PR> --merge --delete-branch \
      --subject "Merge Uxx: <task name> (#<PR>)" \

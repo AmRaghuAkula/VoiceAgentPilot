@@ -94,3 +94,7 @@ The partner commits the STATUS.md and DECISIONS.md updates to the unit's branch 
 | Anything else | Stop |
 
 **Why:** without these rules, a founder merge between sessions, an interrupted session, or a founder answer to an Open Question would each leave the protocol with no legal next step. **Source:** the second Opus review of the governance docs (U00).
+
+### D-019 · 2026-09-25 · The builder merges its own PRs (answers Q-001)
+Once a unit's PR has a clean Opus code review, a clean `cso` (where applicable), a passing test suite, and the partner's status commit, the builder merges it with a merge commit and deletes the branch — without waiting for the founder to merge it manually.
+**Why:** it lets a session close itself instead of staying open until the founder acts, while the review pipeline (Opus + `cso` + tests) already stands in for the founder's own review, per the founder's standing rule. **Source:** founder, answering Q-001.
