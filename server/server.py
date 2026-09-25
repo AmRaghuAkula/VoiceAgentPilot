@@ -34,7 +34,7 @@ except BridgeConfigError as exc:
 # App configuration
 # ---------------------------------------------------------------------------
 
-app = Quart(__name__)
+app = Quart(__name__, static_folder="static" if bridge.enable_web_client else None)
 app.config["AZURE_VOICE_LIVE_API_KEY"] = os.getenv("AZURE_VOICE_LIVE_API_KEY", "")
 app.config["AZURE_VOICE_LIVE_ENDPOINT"] = bridge.voice_live_endpoint
 app.config["BRIDGE"] = bridge
@@ -107,10 +107,13 @@ if _provider_ready and _provider_info:
     _provider_info.register_routes(app, call_manager)
     logger.info("Registered routes for provider: %s", _provider_info.display_name)
 else:
-    logger.warning("Telephony routes not registered — only web client available")
+    logger.warning(
+        "Telephony routes not registered%s",
+        " — web client available" if bridge.enable_web_client else " — no telephony routes and web client disabled",
+    )
 
 # ---------------------------------------------------------------------------
-# Routes: Web client (always available)
+# Routes: Web client (only when bridge.enable_web_client is true — D-007)
 # ---------------------------------------------------------------------------
 
 
