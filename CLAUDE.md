@@ -34,7 +34,9 @@ When a single Claude session plays both roles, it still follows both sets of rul
 
 **Only one non-`main` branch may exist at any time, locally and on the remote.** Branch names come from the units table in [docs/STATUS.md](docs/STATUS.md) §1.
 
-**Status updates ride inside the unit's own PR (D-017).** Before the PR merges, the partner commits the STATUS.md and DECISIONS.md updates to the unit's branch, so `main` is always accurate the moment it merges. There is never a separate status branch.
+**Status updates ride inside the unit's own PR (D-017).** Before the PR merges, the partner commits the STATUS.md and DECISIONS.md updates to the unit's branch, so `main` is always accurate the moment it merges.
+
+**The only exception is a status-only PR (D-018).** It's used when status must change and no unit branch is in flight, for example a founder answer to a Q-NNN, or a partner-only planning session. The branch is `docs/status-YYYY-MM-DD`, it follows the same one-branch rule, and it is opened, merged and deleted in the same session. It needs no review, because it has no code and no design content.
 
 ---
 
@@ -47,9 +49,15 @@ When a single Claude session plays both roles, it still follows both sets of rul
    git checkout main && git pull --ff-only origin main
    git branch -a
    ```
-   `git branch -a` may show only `main`, `remotes/origin/main` and `remotes/origin/HEAD -> origin/main`.
-   **One exception:** the branch of the unit that `main`'s STATUS.md §1 shows as `NEXT` may exist if it has an open PR (for example, it was waiting on the founder to merge). In that case **resume it**: get that PR merged and the branch deleted before anything else.
-   **Any other branch → stop** and raise it with the founder.
+   Then handle whatever `git branch -a` shows. Always-allowed entries: `main`, `remotes/origin/main`, `remotes/origin/HEAD -> origin/main`.
+
+   | You see | What it means | Do this |
+   | --- | --- | --- |
+   | Nothing else | Normal | Continue to step 2 |
+   | A local branch that is **already merged** into `main` (`git branch --merged main` lists it; its remote is gone) | The founder merged the PR between sessions | Delete it: `git branch -d <branch>`. Then continue |
+   | The branch of the unit `main` shows as `NEXT`, **with an open PR** | Last session's PR is waiting on a merge | **Resume it**: make sure the partner's status commit is on it (§5 step 8), then merge and delete (§5 step 9). **This merge is this session's unit.** Send the email and stop; the newly `NEXT` unit waits for the next session |
+   | The branch of the unit `main` shows as `NEXT`, **with no PR** | Last session was interrupted mid-unit | **Resume it**: check it out and continue at §5 step 4. This is this session's unit |
+   | Anything else | A stray branch | **Stop.** Don't create any branch. Report it to the founder in chat and in the email |
 2. **Read [docs/STATUS.md](docs/STATUS.md).**
    - §1: which unit is `NEXT`.
    - §3: any `OPEN` question that blocks it.
@@ -60,7 +68,7 @@ When a single Claude session plays both roles, it still follows both sets of rul
 
 ### Fresh machine / fresh clone bootstrap
 
-This applies after unit U01 has merged. Run it once per clone, before the first session on that machine:
+Run this once per clone, before any commit on that machine. It is safe to re-run.
 
 ```bash
 git config user.name "Raghu Akula"
@@ -68,10 +76,9 @@ git config user.email "raghunagendra.akula@hotmail.com"
 git remote get-url upstream 2>/dev/null || git remote add upstream https://github.com/Azure-Samples/call-center-voice-agent-accelerator.git
 git fetch upstream
 python -m pip install --user uv
-cd server && python -m uv sync --extra acs --group dev
 ```
 
-Before U01 has merged, there is no `server/` folder yet. U01 (plan Task 0) is itself the bootstrap.
+Once U01 has merged (after that, `server/` exists), also run: `cd server && python -m uv sync --extra acs --group dev`.
 
 ## 5. Per-unit execution loop
 
@@ -81,15 +88,23 @@ Before U01 has merged, there is no `server/` folder yet. U01 (plan Task 0) is it
 4. **Builder — implement test-first**, exactly as the plan task specifies. If the plan is wrong or ambiguous, stop and hand it back to the partner. Do not redesign on the fly.
 5. **Builder — run the whole test suite:** `cd server && python -m uv run pytest -q`. It must all pass.
 6. **Builder — review pipeline (D-013).** Fix and re-run each step until it's clean.
-   1. Opus `/code-review` on **our** diff.
-   2. `cso` on Opus on the same diff. This step is skipped for docs-only PRs.
+   1. `/code-review` **on Opus** on our diff.
+   2. `cso` **on Opus** on the same diff. This step is skipped for docs-only PRs.
 
-   **Review scope (D-016):** code imported from Microsoft's accelerator is out of scope for fixing. When a unit imports or merges upstream code (U01, and any later `git merge upstream/main`), review only the changes *we* made. Log any finding in upstream code as a Q-NNN for the production security review. Never edit upstream code to satisfy a review.
-7. **Builder — open the PR** (automatically, once both reviews pass). Title: `U0N: <task name>`. The body lists the unit, the tests added and passing, the review results, and the DoD items met.
+   **How to get Opus when the session is on Sonnet:** dispatch each review as a subagent with the model set to Opus: `Agent(model: "opus", prompt: "Run the <code-review | cso> skill on <diff scope> …")`. If that's unavailable, ask the founder to `/model opus` for the review step, then switch back.
+
+   **Review scope (D-016):** code imported from Microsoft's accelerator is out of scope for fixing.
+   - **Normal units:** the scope is `main...HEAD`.
+   - **U01 and any later upstream merge:** the scope is **`git diff upstream/main HEAD`**. That is our tree compared with the pure upstream tree, which is exactly our changes.
+
+   Log any finding in upstream code as a Q-NNN for the production security review. Never edit upstream code to satisfy a review.
+7. **Builder — open the PR** (automatically, once both reviews pass). Title: `Uxx: <task name>`. The body lists the unit, the tests added and passing, the review results, and the DoD items met.
 8. **Partner — status updates on the same branch.** Update STATUS.md: this unit becomes `CLOSED` with its PR number, the next unit becomes `NEXT`, and the §2 audit rows and §3 questions are updated. Append any DECISIONS.md entries. Commit and push to the unit's branch. This is **part of the unit's PR, not a new branch.**
 9. **Builder — merge with a merge commit, then delete the branch** (D-016: never squash or rebase, because that would break the upstream history). Merging is subject to Q-001 in STATUS.md §3: until the founder answers it, ask the founder before merging.
    ```bash
-   gh pr merge <PR> --merge --delete-branch
+   gh pr merge <PR> --merge --delete-branch \
+     --subject "Merge Uxx: <task name> (#<PR>)" \
+     --body "Co-Authored-By: <the trailer of the model doing the work>"
    git checkout main && git pull --ff-only origin main
    git fetch --prune origin
    git branch -d <branch> 2>/dev/null || true
@@ -151,7 +166,7 @@ Modeled on HireAstra's rule, which was written after a real incident: code was r
 - [ ] No real-estate words, agent names or phone numbers in `server/app/` or `server/server.py`.
 - [ ] No secrets or `.env` files committed. New env vars are added to `server/.env.sample`.
 - [ ] The Opus code review is clean. `cso` is clean (for code PRs). Both are scoped to our changes (D-016).
-- [ ] STATUS.md and DECISIONS.md are updated **inside the unit's PR** (§5 step 8).
+- [ ] STATUS.md and DECISIONS.md are updated **inside the unit's PR** (§5 step 8), or in a status-only PR (§3) when no unit is in flight.
 - [ ] The PR is merged with a merge commit, and the branch is deleted locally and on the remote. `git branch -a` shows `main` only.
 - [ ] The daily summary email is sent.
 

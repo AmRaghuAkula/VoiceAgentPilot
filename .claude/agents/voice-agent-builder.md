@@ -16,14 +16,17 @@ Your source of truth is only this repo: HANDOFF.md, TELEPHONY_BRIDGE_SPEC.md, th
 - **Implementing exactly one unit per session:** the plan task the partner proposed and the founder approved. Work test-first, exactly as the plan task specifies.
 - **The per-PR pipeline (D-013), with no step skipped.** This is CLAUDE.md §5 steps 5–9.
   1. Implement, then run the full suite: `cd server && python -m uv run pytest -q`. It must all pass.
-  2. Opus `/code-review` on **our** diff. Fix and re-run until it's clean.
-  3. `cso` on Opus on the same diff. Fix and re-run until it's clean. This step is skipped for docs-only PRs.
-     - **Scope (D-016):** Microsoft's upstream code is never edited to satisfy a review. Log findings in upstream code as Q-NNN.
-  4. Open the PR automatically, titled `U0N: <task name>`. The body lists the tests added and passing, the review results, and the DoD items met.
+  2. `/code-review` **on Opus** on **our** diff. Fix and re-run until it's clean.
+  3. `cso` **on Opus** on the same diff. Fix and re-run until it's clean. This step is skipped for docs-only PRs.
+     - **On a Sonnet session:** run each review as a subagent with `model: "opus"`. If that's unavailable, ask the founder to switch.
+     - **Scope (D-016):** normal units use `main...HEAD`. U01, or any upstream merge, uses `git diff upstream/main HEAD`. Upstream code is never edited to satisfy a review; log upstream findings as Q-NNN.
+  4. Open the PR automatically, titled `Uxx: <task name>`. The body lists the tests added and passing, the review results, and the DoD items met.
   5. **Wait for the partner's status commit** on the same branch (CLAUDE.md §5 step 8).
   6. Merge with a **merge commit** (never squash or rebase, D-016). Merging is subject to Q-001 in STATUS.md §3: until the founder answers it, ask the founder before merging. Then delete the branch:
      ```bash
-     gh pr merge <PR> --merge --delete-branch
+     gh pr merge <PR> --merge --delete-branch \
+       --subject "Merge Uxx: <task name> (#<PR>)" \
+       --body "Co-Authored-By: <the trailer of the model doing the work>"
      git checkout main && git pull --ff-only origin main
      git fetch --prune origin
      git branch -d <branch> 2>/dev/null || true
@@ -38,8 +41,11 @@ Your source of truth is only this repo: HANDOFF.md, TELEPHONY_BRIDGE_SPEC.md, th
 
 - **At most one non-`main` branch exists, locally and on the remote.**
   - Before cutting a branch, the tree must be clean (`git status --short` empty). Then run `git fetch --prune && git branch -a`.
-  - Allowed entries are `main`, `remotes/origin/main` and `remotes/origin/HEAD`. There is one exception: the `NEXT` unit's own branch may exist if its PR is still open, and then you resume it (CLAUDE.md §4).
-  - Anything else: stop and raise it. Don't branch anyway.
+  - Handle what you see using the table in CLAUDE.md §4 step 1:
+    - an already-merged leftover → delete it;
+    - the `NEXT` unit's branch, with or without a PR → resume it;
+    - anything else → stop.
+  - Never cut a new branch while another exists.
 - **Always cut from the latest `main`:** `git checkout main && git pull --ff-only`. Use the branch name from STATUS.md §1.
 - **A branch's lifecycle is:** cut → implement → review pipeline → PR → partner's status commit → merge commit → delete. Deleting the branch is part of finishing the unit, not a later clean-up. Use the commands in the pipeline above.
 

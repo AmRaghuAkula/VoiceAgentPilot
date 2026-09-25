@@ -1,6 +1,6 @@
 # Status
 
-The **first file every session reads**. It is the only place live status is tracked. Definitions (what "done" means and what each unit tests) are in the [milestone doc](superpowers/plans/2026-09-25-telephony-bridge-milestones.md). The partner updates this file at the end of every session (see [CLAUDE.md](../CLAUDE.md) → Session-end protocol).
+The **first file every session reads**. It is the only place live status is tracked. Definitions (what "done" means and what each unit tests) are in the [milestone doc](superpowers/plans/2026-09-25-telephony-bridge-milestones.md). The partner updates it **inside each unit's PR, before the PR merges** (D-017). When no unit is in flight, updates go in a status-only PR (D-018). See [CLAUDE.md](../CLAUDE.md) §3 and §5 step 8.
 
 Last updated: 2026-09-25
 
@@ -54,6 +54,7 @@ This table is updated **inside each unit's own PR** (D-017), so what `main` show
 | 2026-09-25 | U00 | Design spec rev 1 → rev 5 | — | Four Opus design-review rounds. Accepted by the founder (D-008). |
 | 2026-09-25 | U00 | Implementation plan written | — | 12 TDD tasks; SDK APIs checked against azure-ai-voicelive 1.3.0 and ACS Call Automation 1.6.0. |
 | 2026-09-25 | U00 | Governance set up | — | Partner/builder agents, CLAUDE.md session protocol, STATUS.md, DECISIONS.md, one unit per session/branch/PR (D-009 to D-015). |
+| 2026-09-25 | U00 | Opus review of governance docs, 2 rounds | — | 20 findings fixed. Added D-016 (merge commits, upstream out of review scope), D-017 (status inside the unit PR) and D-018 (status-only PRs, branch-resume rules). |
 
 ---
 

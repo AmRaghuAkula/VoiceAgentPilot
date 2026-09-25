@@ -80,3 +80,17 @@ Every PR merges with `gh pr merge --merge` (a merge commit), never squash or reb
 ### D-017 · 2026-09-25 · Status updates ride inside the unit's own PR
 The partner commits the STATUS.md and DECISIONS.md updates to the unit's branch after the PR opens and before it merges, so `main` is accurate the moment the unit merges. There are no separate status branches. The only branch allowed to survive a session is the `NEXT` unit's own branch with an open PR, and the next session resumes it first.
 **Why:** if the status is updated only on a feature branch, or on a separate branch after merge, `main` shows stale status and the next session wrongly flags the branch as a stray. **Source:** the Opus review of the governance docs (U00).
+
+### D-018 · 2026-09-25 · Status-only PRs and branch-resume rules (supersedes D-017 in part)
+**Status-only PRs.** When status must change and no unit is in flight (a founder answer to a Q-NNN, or a partner-only session), the partner uses a `docs/status-YYYY-MM-DD` branch. It follows the one-branch rule, is opened, merged and deleted in the same session, and needs no review.
+
+**Session start handles leftover branches by rule** (CLAUDE.md §4 step 1):
+
+| Leftover branch | Action |
+| --- | --- |
+| Already merged | Delete it |
+| The `NEXT` unit's branch, with an open PR | Resume it: merge it, and that merge is the session's unit |
+| The `NEXT` unit's branch, with no PR | Resume the implementation |
+| Anything else | Stop |
+
+**Why:** without these rules, a founder merge between sessions, an interrupted session, or a founder answer to an Open Question would each leave the protocol with no legal next step. **Source:** the second Opus review of the governance docs (U00).

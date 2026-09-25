@@ -8,7 +8,7 @@ Last updated: 2026-09-25 · Plan: [2026-09-25-telephony-bridge-step3.md](2026-09
 
 - **The unit of work is one plan task.** Each unit gets **one session, one branch and one PR**. There is no bundling: a session ends when its unit's PR has merged and its branch has been deleted.
 - **Milestones group those units** so progress is easy to read. A milestone is done when all of its units have merged and its definition of done below holds on `main`.
-- **Every unit's PR runs the full pipeline:** Opus code review → `cso` security review (on Opus) → auto-opened PR → merge → delete the branch.
+- **Every unit's PR runs the full lifecycle in [CLAUDE.md](../../../CLAUDE.md) §5:** Opus code review → `cso` on Opus → auto-opened PR → partner's status commit on the same branch → merge commit → delete the branch → daily email.
 - **Only one branch exists at a time.** The next unit's branch is cut from `main` only after the previous one has merged and been deleted.
 - **Live status lives only in [STATUS.md](../../STATUS.md):** unit status, PR numbers, test results and review results. This file holds definitions (what "done" means and what is tested), not live status, so the two can't drift apart.
 
