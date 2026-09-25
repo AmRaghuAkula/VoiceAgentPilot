@@ -15,8 +15,8 @@ This table is updated **inside each unit's own PR** (D-017), so what `main` show
 | Unit | Plan task | Milestone | Status | Branch | PR | Tests (pass/planned) | Opus review | cso |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | U00 | Governance, spec, plan | — | CLOSED | `docs/governance-and-bridge-plan` | [#1](https://github.com/AmRaghuAkula/VoiceAgentPilot/pull/1) | 0/0 | 2 rounds; findings fixed | n/a (docs only) |
-| U01 | Task 0 — foundation | M0 | NEXT | `feat/tb-t00-foundation` | — | 0/1 | — | — |
-| U02 | Task 1 — log mask | M1 | QUEUED | `feat/tb-t01-log-mask` | — | 0/7 | — | — |
+| U01 | Task 0 — foundation | M0 | CLOSED | `feat/tb-t00-foundation` | [#2](https://github.com/AmRaghuAkula/VoiceAgentPilot/pull/2) | 3/3 | 2 rounds; findings fixed | n/a (import/config/test scaffolding, no app security surface) |
+| U02 | Task 1 — log mask | M1 | NEXT | `feat/tb-t01-log-mask` | — | 0/7 | — | — |
 | U03 | Task 2 — routing | M1 | QUEUED | `feat/tb-t02-routing` | — | 0/20 | — | — |
 | U04 | Task 3 — bridge config | M1 | QUEUED | `feat/tb-t03-bridge-config` | — | 0/34 | — | — |
 | U05 | Task 4 — server wiring | M1 | QUEUED | `feat/tb-t04-server-wiring` | — | 0/5 | — | — |
@@ -42,7 +42,7 @@ This table is updated **inside each unit's own PR** (D-017), so what `main` show
 | M5 | not started |
 | M6–M8 | blocked (§3: Q-002 to Q-006) |
 
-**Unit tests passing overall:** 0 / ~151.
+**Unit tests passing overall:** 3 / ~153 (U01's plan tally was 1; two more tests were added during review to actually exercise `load_server`, see §2).
 
 ---
 
@@ -56,6 +56,8 @@ This table is updated **inside each unit's own PR** (D-017), so what `main` show
 | 2026-09-25 | U00 | Governance set up | — | Partner/builder agents, CLAUDE.md session protocol, STATUS.md, DECISIONS.md, one unit per session/branch/PR (D-009 to D-015). |
 | 2026-09-25 | U00 | Opus review of governance docs, 2 rounds | — | 20 findings fixed. Added D-016 (merge commits, upstream out of review scope), D-017 (status inside the unit PR) and D-018 (status-only PRs, branch-resume rules). |
 | 2026-09-25 | U00 | Q-001 answered; PR #1 opened and merged | [#1](https://github.com/AmRaghuAkula/VoiceAgentPilot/pull/1) | Founder: builder merges its own PRs (D-019). Branch `docs/governance-and-bridge-plan` deleted after merge. |
+| 2026-09-25 | U01 | Upstream accelerator imported | — | `git merge upstream/main --allow-unrelated-histories`, upstream SHA `a4f40bc`. README conflict resolved (ours kept; theirs moved to `docs/ACCELERATOR_README.md`). |
+| 2026-09-25 | U01 | SDK pins + pytest harness added, 2 Opus review rounds | [#2](https://github.com/AmRaghuAkula/VoiceAgentPilot/pull/2) | `azure-ai-voicelive>=1.3.0,<2`, `azure-communication-callautomation>=1.6.0,<2`. Review found a real bug (pytest's prepend import mode loaded the wrong `server` module — fixed with `--import-mode=importlib`) plus README-link and log-capture fixes. Smoke test grew from 1 to 3 planned tests to actually exercise `load_server`. Second round: 3 low-severity nits (env isolation, conftest double-import risk, caplog docstring), all fixed. |
 
 ---
 
