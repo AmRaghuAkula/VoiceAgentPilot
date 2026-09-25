@@ -16,8 +16,8 @@ This table is updated **inside each unit's own PR** (D-017), so what `main` show
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | U00 | Governance, spec, plan | — | CLOSED | `docs/governance-and-bridge-plan` | [#1](https://github.com/AmRaghuAkula/VoiceAgentPilot/pull/1) | 0/0 | 2 rounds; findings fixed | n/a (docs only) |
 | U01 | Task 0 — foundation | M0 | CLOSED | `feat/tb-t00-foundation` | [#2](https://github.com/AmRaghuAkula/VoiceAgentPilot/pull/2) | 3/3 | 2 rounds; findings fixed | n/a (import/config/test scaffolding, no app security surface) |
-| U02 | Task 1 — log mask | M1 | NEXT | `feat/tb-t01-log-mask` | — | 0/7 | — | — |
-| U03 | Task 2 — routing | M1 | QUEUED | `feat/tb-t02-routing` | — | 0/20 | — | — |
+| U02 | Task 1 — log mask | M1 | CLOSED | `feat/tb-t01-log-mask` | [#3](https://github.com/AmRaghuAkula/VoiceAgentPilot/pull/3) | 10/10 | 1 round; clean, low-severity notes only | n/a (pure string logic, no security surface) |
+| U03 | Task 2 — routing | M1 | NEXT | `feat/tb-t02-routing` | — | 0/20 | — | — |
 | U04 | Task 3 — bridge config | M1 | QUEUED | `feat/tb-t03-bridge-config` | — | 0/34 | — | — |
 | U05 | Task 4 — server wiring | M1 | QUEUED | `feat/tb-t04-server-wiring` | — | 0/5 | — | — |
 | U06 | Task 5 — expiry hooks | M2 | QUEUED | `feat/tb-t05-expiry-hooks` | — | 0/4 | — | — |
@@ -42,7 +42,7 @@ This table is updated **inside each unit's own PR** (D-017), so what `main` show
 | M5 | not started |
 | M6–M8 | blocked (§3: Q-002 to Q-006) |
 
-**Unit tests passing overall:** 3 / ~153 (U01's plan tally was 1; two more tests were added during review to actually exercise `load_server`, see §2).
+**Unit tests passing overall:** 13 / ~156 (U01's plan tally was 1, grew to 3; U02's tally was 7, grew to 10 after the review's boundary/int-input cases; see §2).
 
 ---
 
@@ -58,6 +58,7 @@ This table is updated **inside each unit's own PR** (D-017), so what `main` show
 | 2026-09-25 | U00 | Q-001 answered; PR #1 opened and merged | [#1](https://github.com/AmRaghuAkula/VoiceAgentPilot/pull/1) | Founder: builder merges its own PRs (D-019). Branch `docs/governance-and-bridge-plan` deleted after merge. |
 | 2026-09-25 | U01 | Upstream accelerator imported | — | `git merge upstream/main --allow-unrelated-histories`, upstream SHA `a4f40bc`. README conflict resolved (ours kept; theirs moved to `docs/ACCELERATOR_README.md`). |
 | 2026-09-25 | U01 | SDK pins + pytest harness added, 2 Opus review rounds | [#2](https://github.com/AmRaghuAkula/VoiceAgentPilot/pull/2) | `azure-ai-voicelive>=1.3.0,<2`, `azure-communication-callautomation>=1.6.0,<2`. Review found a real bug (pytest's prepend import mode loaded the wrong `server` module — fixed with `--import-mode=importlib`) plus README-link and log-capture fixes. Smoke test grew from 1 to 3 planned tests to actually exercise `load_server`. Second round: 3 low-severity nits (env isolation, conftest double-import risk, caplog docstring), all fixed. |
+| 2026-09-25 | U02 | `mask_number()` added, 1 Opus review round | [#3](https://github.com/AmRaghuAkula/VoiceAgentPilot/pull/3) | No real defects found. Added D-021 (the masking rule's correct decision entry, correcting U02's own commit message which had miscited D-006). Added boundary (4/5-digit) and int-input tests per the review's low-severity notes; skipped two theoretical-only notes (non-phone rawId cosmetic mislabeling, float input). Test tally grew from 7 planned to 10. |
 
 ---
 
