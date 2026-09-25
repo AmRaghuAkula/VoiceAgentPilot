@@ -78,12 +78,13 @@
 ```bash
 python -m pip install --user uv
 python -m uv --version
+git status --short
 git fetch --prune origin
 git checkout main && git pull --ff-only origin main
 git branch -a
 git checkout -b feat/tb-t00-foundation
 ```
-Expected: the uv version prints, and `git branch -a` shows only `main`/`origin/main` before the checkout. If any other branch exists, stop (CLAUDE.md §4).
+Expected: the uv version prints, and `git status --short` is empty. Before the checkout, `git branch -a` shows only `main`, `remotes/origin/main` and `remotes/origin/HEAD`. If the tree isn't clean or any other branch exists, stop (CLAUDE.md §4).
 
 - [ ] **Step 2: Merge the upstream accelerator**
 
@@ -101,7 +102,7 @@ mkdir -p docs
 git show upstream/main:README.md | sed 's#(docs/images/#(images/#g; s#"docs/images/#"images/#g' > docs/ACCELERATOR_README.md
 git checkout --ours README.md
 git add README.md docs/ACCELERATOR_README.md
-git commit --no-edit
+git commit -m "Merge upstream call-center-voice-agent-accelerator" -m "Co-Authored-By: <trailer of the model doing the work>"
 git log --oneline -1 upstream/main
 ```
 Expected: the merge commit exists, and `upstream/main` is `a4f40bc` (write down whatever SHA prints; Task 11 records it).

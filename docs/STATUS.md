@@ -8,12 +8,14 @@ Last updated: 2026-09-25
 
 ## §1 Unit dashboard
 
-Status values: `NEXT` (the one unit the next session works on) · `IN PROGRESS` · `CLOSED` (PR merged and branch deleted) · `QUEUED` · `BLOCKED`.
+Status values: `NEXT` (the one unit the next session works on; its branch may exist only if its PR is open) · `CLOSED` (PR merged and branch deleted) · `QUEUED` · `BLOCKED`.
+
+This table is updated **inside each unit's own PR** (D-017), so what `main` shows is always current.
 
 | Unit | Plan task | Milestone | Status | Branch | PR | Tests (pass/planned) | Opus review | cso |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| U00 | Governance, spec, plan | — | IN PROGRESS | `docs/governance-and-bridge-plan` | — | 0/0 | — | n/a (docs only) |
-| U01 | Task 0 — foundation | M0 | NEXT | `feat/tb-t00-foundation` | — | 0/1 | — | — |
+| U00 | Governance, spec, plan | — | NEXT | `docs/governance-and-bridge-plan` | — | 0/0 | 2 rounds; findings fixed | n/a (docs only) |
+| U01 | Task 0 — foundation | M0 | QUEUED | `feat/tb-t00-foundation` | — | 0/1 | — | — |
 | U02 | Task 1 — log mask | M1 | QUEUED | `feat/tb-t01-log-mask` | — | 0/7 | — | — |
 | U03 | Task 2 — routing | M1 | QUEUED | `feat/tb-t02-routing` | — | 0/20 | — | — |
 | U04 | Task 3 — bridge config | M1 | QUEUED | `feat/tb-t03-bridge-config` | — | 0/34 | — | — |

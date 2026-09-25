@@ -23,7 +23,7 @@ We build this over **many short sessions**. Nothing important may live only in s
 | --- | --- | --- |
 | **Raghu (founder)** | Business decisions, approvals, Azure sign-in and purchases, test calls, "go" for each unit | — |
 | **Cowork (Claude in chat)** | Azure portal work, region checks, pulling traces and logs | — |
-| **voice-agent-partner** ([definition](.claude/agents/voice-agent-partner.md)) | Picks the next unit, sequences work, writes specs and plans, raises and tracks Open Questions, runs the session-end protocol and sends the daily email | Write or edit code |
+| **voice-agent-partner** ([definition](.claude/agents/voice-agent-partner.md)) | Picks the next unit, sequences work, writes specs and plans, raises and tracks Open Questions, writes the status and decision updates, sends the daily email | Write or edit code |
 | **voice-agent-builder** ([definition](.claude/agents/voice-agent-builder.md)) | Implements exactly one approved unit, runs the review pipeline, opens, merges and deletes its branch | Prioritize, re-sequence, override the partner, start without a "go", write specs |
 
 When a single Claude session plays both roles, it still follows both sets of rules, and says which role it is acting in.
@@ -34,74 +34,91 @@ When a single Claude session plays both roles, it still follows both sets of rul
 
 **Only one non-`main` branch may exist at any time, locally and on the remote.** Branch names come from the units table in [docs/STATUS.md](docs/STATUS.md) §1.
 
+**Status updates ride inside the unit's own PR (D-017).** Before the PR merges, the partner commits the STATUS.md and DECISIONS.md updates to the unit's branch, so `main` is always accurate the moment it merges. There is never a separate status branch.
+
 ---
 
 ## 4. Session-start protocol (every session, in this order)
 
-1. **Sync and check branches.**
+1. **Check that the tree is clean, sync, and check branches.**
    ```bash
+   git status --short                      # must be empty; if not, stop and ask
    git fetch --prune origin
    git checkout main && git pull --ff-only origin main
    git branch -a
    ```
-   `git branch -a` must show only `main` (and `origin/main`), or else exactly the one branch that STATUS.md §1 marks `IN PROGRESS`. **If any other branch exists, stop** and raise it with the founder. Never start new work alongside a stray branch.
+   `git branch -a` may show only `main`, `remotes/origin/main` and `remotes/origin/HEAD -> origin/main`.
+   **One exception:** the branch of the unit that `main`'s STATUS.md §1 shows as `NEXT` may exist if it has an open PR (for example, it was waiting on the founder to merge). In that case **resume it**: get that PR merged and the branch deleted before anything else.
+   **Any other branch → stop** and raise it with the founder.
 2. **Read [docs/STATUS.md](docs/STATUS.md).**
-   - §1: which unit is `NEXT` (or `IN PROGRESS` from last time).
+   - §1: which unit is `NEXT`.
    - §3: any `OPEN` question that blocks it.
 3. **Read [docs/DECISIONS.md](docs/DECISIONS.md).** The unit's work must not contradict any entry.
 4. **Read the unit's task** in the current implementation plan, plus the design-spec sections that task cites.
 5. **Read §8 (Code Verification Protocol) below.**
 6. **Partner proposes; founder says go.** The partner states: "Next unit is Uxx (Task N — name). Blockers: none / Q-NNN. Model: Sonnet / Opus needed because …". **The builder does not start until the founder says go** (D-009).
 
-### Day-0 / fresh-machine bootstrap
+### Fresh machine / fresh clone bootstrap
 
-This applies if the `server/` folder doesn't exist yet or `uv` isn't installed. Unit U01 (plan Task 0) is the bootstrap: it installs `uv`, imports the accelerator and sets up the test harness. On a fresh clone after U01, run the following from `server/` before any code work:
+This applies after unit U01 has merged. Run it once per clone, before the first session on that machine:
 
 ```bash
+git config user.name "Raghu Akula"
+git config user.email "raghunagendra.akula@hotmail.com"
+git remote get-url upstream 2>/dev/null || git remote add upstream https://github.com/Azure-Samples/call-center-voice-agent-accelerator.git
+git fetch upstream
 python -m pip install --user uv
-python -m uv sync --extra acs --group dev
+cd server && python -m uv sync --extra acs --group dev
 ```
 
-## 5. Per-unit execution loop (builder)
+Before U01 has merged, there is no `server/` folder yet. U01 (plan Task 0) is itself the bootstrap.
 
-1. **Verify prerequisites.** Every earlier unit that this one depends on is `CLOSED` in STATUS.md §1. If not, stop.
-2. **Verify the plan's claims** (files, functions, signatures) with a quick grep or read before editing. Checking takes seconds; finding a mismatch mid-implementation costs hours.
-3. **Cut the branch** from the latest `main`, using the name from STATUS.md §1, and mark the unit `IN PROGRESS`.
-4. **Implement test-first**, exactly as the plan task specifies. If the plan is wrong or ambiguous, stop and hand it back to the partner. Do not redesign on the fly.
-5. **Run the whole test suite:** `cd server && python -m uv run pytest -q`. It must all pass.
-6. **Review pipeline (D-013):**
-   1. Opus `/code-review` on the diff. Fix and re-run until it's clean.
-   2. `cso` on Opus on the same diff. Fix and re-run until it's clean. This step is skipped for docs-only PRs.
-7. **Open the PR** (automatically, once both reviews pass). Title: `U0N: <task name>`. The body lists the unit, the tests added and passing, the review results, and the DoD items met.
-8. **Merge, then delete the branch** locally and on the remote. Who merges is governed by Q-001 until it is answered; until then, ask the founder.
-9. **Stop.** Hand over to the partner for the session-end protocol. Never start the next unit in the same session.
+## 5. Per-unit execution loop
 
-## 6. Session-end protocol (partner; every session, even short ones)
+1. **Builder — verify prerequisites.** Every earlier unit this one depends on is `CLOSED` in STATUS.md §1. If not, stop.
+2. **Builder — verify the plan's claims** (files, functions, signatures) with a quick grep or read before editing.
+3. **Builder — cut the branch** from the latest `main`, using the name from STATUS.md §1.
+4. **Builder — implement test-first**, exactly as the plan task specifies. If the plan is wrong or ambiguous, stop and hand it back to the partner. Do not redesign on the fly.
+5. **Builder — run the whole test suite:** `cd server && python -m uv run pytest -q`. It must all pass.
+6. **Builder — review pipeline (D-013).** Fix and re-run each step until it's clean.
+   1. Opus `/code-review` on **our** diff.
+   2. `cso` on Opus on the same diff. This step is skipped for docs-only PRs.
 
-1. **Branch hygiene:** `git fetch --prune && git branch -a` shows only `main`. If the unit's PR couldn't merge, the unit stays `IN PROGRESS`, the reason is logged in STATUS.md §2, and the branch is the one allowed open branch.
-2. **Update [docs/STATUS.md](docs/STATUS.md):**
-   - §1: unit status, PR number, tests passing, review results, next `NEXT`.
-   - §2: one audit row per event this session.
-   - §3: open, answer or close questions.
-3. **Update [docs/DECISIONS.md](docs/DECISIONS.md)** with any non-obvious choice made this session (append only).
-4. **Update the milestone doc** only if a milestone's *definition* changed. Live status belongs in STATUS.md.
-5. **Commit those doc updates** on the unit's branch before merge. If they come after merge, use a short `docs/status-YYYY-MM-DD` branch → PR → merge → delete, so they never sit uncommitted and the one-branch rule holds.
-6. **Send the daily summary email** to the founder at the address recorded in Claude's memory for this project (D-015). The email contains:
-   - **This session:** what was done, with unit IDs and PR numbers and links.
-   - **Milestone status:** each milestone with DoD met or not, and its units' status.
-   - **Tests:** passing / planned, overall and per milestone.
-   - **Reviews:** Opus and `cso` results per PR.
-   - **Blockers and open questions** that need the founder, especially anything marked "Founder" in §3.
-   - **Next session:** the `NEXT` unit, and whether it needs Opus.
+   **Review scope (D-016):** code imported from Microsoft's accelerator is out of scope for fixing. When a unit imports or merges upstream code (U01, and any later `git merge upstream/main`), review only the changes *we* made. Log any finding in upstream code as a Q-NNN for the production security review. Never edit upstream code to satisfy a review.
+7. **Builder — open the PR** (automatically, once both reviews pass). Title: `U0N: <task name>`. The body lists the unit, the tests added and passing, the review results, and the DoD items met.
+8. **Partner — status updates on the same branch.** Update STATUS.md: this unit becomes `CLOSED` with its PR number, the next unit becomes `NEXT`, and the §2 audit rows and §3 questions are updated. Append any DECISIONS.md entries. Commit and push to the unit's branch. This is **part of the unit's PR, not a new branch.**
+9. **Builder — merge with a merge commit, then delete the branch** (D-016: never squash or rebase, because that would break the upstream history). Merging is subject to Q-001 in STATUS.md §3: until the founder answers it, ask the founder before merging.
+   ```bash
+   gh pr merge <PR> --merge --delete-branch
+   git checkout main && git pull --ff-only origin main
+   git fetch --prune origin
+   git branch -d <branch> 2>/dev/null || true
+   git branch -a
+   ```
+   After this, `git branch -a` must show `main` only.
+10. **Partner — send the daily summary email** (§6). **Stop.** Never start the next unit in the same session.
 
-   Never skip the email because "not much happened". Send a short one instead.
+## 6. Daily summary email (partner; end of every session, even short ones)
+
+Send it through the Gmail connector to **raghu.akula@hireastra.ai** (D-015). It covers:
+
+- **This session:** what was done, with unit IDs and PR numbers and links.
+- **Milestone status:** each milestone with DoD met or not, and its units' status.
+- **Tests:** passing / planned, overall and per milestone.
+- **Reviews:** Opus and `cso` results per PR.
+- **Blockers and open questions** that need the founder, especially anything marked "Founder" in STATUS.md §3.
+- **Next session:** the `NEXT` unit, and whether it needs Opus.
+
+**If the unit's PR couldn't merge this session** (waiting on the founder), say so in the email. The branch stays as the one allowed branch, and the next session resumes it (§4 step 1).
+
+Never skip the email because "not much happened". Send a short one instead.
 
 ---
 
 ## 7. Stop-and-ask triggers (don't guess; raise an Open Question in STATUS.md §3)
 
 - A prerequisite unit isn't `CLOSED`.
-- A stray branch exists (session-start step 1).
+- A stray branch exists, or the working tree isn't clean (§4 step 1).
 - The plan or spec contradicts the actual code or the installed SDK.
 - The work would contradict an entry in DECISIONS.md.
 - The work touches anything in TELEPHONY_BRIDGE_SPEC.md §7 "Do not build".
@@ -133,9 +150,9 @@ Modeled on HireAstra's rule, which was written after a real incident: code was r
 - [ ] Every test the task specifies exists, and **the whole suite passes**.
 - [ ] No real-estate words, agent names or phone numbers in `server/app/` or `server/server.py`.
 - [ ] No secrets or `.env` files committed. New env vars are added to `server/.env.sample`.
-- [ ] The Opus code review is clean. `cso` is clean (for code PRs).
-- [ ] The PR is merged and the branch is deleted locally and on the remote.
-- [ ] STATUS.md §1/§2/§3 are updated; DECISIONS.md is appended if needed.
+- [ ] The Opus code review is clean. `cso` is clean (for code PRs). Both are scoped to our changes (D-016).
+- [ ] STATUS.md and DECISIONS.md are updated **inside the unit's PR** (§5 step 8).
+- [ ] The PR is merged with a merge commit, and the branch is deleted locally and on the remote. `git branch -a` shows `main` only.
 - [ ] The daily summary email is sent.
 
 ## 10. Locked rules (quick reference; details in DECISIONS.md)
@@ -144,9 +161,9 @@ Modeled on HireAstra's rule, which was written after a real incident: code was r
 - **Phone numbers** are masked `***1234` in every log. No numbers or secrets in URLs (D-006).
 - **Env vars:** the spec's names win over the accelerator's (D-003).
 - **Web debug client** is off unless `ENABLE_WEB_CLIENT=true`, never in a deployed environment (D-007).
-- **Upstream:** changes go in new files where possible; upstream files get small hooks only. `git merge upstream/main` must stay clean (D-002).
+- **Upstream:** changes go in new files where possible; upstream files get small hooks only. `git merge upstream/main` must stay clean (D-002). PRs are merged with merge commits, never squashed (D-016).
 - **Don't touch** `infra/`, `hooks/` or `azure.yaml`, and don't run `azd`, until M6 is unblocked.
-- **Commits:** author `Raghu Akula` (repo-local git config), plus the `Co-Authored-By:` trailer of the model doing the work.
+- **Commits:** author `Raghu Akula` (repo-local git config, see §4 bootstrap). Every commit message, including merge commits, ends with the `Co-Authored-By:` trailer of the model doing the work.
 
 ## 11. File map
 

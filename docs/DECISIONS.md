@@ -67,3 +67,16 @@ Mechanical work runs on Sonnet. Complex, architectural or subtle work pauses to 
 ### D-015 · 2026-09-25 · Milestones, test readiness and the end-of-session email
 Every implementation plan gets a milestone doc with, for each milestone, a definition of done, test coverage, test readiness and PR slots. At the end of every session, the partner sends the founder a summary email containing that status.
 **Why:** the founder follows progress from the email, without reading the repo. **Source:** founder standing rule.
+
+### D-016 · 2026-09-25 · Merge commits only; upstream code is out of review scope
+Every PR merges with `gh pr merge --merge` (a merge commit), never squash or rebase. The Opus review and `cso` cover only the changes *we* made. Findings in code imported from Microsoft's accelerator are logged as Q-NNN for the production security review, and are never fixed by editing upstream files.
+**Why:**
+- A squash would erase the upstream history that `git merge upstream/main` depends on (D-002).
+- Editing upstream files to satisfy a review would break the "upstream gets small hooks only" rule.
+- TELEPHONY_BRIDGE_SPEC.md §9 already notes the accelerator isn't audited, and a production security review is planned.
+
+**Source:** the Opus review of the governance docs (U00).
+
+### D-017 · 2026-09-25 · Status updates ride inside the unit's own PR
+The partner commits the STATUS.md and DECISIONS.md updates to the unit's branch after the PR opens and before it merges, so `main` is accurate the moment the unit merges. There are no separate status branches. The only branch allowed to survive a session is the `NEXT` unit's own branch with an open PR, and the next session resumes it first.
+**Why:** if the status is updated only on a feature branch, or on a separate branch after merge, `main` shows stale status and the next session wrongly flags the branch as a stray. **Source:** the Opus review of the governance docs (U00).
