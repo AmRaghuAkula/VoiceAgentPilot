@@ -33,6 +33,8 @@ Last updated: 2026-09-25 · Plan: [2026-09-25-telephony-bridge-step3.md](2026-09
 
 The design spec and this milestone doc land in the M0 PR, since nothing else can start without them. PR numbers are added to the table above as your review pipeline opens each one. M6 deploy changes (Bicep, config) get their own PR later, outside this plan.
 
+**Branch discipline:** only one of these branches exists at a time. Each is cut from `main` after the previous milestone's branch has merged **and been deleted** — never cut the next branch while the current one is still open. This repo now has two dedicated subagents enforcing the planner/builder split and this branch discipline: `voice-agent-partner` (`.claude/agents/voice-agent-partner.md`) owns sequencing and specs and never writes code; `voice-agent-builder` (`.claude/agents/voice-agent-builder.md`) owns implementation, runs the Opus review + `cso` pipeline per milestone, opens the PR, and deletes the branch once it merges — and never starts a milestone without sign-off from the partner and, where HANDOFF.md requires it, the founder.
+
 **Test readiness today:** all ~151 unit tests are **written out in full in the plan**, but **none exist in the repo or have run yet**. No code has been implemented. The 9 live acceptance tests (spec §8) can't run until M6.
 
 ---
