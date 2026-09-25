@@ -50,8 +50,9 @@ def _duplicate_key_hook(source: str):
         for key, value in pairs:
             if key in result:
                 # Any key containing a digit is masked, since it could be a phone number in any
-                # format (with separators, an extension, a typo) — mask_number()'s own "***"
-                # fallback keeps a key with no digits (a field name like "project") readable.
+                # format (with separators, an extension, a typo). mask_number() itself reduces a
+                # key with 1-3 digits to "***"; a key with no digits (a field name like "project")
+                # is left as-is for readability.
                 label = mask_number(key) if _HAS_DIGIT.search(key) else key
                 raise BridgeConfigError(f"{source} has a duplicate JSON key {label!r}")
             result[key] = value
@@ -67,7 +68,7 @@ def parse_routing(raw: str) -> dict[str, AgentRoute]:
         raise BridgeConfigError(f"AGENT_ROUTING_JSON is not valid JSON: {exc.msg}") from exc
     except BridgeConfigError:
         raise
-    except RecursionError as exc:
+    except (ValueError, RecursionError) as exc:
         raise BridgeConfigError(f"AGENT_ROUTING_JSON could not be parsed: {exc}") from exc
     if not isinstance(data, dict) or not data:
         raise BridgeConfigError("AGENT_ROUTING_JSON must be a non-empty JSON object")
@@ -174,7 +175,7 @@ def load_bridge_config(env: Mapping[str, str], *, acs_active: bool) -> BridgeCon
             raise BridgeConfigError("INTERIM_RESPONSE_JSON is not valid JSON") from exc
         except BridgeConfigError:
             raise
-        except RecursionError as exc:
+        except (ValueError, RecursionError) as exc:
             raise BridgeConfigError(f"INTERIM_RESPONSE_JSON could not be parsed: {exc}") from exc
 
     return BridgeConfig(

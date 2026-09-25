@@ -297,6 +297,16 @@ def test_deeply_nested_interim_response_does_not_leak_recursion_error():
         load_bridge_config(acs_env(INTERIM_RESPONSE_JSON=nested), acs_active=True)
 
 
+def test_over_long_integer_literal_does_not_leak_raw_value_error():
+    """Python's int-string conversion has a digit-count limit (>=3.11); exceeding it in a JSON
+    integer literal must still surface as BridgeConfigError, not a raw ValueError."""
+    huge_digits = "1" * 5000
+    with pytest.raises(BridgeConfigError):
+        parse_routing('{"+14165550123": {"project": "p", "agent": "a", "version": "1", "x": %s}}' % huge_digits)
+    with pytest.raises(BridgeConfigError):
+        load_bridge_config(acs_env(INTERIM_RESPONSE_JSON='{"a": %s}' % huge_digits), acs_active=True)
+
+
 def test_interim_response_is_frozen_recursively():
     cfg = load_bridge_config(
         acs_env(INTERIM_RESPONSE_JSON='{"a": {"b": 1}, "c": [1, 2, 3]}'), acs_active=True
