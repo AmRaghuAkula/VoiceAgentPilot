@@ -2,9 +2,10 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-_NON_DIGIT = re.compile(r"\D")
-_E164_NANP = re.compile(r"^\+1\d{10}$")
-_E164_OTHER = re.compile(r"^\+[2-9]\d{7,14}$")
+_NON_DIGIT = re.compile(r"[^0-9]", re.ASCII)
+_NUMBER_SHAPED = re.compile(r"\A\+?[0-9 ().-]+\Z", re.ASCII)
+_E164_NANP = re.compile(r"\A\+1[2-9]\d{2}[2-9]\d{6}\Z", re.ASCII)
+_E164_OTHER = re.compile(r"\A\+[2-9]\d{7,14}\Z", re.ASCII)
 
 
 @dataclass(frozen=True)
@@ -20,6 +21,8 @@ def normalize_number(raw: object) -> str:
     text = str(raw).strip()
     if ":" in text:
         text = text.rsplit(":", 1)[1].strip()
+    if not _NUMBER_SHAPED.match(text):
+        return text
     has_plus = text.startswith("+")
     digits = _NON_DIGIT.sub("", text)
     if has_plus:
@@ -35,10 +38,13 @@ def is_valid_e164(number: str) -> bool:
     return bool(_E164_NANP.match(number) or _E164_OTHER.match(number))
 
 
-def _number_from_identifier(identifier: Mapping | None) -> str | None:
-    identifier = identifier or {}
-    phone = (identifier.get("phoneNumber") or {}).get("value")
-    return phone or identifier.get("rawId")
+def _number_from_identifier(identifier: object) -> str | None:
+    if not isinstance(identifier, Mapping):
+        return None
+    phone_number = identifier.get("phoneNumber")
+    phone = phone_number.get("value") if isinstance(phone_number, Mapping) else None
+    raw_id = identifier.get("rawId")
+    return phone or (raw_id if isinstance(raw_id, str) else None)
 
 
 def called_number_from_event(data: Mapping) -> str | None:
