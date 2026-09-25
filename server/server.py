@@ -1,10 +1,12 @@
 import asyncio
 import logging
 import os
+import sys
 
 from dotenv import load_dotenv
 from quart import Quart, request, websocket
 
+from app.bridge_config import BridgeConfigError, load_bridge_config
 from app.call_loop import run_call_loop
 from app.call_manager import CallManager
 from app.config_validator import validate_config
@@ -22,13 +24,22 @@ _debug = os.getenv("DEBUG_MODE", "false").lower() == "true"
 configure_logging(level=logging.DEBUG if _debug else logging.INFO)
 logger = logging.getLogger(__name__)
 
+try:
+    bridge = load_bridge_config(os.environ, acs_active=bool(os.getenv("ACS_CONNECTION_STRING")))
+except BridgeConfigError as exc:
+    logger.error("Bridge configuration error: %s", exc)
+    sys.exit(1)
+
 # ---------------------------------------------------------------------------
 # App configuration
 # ---------------------------------------------------------------------------
 
 app = Quart(__name__)
 app.config["AZURE_VOICE_LIVE_API_KEY"] = os.getenv("AZURE_VOICE_LIVE_API_KEY", "")
-app.config["AZURE_VOICE_LIVE_ENDPOINT"] = os.getenv("AZURE_VOICE_LIVE_ENDPOINT")
+app.config["AZURE_VOICE_LIVE_ENDPOINT"] = bridge.voice_live_endpoint
+app.config["BRIDGE"] = bridge
+app.config["VOICE_LIVE_API_VERSION"] = bridge.voice_live_api_version
+app.config["INTERIM_RESPONSE"] = bridge.interim_response
 app.config["VOICE_LIVE_MODEL"] = os.getenv("VOICE_LIVE_MODEL", "gpt-4o-mini")
 app.config["AZURE_USER_ASSIGNED_IDENTITY_CLIENT_ID"] = os.getenv(
     "AZURE_USER_ASSIGNED_IDENTITY_CLIENT_ID", ""
@@ -48,7 +59,7 @@ else:
 
 call_manager = CallManager(
     max_concurrent=int(os.getenv("MAX_CONCURRENT_CALLS", "50")),
-    max_duration=int(os.getenv("MAX_CALL_DURATION", "3600")),
+    max_duration=bridge.max_call_seconds,
     idle_timeout=int(os.getenv("CALL_IDLE_TIMEOUT", "120")),
 )
 
@@ -103,7 +114,6 @@ else:
 # ---------------------------------------------------------------------------
 
 
-@app.websocket("/web/ws")
 async def web_ws():
     """WebSocket endpoint for web clients to send audio to Voice Live."""
     cid = new_correlation_id()
@@ -132,10 +142,15 @@ async def web_ws():
         await handler.cleanup()
 
 
-@app.route("/")
 async def index():
     """Serves the static index page."""
     return await app.send_static_file("index.html")
+
+
+if bridge.enable_web_client:
+    app.websocket("/web/ws")(web_ws)
+    app.route("/")(index)
+    logger.warning("Web debug client ENABLED (/web/ws is unauthenticated; local use only)")
 
 
 @app.route("/health")
