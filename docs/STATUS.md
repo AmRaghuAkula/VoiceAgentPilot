@@ -14,8 +14,8 @@ This table is updated **inside each unit's own PR** (D-017), so what `main` show
 
 | Unit | Plan task | Milestone | Status | Branch | PR | Tests (pass/planned) | Opus review | cso |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| U00 | Governance, spec, plan | — | NEXT | `docs/governance-and-bridge-plan` | — | 0/0 | 2 rounds; findings fixed | n/a (docs only) |
-| U01 | Task 0 — foundation | M0 | QUEUED | `feat/tb-t00-foundation` | — | 0/1 | — | — |
+| U00 | Governance, spec, plan | — | CLOSED | `docs/governance-and-bridge-plan` | [#1](https://github.com/AmRaghuAkula/VoiceAgentPilot/pull/1) | 0/0 | 2 rounds; findings fixed | n/a (docs only) |
+| U01 | Task 0 — foundation | M0 | NEXT | `feat/tb-t00-foundation` | — | 0/1 | — | — |
 | U02 | Task 1 — log mask | M1 | QUEUED | `feat/tb-t01-log-mask` | — | 0/7 | — | — |
 | U03 | Task 2 — routing | M1 | QUEUED | `feat/tb-t02-routing` | — | 0/20 | — | — |
 | U04 | Task 3 — bridge config | M1 | QUEUED | `feat/tb-t03-bridge-config` | — | 0/34 | — | — |
@@ -55,6 +55,7 @@ This table is updated **inside each unit's own PR** (D-017), so what `main` show
 | 2026-09-25 | U00 | Implementation plan written | — | 12 TDD tasks; SDK APIs checked against azure-ai-voicelive 1.3.0 and ACS Call Automation 1.6.0. |
 | 2026-09-25 | U00 | Governance set up | — | Partner/builder agents, CLAUDE.md session protocol, STATUS.md, DECISIONS.md, one unit per session/branch/PR (D-009 to D-015). |
 | 2026-09-25 | U00 | Opus review of governance docs, 2 rounds | — | 20 findings fixed. Added D-016 (merge commits, upstream out of review scope), D-017 (status inside the unit PR) and D-018 (status-only PRs, branch-resume rules). |
+| 2026-09-25 | U00 | Q-001 answered; PR #1 opened and merged | [#1](https://github.com/AmRaghuAkula/VoiceAgentPilot/pull/1) | Founder: builder merges its own PRs (D-019). Branch `docs/governance-and-bridge-plan` deleted after merge. |
 
 ---
 
