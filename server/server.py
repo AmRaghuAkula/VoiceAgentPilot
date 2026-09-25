@@ -108,8 +108,8 @@ if _provider_ready and _provider_info:
     logger.info("Registered routes for provider: %s", _provider_info.display_name)
 else:
     logger.warning(
-        "Telephony routes not registered%s",
-        " — web client available" if bridge.enable_web_client else " — no telephony routes and web client disabled",
+        "Telephony routes not registered — web client %s",
+        "available" if bridge.enable_web_client else "disabled",
     )
 
 # ---------------------------------------------------------------------------

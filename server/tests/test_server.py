@@ -17,6 +17,8 @@ async def test_web_client_enabled_explicitly(load_server):
     client = server.app.test_client()
     assert (await client.get("/")).status_code == 200
     assert "web_ws" in {rule.endpoint for rule in server.app.url_map.iter_rules()}
+    # The static assets the web client's page depends on must be reachable too, not just "/".
+    assert (await client.get("/static/audio-processor.js")).status_code == 200
 
 
 def test_spec_cap_name_reaches_call_manager(load_server):
