@@ -2,23 +2,36 @@
 
 Last updated: 2026-09-25 · Plan: [2026-09-25-telephony-bridge-step3.md](2026-09-25-telephony-bridge-step3.md) · Spec: [../specs/2026-09-25-telephony-bridge-design.md](../specs/2026-09-25-telephony-bridge-design.md)
 
-**End state of the plan:** the Step 3 bridge code is merged. That means Microsoft's accelerator is imported, and all 10 spec modifications are built and unit-tested without needing Azure. It has also passed the Opus code review and the `cso` security review, and is in an open pull request. Deploy (Step 4) and the live acceptance tests come after, and are listed below as M6–M8 so the full path to the pilot is visible.
+**End state of the plan:** the Step 3 bridge code is merged into `main`. That means Microsoft's accelerator is imported, and all 10 spec modifications are built and unit-tested without needing Azure. Deploy (Step 4) and the live acceptance tests come after, and are listed below as M6–M8 so the full path to the pilot is visible.
+
+**Review and merge cadence:** every milestone (M0–M5) is its own work unit and ships as its own branch and PR — not one big PR at the end. Each milestone's branch goes through the standing pipeline before it merges into `main`: Opus code review → `cso` security review → auto-opened PR. The next milestone branches off `main` only after the previous one has merged, so each PR is small and reviewed close to where the code was written.
 
 ## Status at a glance
 
-| # | Milestone | Plan tasks | Tests planned | Tests passing | Status | PR |
-| --- | --- | --- | --- | --- | --- | --- |
-| M0 | Foundation: toolchain, upstream import, test harness | 0 | 1 | 0 | Not started | not yet opened |
-| M1 | Config and routing core | 1–4 | 66 | 0 | Not started | not yet opened |
-| M2 | Voice Live agent mode | 5–6 | 15 | 0 | Not started | not yet opened |
-| M3 | Call lifecycle (hang-up, fallback, call cap) | 7 | 31 | 0 | Not started | not yet opened |
-| M4 | Phone-call integration and security | 8–10 | 38 | 0 | Not started | not yet opened |
-| M5 | Docs, review gates, Step 3 PR | 11 + pipeline | full suite (151) + 2 checks | 0 | Not started | not yet opened |
-| M6 | Deploy to Azure (Step 4) | outside this plan | — | — | **Blocked:** ACS number not bought | — |
-| M7 | Live acceptance tests 1–9 | outside this plan | 9 live tests | 0 | Blocked on M6 | — |
-| M8 | Pilot passes | — | tests 1–8 pass | — | Blocked on M7 | — |
+| # | Milestone | Plan tasks | Tests planned | Tests passing | Opus review | cso review | Status | PR |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| M0 | Foundation: toolchain, upstream import, test harness | 0 | 1 | 0 | Not run | Not run | Not started | not yet opened |
+| M1 | Config and routing core | 1–4 | 66 | 0 | Not run | Not run | Not started | not yet opened |
+| M2 | Voice Live agent mode | 5–6 | 15 | 0 | Not run | Not run | Not started | not yet opened |
+| M3 | Call lifecycle (hang-up, fallback, call cap) | 7 | 31 | 0 | Not run | Not run | Not started | not yet opened |
+| M4 | Phone-call integration and security | 8–10 | 38 | 0 | Not run | Not run | Not started | not yet opened |
+| M5 | Docs and final polish | 11 | full suite (~151) + 2 checks | 0 | Not run | Not run | Not started | not yet opened |
+| M6 | Deploy to Azure (Step 4) | outside this plan | — | — | — | — | **Blocked:** ACS number not bought | — |
+| M7 | Live acceptance tests 1–9 | outside this plan | 9 live tests | 0 | — | — | Blocked on M6 | — |
+| M8 | Pilot passes | — | tests 1–8 pass | — | — | — | Blocked on M7 | — |
 
-**PR plan:** M0–M5 ship as **one PR**, from branch `feat/telephony-bridge-step3` into `main`. It includes the design spec, this plan and all the code. The PR number is added here as soon as your review pipeline opens it. M6 deploy changes (Bicep, config) get their own PR later.
+**PR plan:** six PRs, one per milestone, each from a short-lived branch off the then-current `main`, merged before the next milestone starts:
+
+| Milestone | Branch |
+| --- | --- |
+| M0 | `feat/telephony-bridge-m0-foundation` |
+| M1 | `feat/telephony-bridge-m1-config-routing` |
+| M2 | `feat/telephony-bridge-m2-voicelive-agent-mode` |
+| M3 | `feat/telephony-bridge-m3-call-lifecycle` |
+| M4 | `feat/telephony-bridge-m4-acs-integration` |
+| M5 | `feat/telephony-bridge-m5-docs-polish` |
+
+The design spec and this milestone doc land in the M0 PR, since nothing else can start without them. PR numbers are added to the table above as your review pipeline opens each one. M6 deploy changes (Bicep, config) get their own PR later, outside this plan.
 
 **Test readiness today:** all ~151 unit tests are **written out in full in the plan**, but **none exist in the repo or have run yet**. No code has been implemented. The 9 live acceptance tests (spec §8) can't run until M6.
 
@@ -38,6 +51,8 @@ Last updated: 2026-09-25 · Plan: [2026-09-25-telephony-bridge-step3.md](2026-09
 **Test coverage:** 1 smoke test (upstream modules import cleanly).
 
 **Readiness:** written in the plan; not run yet.
+
+**Branch/PR:** `feat/telephony-bridge-m0-foundation`. **Review and merge:** Opus code review, then `cso` security review, then the PR auto-opens against `main`, per the standing pipeline. Merges before M1 starts.
 
 ## M1 — Config and routing core
 
@@ -66,6 +81,8 @@ Last updated: 2026-09-25 · Plan: [2026-09-25-telephony-bridge-step3.md](2026-09
 
 **Readiness:** written in the plan; not run yet.
 
+**Branch/PR:** `feat/telephony-bridge-m1-config-routing`, branched from `main` after M0 merges. **Review and merge:** Opus code review, then `cso`, then auto-PR against `main`. Merges before M2 starts.
+
 ## M2 — Voice Live agent mode
 
 **Covers:** plan Tasks 5–6.
@@ -85,6 +102,8 @@ Last updated: 2026-09-25 · Plan: [2026-09-25-telephony-bridge-step3.md](2026-09
 | Agent-mode connect, session contents, id logging, drop detection, force close | 11 |
 
 **Readiness:** written in the plan; not run yet.
+
+**Branch/PR:** `feat/telephony-bridge-m2-voicelive-agent-mode`, branched from `main` after M1 merges. **Review and merge:** Opus code review, then `cso`, then auto-PR against `main`. Merges before M3 starts.
 
 ## M3 — Call lifecycle
 
@@ -106,6 +125,8 @@ Last updated: 2026-09-25 · Plan: [2026-09-25-telephony-bridge-step3.md](2026-09
 | Call lifecycle, including all the race conditions from the design reviews | 22 |
 
 **Readiness:** written in the plan; not run yet.
+
+**Branch/PR:** `feat/telephony-bridge-m3-call-lifecycle`, branched from `main` after M2 merges. **Review and merge:** Opus code review, then `cso`, then auto-PR against `main`. Merges before M4 starts.
 
 ## M4 — Phone-call integration and security
 
@@ -129,9 +150,11 @@ Last updated: 2026-09-25 · Plan: [2026-09-25-telephony-bridge-step3.md](2026-09
 
 **Readiness:** written in the plan; not run yet.
 
-## M5 — Docs, review gates, Step 3 PR
+**Branch/PR:** `feat/telephony-bridge-m4-acs-integration`, branched from `main` after M3 merges. **Review and merge:** Opus code review, then `cso`, then auto-PR against `main`. Merges before M5 starts.
 
-**Covers:** plan Task 11, then your standing review pipeline.
+## M5 — Docs and final polish
+
+**Covers:** plan Task 11.
 
 **Definition of done:**
 - The README documents:
@@ -141,15 +164,14 @@ Last updated: 2026-09-25 · Plan: [2026-09-25-telephony-bridge-step3.md](2026-09
   - security notes;
   - how to run the tests.
 - The `.env.sample` lists every new setting.
-- **The full test suite passes (about 151 tests).**
+- **The full test suite passes (about 151 tests, cumulative across M0–M4).**
 - A code search finds no real-estate words, agent names or phone numbers in application code.
-- **The Opus code review passes** (on Opus, per your model rule).
-- **The `cso` security review passes.**
-- The **PR is opened automatically** and its number is recorded here.
 
-**Test coverage:** the full suite, plus the 2 code-search checks.
+**Test coverage:** the full suite, plus the 2 code-search checks. No new tests of its own — this milestone is documentation only, run against everything M0–M4 already built.
 
-**Readiness:** depends on M0–M4.
+**Readiness:** depends on M0–M4 having merged.
+
+**Branch/PR:** `feat/telephony-bridge-m5-docs-polish`, branched from `main` after M4 merges. **Review and merge:** Opus code review, then `cso`, then auto-PR against `main`. This is the last PR in the Step 3 plan — once it merges, `main` is the complete Step 3 bridge, ready for M6 (deploy).
 
 ---
 
