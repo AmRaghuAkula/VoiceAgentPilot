@@ -11,7 +11,7 @@ def test_load_server_returns_the_quart_app(load_server):
 
 
 def test_load_server_with_acs_env(load_server):
-    from tests.conftest import acs_env
+    from tests.helpers import acs_env
 
     server = load_server(**acs_env())
     assert hasattr(server, "app")
