@@ -14,7 +14,7 @@ from typing import Optional, Union
 
 import numpy as np
 from azure.core.credentials import AzureKeyCredential
-from azure.identity.aio import ManagedIdentityCredential
+from azure.identity.aio import DefaultAzureCredential, ManagedIdentityCredential
 from azure.ai.voicelive.aio import connect as voicelive_connect
 from azure.ai.voicelive.models import (
     AudioEchoCancellation,
@@ -48,11 +48,17 @@ class VoiceLiveMediaHandler:
     for their specific protocols.
     """
 
-    def __init__(self, config):
+    def __init__(self, config, route=None):
         self.endpoint = config["AZURE_VOICE_LIVE_ENDPOINT"]
         self.model = config["VOICE_LIVE_MODEL"]
         self.api_key = config["AZURE_VOICE_LIVE_API_KEY"]
         self.client_id = config["AZURE_USER_ASSIGNED_IDENTITY_CLIENT_ID"]
+        self.route = route
+        self.api_version = config.get("VOICE_LIVE_API_VERSION")
+        self.interim_response = config.get("INTERIM_RESPONSE")
+        self.session_id = None
+        self.conversation_id = None
+        self._forward_agent_audio = True
         self.conn = None
         self._conn_ctx = None  # async context manager from SDK connect()
         self._credential = None  # kept alive for token refresh
@@ -79,7 +85,22 @@ class VoiceLiveMediaHandler:
             except Exception as e:
                 logger.error(f"Failed to initialize AmbientMixer: {e}")
 
+    @property
+    def log_context(self) -> str:
+        return ""
+
     def _session_config(self) -> RequestSession:
+        if self.route is not None:
+            return self._agent_session_config()
+        return self._model_session_config()
+
+    def _agent_session_config(self) -> RequestSession:
+        fields = {"input_audio_format": "pcm16", "output_audio_format": "pcm16"}
+        if self.interim_response:
+            fields["interim_response"] = dict(self.interim_response)
+        return RequestSession(fields)
+
+    def _model_session_config(self) -> RequestSession:
         """Return the typed session configuration for Voice Live."""
         return RequestSession(
             modalities=[Modality.TEXT, Modality.AUDIO],
@@ -97,23 +118,37 @@ class VoiceLiveMediaHandler:
     # ------------------------------------------------------------------
 
     async def connect_voicelive(self):
-        """Connect to Azure Voice Live API using the SDK."""
+        """Connect to Azure Voice Live API using the SDK (agent mode when a route is set)."""
         t0 = time.perf_counter()
 
-        if self.client_id:
-            self._credential = ManagedIdentityCredential(client_id=self.client_id)
-            credential = self._credential
+        if self.route is not None:
+            self._credential = DefaultAzureCredential(managed_identity_client_id=self.client_id or None)
+            connect_kwargs = {
+                "endpoint": self.endpoint,
+                "credential": self._credential,
+                "agent_name": self.route.agent,
+                "project_name": self.route.project,
+                "agent_version": self.route.version,
+            }
+            logger.info(
+                "[VoiceLive] Agent mode project=%s agent=%s version=%s %s",
+                self.route.project, self.route.agent, self.route.version, self.log_context,
+            )
         else:
-            credential = AzureKeyCredential(self.api_key)
+            if self.client_id:
+                self._credential = ManagedIdentityCredential(client_id=self.client_id)
+                credential = self._credential
+            else:
+                credential = AzureKeyCredential(self.api_key)
+            connect_kwargs = {"endpoint": self.endpoint, "credential": credential, "model": self.model.strip()}
+
+        if self.api_version:
+            connect_kwargs["api_version"] = self.api_version
 
         t1 = time.perf_counter()
         logger.info("[VoiceLive] Credential prepared in %.2fs", t1 - t0)
 
-        self._conn_ctx = voicelive_connect(
-            endpoint=self.endpoint,
-            credential=credential,
-            model=self.model.strip(),
-        )
+        self._conn_ctx = voicelive_connect(**connect_kwargs)
         self.conn = await self._conn_ctx.__aenter__()
 
         t2 = time.perf_counter()
@@ -140,8 +175,8 @@ class VoiceLiveMediaHandler:
 
                 match event_type:
                     case ServerEventType.SESSION_CREATED:
-                        session_id = event.session.id if hasattr(event, "session") else None
-                        logger.info("[VoiceLive] Session ID: %s", session_id)
+                        self.session_id = event.session.id if hasattr(event, "session") else None
+                        logger.info("[VoiceLive] Session ID: %s %s", self.session_id, self.log_context)
 
                     case ServerEventType.SESSION_UPDATED:
                         logger.info("[VoiceLive] Session updated")
@@ -179,8 +214,15 @@ class VoiceLiveMediaHandler:
                         await self.on_transcript_done(transcript)
 
                     case ServerEventType.RESPONSE_DONE:
-                        response_id = event.response.id if hasattr(event, "response") else None
-                        logger.info("[VoiceLive] Response done: id=%s", response_id)
+                        response = getattr(event, "response", None)
+                        logger.info("[VoiceLive] Response done: id=%s", getattr(response, "id", None))
+                        conversation_id = getattr(response, "conversation_id", None)
+                        if conversation_id and conversation_id != self.conversation_id:
+                            self.conversation_id = conversation_id
+                            logger.info(
+                                "[VoiceLive] conversation_id=%s session_id=%s %s",
+                                conversation_id, self.session_id, self.log_context,
+                            )
 
                     case ServerEventType.ERROR:
                         logger.error("[VoiceLive] Error: %s", event.error)
@@ -194,14 +236,17 @@ class VoiceLiveMediaHandler:
             logger.exception("[VoiceLive] Receiver loop error")
         finally:
             self._voicelive_connected = False
-            # If Voice Live dropped unexpectedly (not a normal cancellation),
-            # close the client WebSocket so the caller-side loop exits cleanly.
-            if not cancelled and self.client_ws:
-                try:
-                    logger.warning("[VoiceLive] Voice Live disconnected — closing client WebSocket")
-                    await self.client_ws.close(1001)  # Going Away
-                except Exception:
-                    pass
+            if not cancelled:
+                await self.on_voicelive_ended()
+
+    async def on_voicelive_ended(self):
+        """Voice Live dropped unexpectedly: close the client WebSocket so the caller-side loop exits."""
+        if self.client_ws:
+            try:
+                logger.warning("[VoiceLive] Voice Live disconnected — closing client WebSocket")
+                await self.client_ws.close(1001)
+            except Exception:
+                pass
 
     # ------------------------------------------------------------------
     # Client WebSocket
@@ -234,6 +279,8 @@ class VoiceLiveMediaHandler:
 
     async def on_audio_delta(self, audio_bytes: bytes):
         """Handle audio from Voice Live — buffer for ambient or send directly."""
+        if not self._forward_agent_audio:
+            return
         if self._ambient_mixer is not None and self._ambient_mixer.is_enabled():
             async with self._tts_buffer_lock:
                 self._tts_output_buffer.extend(audio_bytes)
@@ -264,6 +311,19 @@ class VoiceLiveMediaHandler:
 
     async def on_idle(self):
         return None
+
+    def stop_forwarding_agent_audio(self) -> None:
+        self._forward_agent_audio = False
+
+    def force_close(self) -> None:
+        """Abort the Voice Live socket without waiting for a close handshake."""
+        if self._receiver_task:
+            self._receiver_task.cancel()
+        ws = getattr(self.conn, "_connection", None)
+        response = getattr(ws, "_response", None)
+        if response is not None:
+            response.close()
+        self._voicelive_connected = False
 
     # ------------------------------------------------------------------
     # Audio output to client
