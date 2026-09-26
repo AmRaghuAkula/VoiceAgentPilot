@@ -156,7 +156,7 @@ Once U13 merges, `main` is the complete Step 3 bridge.
 
 **Unblocked ahead of the ACS phone number (D-029, 2026-09-27).** Q-003 (region: East US 2), Q-004 (system-assigned identity), Q-005 (verify JWT at deploy time) and Q-006 (`az login`/`azd auth login`) are all answered — see [STATUS.md](../../STATUS.md) §3. Q-002 (the ACS number itself) remains open but no longer blocks M6; it blocks only M7 (live acceptance tests). Q-004's system-assigned answer is under a fresh, explicit reconsideration request as Q-015, once U14b's circular-dependency finding is factored in — see the plan doc.
 
-**Full implementation plan (rev 2, after a first Opus review round found real deploy-breaking gaps in rev 1):** [2026-09-27-m6-deploy-plan.md](2026-09-27-m6-deploy-plan.md) — units U14a–d, U-CFG, U15, U16, definition of done, verification steps, and the corrected Q-011 (VoIP-only validation) analysis all live there rather than being duplicated here.
+**Full implementation plan (rev 3, after two Opus review rounds):** [2026-09-27-m6-deploy-plan.md](2026-09-27-m6-deploy-plan.md) — units U14a–d, U-CFG, U15, U16, definition of done, verification steps, and the corrected Q-011 (VoIP-only validation) analysis all live there rather than being duplicated here.
 
 **Units and branches (see the plan doc for full detail):**
 
