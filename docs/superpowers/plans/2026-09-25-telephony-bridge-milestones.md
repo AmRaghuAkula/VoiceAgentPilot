@@ -30,9 +30,13 @@ Last updated: 2026-09-25 · Plan: [2026-09-25-telephony-bridge-step3.md](2026-09
 | U11 | Task 9 — ACS media handler bound to session | M4 | `feat/tb-t09-acs-media-handler` | 9 |
 | U12 | Task 10 — callback JWT and ACS routes | M4 | `feat/tb-t10-acs-routes` | 17 |
 | U13 | Task 11 — docs and config sample | M5 | `feat/tb-t11-docs` | 0 (runs the full ~151-test suite + 2 grep checks) |
-| U14 | M6 Unit 1 — Bicep fixes (existing AI resource, system-assigned identity, scale, Key Vault media token, Foundry User role) | M6 | `feat/tb-m6-u14-infra-fixes` | n/a (infra: `az bicep build` + `what-if`, see [M6 plan](2026-09-27-m6-deploy-plan.md)) |
-| U15 | M6 Unit 2 — `azd up`, verify, VoIP-only smoke test | M6 | `feat/tb-m6-u15-deploy` | n/a (infra: `az`/`azd` verification commands, see [M6 plan](2026-09-27-m6-deploy-plan.md)) |
-| U16 | M6 Unit 3 — Event Grid number-filter resolution (BLOCKED on Q-002) | M6 | not yet cut | n/a |
+| U14a | M6 — existing AI resource (cross-subscription), ACS text-to-speech wiring, Container App scale fix | M6 | `feat/tb-m6-u14a-existing-ai-resource` | n/a (infra: `az bicep build` + `azd provision --preview`, see [M6 plan](2026-09-27-m6-deploy-plan.md) — pending Cowork's resource inventory, Q-016) |
+| U14b | M6 — resequence to system-assigned identity (circular-dependency fix); **Opus**, per D-014 | M6 | `feat/tb-m6-u14b-system-identity` | n/a (infra: `azd provision --preview` against a clean environment) |
+| U14c | M6 — Key Vault media token, container right-sizing, Foundry User role GUID verification | M6 | `feat/tb-m6-u14c-secrets-and-sizing` | n/a (infra) |
+| U14d | M6 — resource-group/existing-resource naming resolution (may fold into U14a) | M6 | `feat/tb-m6-u14d-resource-naming` | n/a (infra; possibly a no-op, pending Q-016) |
+| U-CFG | M6 — hook upstream `config_validator.py`'s credential check for system-assigned identity (no API-key workaround, D-004/Q-009) | M6 | `feat/tb-m6-ucfg-identity-credential-check` | new pytest coverage, see [M6 plan](2026-09-27-m6-deploy-plan.md) |
+| U15 | M6 — `azd up`, verify, VoIP-only smoke test (requires U10–U13 also merged, not infra alone) | M6 | `feat/tb-m6-u15-deploy` | n/a (infra: `az`/`azd` verification commands + live smoke test) |
+| U16 | M6 — Event Grid number-based advanced filter (BLOCKED on Q-002) | M6 | not yet cut | n/a |
 
 **Test readiness today:** all ~151 original unit tests are **written out in full in the plan**, but as of U08's merge, 200 exist and pass in the repo (the plan's estimates have grown at every reviewed unit so far — see STATUS.md §1). U09 is new, added 2026-09-27 (see below), not in the original ~151 count. The 9 live acceptance tests (spec §8) can't run until M6.
 
@@ -150,19 +154,23 @@ Once U13 merges, `main` is the complete Step 3 bridge.
 
 ### M6 — Deploy to Azure (Step 4)
 
-**Unblocked ahead of the ACS phone number (D-029, 2026-09-27).** Q-003 (region: East US 2), Q-004 (system-assigned identity), Q-005 (verify JWT at deploy time) and Q-006 (`az login`/`azd auth login`) are all answered — see [STATUS.md](../../STATUS.md) §3. Q-002 (the ACS number itself) remains open but no longer blocks M6; it blocks only M7 (live acceptance tests).
+**Unblocked ahead of the ACS phone number (D-029, 2026-09-27).** Q-003 (region: East US 2), Q-004 (system-assigned identity), Q-005 (verify JWT at deploy time) and Q-006 (`az login`/`azd auth login`) are all answered — see [STATUS.md](../../STATUS.md) §3. Q-002 (the ACS number itself) remains open but no longer blocks M6; it blocks only M7 (live acceptance tests). Q-004's system-assigned answer is under a fresh, explicit reconsideration request as Q-015, once U14b's circular-dependency finding is factored in — see the plan doc.
 
-**Full implementation plan:** [2026-09-27-m6-deploy-plan.md](2026-09-27-m6-deploy-plan.md) — units U14–U16, definition of done, verification steps, and the Q-011 (VoIP-only validation) analysis all live there rather than being duplicated here.
+**Full implementation plan (rev 2, after a first Opus review round found real deploy-breaking gaps in rev 1):** [2026-09-27-m6-deploy-plan.md](2026-09-27-m6-deploy-plan.md) — units U14a–d, U-CFG, U15, U16, definition of done, verification steps, and the corrected Q-011 (VoIP-only validation) analysis all live there rather than being duplicated here.
 
 **Units and branches (see the plan doc for full detail):**
 
 | Unit | What | Branch | Status |
 | --- | --- | --- | --- |
-| U14 | Fix accelerator Bicep to match spec: existing AI resource, system-assigned identity, Container App scale, Key Vault media token, Foundry User role | `feat/tb-m6-u14-infra-fixes` | QUEUED |
-| U15 | `azd up`, verify infra, run the VoIP-only smoke test (Q-011) | `feat/tb-m6-u15-deploy` | QUEUED |
-| U16 | Event Grid number-filter resolution (BLOCKED on Q-002) | not yet cut | BLOCKED |
+| U14a | Existing AI resource (cross-subscription), ACS text-to-speech wiring, Container App scale fix | `feat/tb-m6-u14a-existing-ai-resource` | QUEUED (pending Cowork's resource inventory, Q-016) |
+| U14b | Resequence to system-assigned identity — the circular-dependency fix; **Opus**, per D-014 | `feat/tb-m6-u14b-system-identity` | QUEUED |
+| U14c | Key Vault media token, container right-sizing, Foundry User role GUID verification | `feat/tb-m6-u14c-secrets-and-sizing` | QUEUED |
+| U14d | Resource-group/existing-resource naming resolution (may fold into U14a) | `feat/tb-m6-u14d-resource-naming` | QUEUED |
+| U-CFG | Hook upstream `config_validator.py`'s credential check for system-assigned identity, no API-key workaround | `feat/tb-m6-ucfg-identity-credential-check` | QUEUED |
+| U15 | `azd up`, verify infra, run the VoIP-only smoke test (Q-011) — requires U10–U13 merged too, not infra alone | `feat/tb-m6-u15-deploy` | QUEUED |
+| U16 | Event Grid number-based advanced filter (BLOCKED on Q-002) | not yet cut | BLOCKED |
 
-**Definition of done:** see the plan doc's "Definition of done and test/verification coverage" section — it supersedes the short list that used to be here, since three of the six original bullets needed correction once the actual Bicep was read (see the plan's "What the repo actually contains today" section for the AI-resource, identity and Event-Grid-filter gaps found).
+**Definition of done:** see the plan doc's "Definition of done and test/verification coverage" section — it restores the spec's full 7-bullet DoD (the ACS-to-AI-resource text-to-speech link was found to be a real missing gap, not just a doc omission — see the plan's C3 finding) and adds several new items the first draft missed (the `config_validator.py` fix, the web-client-off check, a `PlayCompleted`-specific smoke-test pass criterion).
 
 ### M7 — Live acceptance tests (spec §8)
 
