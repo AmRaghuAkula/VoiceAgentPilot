@@ -8,8 +8,16 @@ def test_webclient_and_telephony_both_active_refuses_to_start(load_server, logs)
     with pytest.raises(SystemExit) as exc_info:
         load_server(ENABLE_WEB_CLIENT="true", **acs_env())
     assert exc_info.value.code == 1
-    assert "web" in logs.text.lower()
-    assert "telephony" in logs.text.lower() or "provider" in logs.text.lower()
+    assert "Refusing to start" in logs.text
+    assert "D-028" in logs.text
+
+
+def test_webclient_and_other_provider_both_active_refuses_to_start(load_server):
+    # Same guard, exercised via a different provider's detect key (not just ACS), so a future
+    # refactor can't quietly narrow the check to be ACS-specific.
+    with pytest.raises(SystemExit) as exc_info:
+        load_server(ENABLE_WEB_CLIENT="true", TWILIO_AUTH_TOKEN="fake-token")
+    assert exc_info.value.code == 1
 
 
 def test_webclient_alone_with_no_provider_still_starts(load_server):
@@ -24,11 +32,11 @@ def test_telephony_alone_with_webclient_off_still_starts(load_server):
     assert "web_ws" not in {rule.endpoint for rule in server.app.url_map.iter_rules()}
 
 
-def test_neither_webclient_nor_telephony_still_starts(load_server):
+async def test_neither_webclient_nor_telephony_still_starts(load_server):
     # Edge case: nothing configured at all.
     server = load_server()
     assert "web_ws" not in {rule.endpoint for rule in server.app.url_map.iter_rules()}
-    assert (server.app.test_client())  # sanity: app object is usable
+    assert (await server.app.test_client().get("/health")).status_code == 200
 
 
 async def test_web_client_disabled_by_default(load_server):
