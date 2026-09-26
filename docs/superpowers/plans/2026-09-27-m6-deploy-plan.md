@@ -78,7 +78,10 @@ M6 follows the same discipline as M0–M5: **one unit = one branch = one PR**, f
 
 **Branch:** `feat/tb-m6-u14a-existing-ai-resource` · **Model:** Sonnet (mechanical parameter/reference wiring, no architectural ambiguity once C5/C6's topology is confirmed by Cowork first).
 
-**Prerequisite:** Cowork has inventoried the pay-as-you-go subscription per C6 and confirmed (a) whether `rg-hireastra-voice-pilot` and/or the ACS resource already exist, and (b) the exact subscription ID, resource group name, and `hireastra-resource` region/name/resource-group-name pairing to reference. This is a Cowork/founder task, not something the builder guesses at — **do not cut this branch until that inventory is back.**
+**Prerequisite: satisfied (2026-09-27, Cowork inventory, see STATUS.md §3 Q-016).** Concrete values to reference — both resources already exist, do not create new ones:
+- Resource group: `rg-hireastra-voice-pilot` (exact name, no suffix), subscription `13b3dbed-e03a-4d01-8b88-ac5c80fc749e` ("Azure - Voice Pilot Subscription").
+- ACS resource: `hireastra-voice-pilot-acs`, same resource group and subscription as above. **Its system-assigned managed identity is currently OFF** — this unit's Bicep must enable it (`identity: { type: 'SystemAssigned' }` on `infra/modules/acs.bicep`, per step 2 below), not assume it's already on.
+- `hireastra-resource`: confirmed API Kind `AIServices` (multi-service Cognitive Services — satisfies step 2's portal-confirmation requirement), resource group `rg-hireastra`, subscription `82632bb8-e34b-41be-a7c7-a134f16c1c9c` ("Azure - HireAstra Subscription"), region East US 2 (reconfirms Q-003).
 
 **What it does:**
 
@@ -138,13 +141,9 @@ Whichever option, `roleassignments.bicep`'s role-assignment resources move to de
 - [ ] Opus code-review + `cso` (Key Vault/secret-generation logic).
 - [ ] STATUS.md/DECISIONS.md updated inside this PR.
 
-### U14d — Resource group / existing-resource naming resolution (small, may be a no-op)
+### U14d — Resource group / existing-resource naming resolution — RESOLVED, folded into U14a (2026-09-27)
 
-**Branch:** `feat/tb-m6-u14d-resource-naming` · **Model:** Sonnet.
-
-**Prerequisite:** Cowork's inventory from C6 is back (this may actually be foldable into U14a if the inventory lands before U14a starts — this unit exists in case the inventory reveals something that needs its own small fix after U14a is already in flight or merged).
-
-**What it does:** applies whatever C6's inventory determined — either (a) no change needed (a fresh resource group/ACS resource is genuinely wanted), or (b) `main.bicep`'s resource-group and/or ACS resource creation becomes conditional on an existing-resource parameter, mirroring the same `existing` pattern used for `hireastra-resource` in U14a.
+**Status: does not stand alone.** Cowork's inventory (Q-016, STATUS.md §3) landed before U14a started, confirming option (b): both `rg-hireastra-voice-pilot` and `hireastra-voice-pilot-acs` already exist. `main.bicep`'s resource-group and ACS resource creation become conditional on referencing these existing resources — mirroring the same `existing` pattern used for `hireastra-resource` — as part of **U14a's own scope**, not a separate branch/PR. This unit is retired; do not cut `feat/tb-m6-u14d-resource-naming`.
 
 **DoD:** matches whichever of (a)/(b) applies; if (a), this unit may simply be skipped and merged into U14a's own DoD checklist instead of standing alone — the partner decides this once C6's inventory is back, and updates this plan doc accordingly rather than executing a no-op unit for its own sake.
 
@@ -261,7 +260,7 @@ Whichever option, `roleassignments.bicep`'s role-assignment resources move to de
 | U14a | M6 | Existing AI resource referenced cross-subscription, ACS TTS role/env wired, Container App scale fixed | `az bicep build`, `azd provision --preview` |
 | U14b | M6 | System-assigned identity resequenced without circular dependency, verified on a clean environment | `azd provision --preview` / `azd provision` against a fresh environment |
 | U14c | M6 | `MEDIA_WS_TOKEN` in Key Vault via a cryptographically secure generator, container right-sized, Foundry User role GUID confirmed | `azd provision --preview`, `az role definition list` |
-| U14d | M6 | Resource-group/existing-resource naming resolved per Cowork's inventory (may be folded into U14a) | `az group show`/`az resource list`, or n/a if folded in |
+| U14d | M6 | ~~Resource-group/existing-resource naming~~ — RESOLVED, folded into U14a (2026-09-27); this row does not stand alone | n/a |
 | U-CFG | M6 | `config_validator.py`'s credential check satisfied for system-assigned identity, without an API-key workaround, without editing the upstream file | pytest (new test), `git diff upstream/main` stays empty |
 | U15 | M6 | `azd up` succeeds with U10–U13 also merged; infra verified; VoIP-only smoke test run with a `PlayCompleted`-specific pass criterion; ACS JWT verified; web client confirmed off | `az containerapp show`, role-assignment checks, Container App `secrets[]` list, `az eventgrid event-subscription show`, live smoke-test log grep |
 | U16 | M6 (BLOCKED on Q-002) | Event Grid advanced filter applied for the real number; Q-011 interaction noted | `az eventgrid event-subscription show` post-change |
