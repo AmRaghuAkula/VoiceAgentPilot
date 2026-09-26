@@ -94,11 +94,11 @@ class CallManager:
         if session:
             session.last_activity = time.monotonic()
 
-    def is_expired(self, call_id: str) -> bool:
+    def is_expired(self, call_id: str) -> str | None:
         """Check if a call has exceeded max duration or is idle."""
         session = self._calls.get(call_id)
         if not session:
-            return False
+            return None
         now = time.monotonic()
         if now - session.started_at > self._max_duration:
             logger.warning(
@@ -106,15 +106,15 @@ class CallManager:
                 call_id,
                 now - session.started_at,
             )
-            return True
+            return "duration"
         if now - session.last_activity > self._idle_timeout:
             logger.warning(
                 "Call expired (idle): call_id=%s idle=%.0fs",
                 call_id,
                 now - session.last_activity,
             )
-            return True
-        return False
+            return "idle"
+        return None
 
     def get_stats(self) -> dict:
         """Return current call manager statistics."""

@@ -19,6 +19,8 @@ class CallHandler(Protocol):
 
     async def connect_voicelive(self) -> None: ...
     async def on_message(self, msg: Any) -> None: ...
+    async def on_call_cap(self) -> None: ...
+    async def on_idle(self) -> None: ...
 
 
 async def run_call_loop(
@@ -49,8 +51,13 @@ async def run_call_loop(
             if voicelive_task.done() and voicelive_task.exception():
                 logger.warning("Voice Live task failed, ending call: call_id=%s", call_id)
                 break
-            if call_manager.is_expired(call_id):
-                logger.warning("Call expired, disconnecting: call_id=%s", call_id)
+            expired = call_manager.is_expired(call_id)
+            if expired:
+                logger.warning("Call expired (%s), disconnecting: call_id=%s", expired, call_id)
+                if expired == "duration":
+                    await handler.on_call_cap()
+                else:
+                    await handler.on_idle()
                 break
             try:
                 msg = await asyncio.wait_for(ws.receive(), timeout=call_manager.receive_timeout)
