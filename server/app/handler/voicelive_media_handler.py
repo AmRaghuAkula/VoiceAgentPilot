@@ -10,6 +10,7 @@ import base64
 import json
 import logging
 import time
+from types import MappingProxyType
 from typing import Optional, Union
 
 import numpy as np
@@ -37,6 +38,23 @@ logger = logging.getLogger(__name__)
 
 # Default chunk size in bytes (100ms of audio at 24kHz, 16-bit mono)
 DEFAULT_CHUNK_SIZE = 4800  # 24000 samples/sec * 0.1 sec * 2 bytes
+
+
+def _deep_thaw(value):
+    """Recursively convert BridgeConfig's frozen structures back to plain
+    JSON-serializable types (MappingProxyType -> dict, tuple -> list).
+
+    BridgeConfig's _deep_freeze() freezes nested dicts/lists too, so a
+    shallow dict(...) copy of a frozen mapping still has frozen values
+    nested inside it, which json.dumps() cannot serialize.
+    """
+    if isinstance(value, MappingProxyType):
+        return {k: _deep_thaw(v) for k, v in value.items()}
+    if isinstance(value, dict):
+        return {k: _deep_thaw(v) for k, v in value.items()}
+    if isinstance(value, (tuple, list)):
+        return [_deep_thaw(v) for v in value]
+    return value
 
 
 class VoiceLiveMediaHandler:
@@ -97,7 +115,7 @@ class VoiceLiveMediaHandler:
     def _agent_session_config(self) -> RequestSession:
         fields = {"input_audio_format": "pcm16", "output_audio_format": "pcm16"}
         if self.interim_response:
-            fields["interim_response"] = dict(self.interim_response)
+            fields["interim_response"] = _deep_thaw(self.interim_response)
         return RequestSession(fields)
 
     def _model_session_config(self) -> RequestSession:
@@ -153,11 +171,11 @@ class VoiceLiveMediaHandler:
 
         t2 = time.perf_counter()
         logger.info("[VoiceLive] SDK connected in %.2fs (total %.2fs)", t2 - t1, t2 - t0)
-        self._voicelive_connected = True
 
         await self.conn.session.update(session=self._session_config())
         await self.conn.response.create()
 
+        self._voicelive_connected = True
         self._receiver_task = asyncio.create_task(self._receiver_loop())
 
     async def send_audio(self, audio_b64: str):
@@ -237,7 +255,10 @@ class VoiceLiveMediaHandler:
         finally:
             self._voicelive_connected = False
             if not cancelled:
-                await self.on_voicelive_ended()
+                try:
+                    await self.on_voicelive_ended()
+                except Exception:
+                    logger.exception("[VoiceLive] on_voicelive_ended hook raised")
 
     async def on_voicelive_ended(self):
         """Voice Live dropped unexpectedly: close the client WebSocket so the caller-side loop exits."""
@@ -313,7 +334,10 @@ class VoiceLiveMediaHandler:
         return None
 
     def stop_forwarding_agent_audio(self) -> None:
+        """Stop sending further agent audio to the client and drop what's already buffered."""
         self._forward_agent_audio = False
+        self._tts_output_buffer.clear()
+        self._tts_playback_started = False
 
     def force_close(self) -> None:
         """Abort the Voice Live socket without waiting for a close handshake."""

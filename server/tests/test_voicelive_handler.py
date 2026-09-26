@@ -1,10 +1,12 @@
 import asyncio
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 
 import app.handler.voicelive_media_handler as vmh
+from app.bridge_config import _deep_freeze
 from app.routing import AgentRoute
 
 ROUTE = AgentRoute("proj", "agent-a", "10")
@@ -105,6 +107,20 @@ async def test_interim_response_only_when_configured(fake_sdk):
     await handler.connect_voicelive()
     sent = fake_sdk["_conn"].session.update.call_args.kwargs["session"].as_dict()
     assert sent["interim_response"] == interim
+    await handler.cleanup()
+
+
+async def test_interim_response_with_nested_frozen_value_is_json_serializable(fake_sdk):
+    # BridgeConfig freezes nested dicts/lists too (_deep_freeze), so INTERIM_RESPONSE
+    # as loaded by the real config path carries MappingProxyType/tuple nested inside
+    # it. A shallow dict(...) copy leaves those nested frozen values in place and
+    # json.dumps() on session.as_dict() then raises TypeError — this must not happen.
+    interim = _deep_freeze({"type": "llm_interim_response", "nested": {"a": [1, 2, {"b": 3}]}})
+    handler = vmh.VoiceLiveMediaHandler(handler_config(INTERIM_RESPONSE=interim), route=ROUTE)
+    await handler.connect_voicelive()
+    sent = fake_sdk["_conn"].session.update.call_args.kwargs["session"].as_dict()
+    json.dumps(sent)  # must not raise TypeError: mappingproxy is not JSON serializable
+    assert sent["interim_response"] == {"type": "llm_interim_response", "nested": {"a": [1, 2, {"b": 3}]}}
     await handler.cleanup()
 
 

@@ -6,6 +6,7 @@ _NON_DIGIT = re.compile(r"[^0-9]", re.ASCII)
 _NUMBER_SHAPED = re.compile(r"\A\+?[0-9 ().-]+\Z", re.ASCII)
 _E164_NANP = re.compile(r"\A\+1[2-9]\d{2}[2-9]\d{6}\Z", re.ASCII)
 _E164_OTHER = re.compile(r"\A\+[2-9]\d{7,14}\Z", re.ASCII)
+_PINNED_VERSION = re.compile(r"\A[1-9][0-9]*\Z", re.ASCII)
 
 
 @dataclass(frozen=True)
@@ -13,6 +14,15 @@ class AgentRoute:
     project: str
     agent: str
     version: str
+
+    def __post_init__(self):
+        # D-004 defense in depth: an unpinned/malformed version here would make
+        # the Voice Live SDK silently fall back to "latest" with no error, so
+        # every AgentRoute (however constructed) must carry a pinned version.
+        if not isinstance(self.version, str) or not _PINNED_VERSION.match(self.version):
+            raise ValueError(
+                f"AgentRoute.version must be a pinned digit string, got {self.version!r}"
+            )
 
 
 def normalize_number(raw: object) -> str:
