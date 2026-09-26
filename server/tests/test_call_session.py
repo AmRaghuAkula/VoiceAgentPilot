@@ -348,7 +348,7 @@ class FlakyThenOkAcs:
         return FlakyThenOkConnection(self)
 
 
-async def test_transient_hangup_failure_is_retried_by_safety_timer():
+async def test_transient_hangup_failure_leaves_room_for_a_later_retry():
     # Reviewer-found bug #B: a transient (5xx) hang_up failure must not be
     # treated as terminal — a later attempt (here, a direct retry, standing in
     # for sweep()/force_hang_up() finding the session still up) must still get
