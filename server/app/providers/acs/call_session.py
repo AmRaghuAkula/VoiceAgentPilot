@@ -74,6 +74,7 @@ class CallSessionRegistry:
         stale = [s for s in self._by_key.values() if now - s.created_at > max_age]
         for session in stale:
             session.request_end("stale", None)
+            session.force_hang_up()
             self.remove(session)
         return len(stale)
 
@@ -99,6 +100,7 @@ class CallSession:
         self.created_at = time.monotonic()
 
         self._hung_up = False
+        self._hangup_pending_answer = False
         self._answered = asyncio.Event()
         self._connected = asyncio.Event()
         self._timers: set[asyncio.Task] = set()
@@ -138,7 +140,17 @@ class CallSession:
         self.call_connection_id = call_connection_id
         self._registry.index_connection(self)
         self._answered.set()
-        if self.route is not None and self.terminated_reason is None:
+        if self._hangup_pending_answer:
+            # #D: an earlier _terminate() attempt already gave up on hanging up
+            # because call_connection_id wasn't known yet. Now that we have it,
+            # finish the job so the caller isn't left in silence indefinitely.
+            self._hangup_pending_answer = False
+            if not self.disconnected and not self._hung_up:
+                self._spawn(self._safe_hang_up())
+            return
+        if self.terminated_reason is not None:
+            return
+        if self.route is not None:
             self._start_timer(self.settings.media_connect_timeout, self._media_watchdog_fired)
 
     def mark_connected(self) -> None:
@@ -165,17 +177,24 @@ class CallSession:
         self.disconnected = True
         self.request_end("caller_hangup", None)
         self._cancel_timers()
-        if self._safety_timer is not None:
-            self._safety_timer.cancel()
+        self._cancel_safety_timer()
         self._spawn(self._finalize())
 
     def on_play_done(self, failed: bool) -> None:
         if failed:
             logger.warning("play_failed %s", self.log_context)
         if self.hangup_after_play:
-            if self._safety_timer is not None:
-                self._safety_timer.cancel()
+            self._cancel_safety_timer()
             self._spawn(self._safe_hang_up())
+
+    def _cancel_safety_timer(self) -> None:
+        # #A: cancelling the timer while _safe_hang_up() is already awaiting the
+        # underlying HTTP call would inject CancelledError into that await and
+        # drop the request on the floor (the caller stays connected). Once
+        # _hung_up is set the request is in flight (or done); only cancel the
+        # timer while it is still merely sleeping.
+        if self._safety_timer is not None and not self._hung_up:
+            self._safety_timer.cancel()
 
     # --- timers -------------------------------------------------------
 
@@ -251,21 +270,52 @@ class CallSession:
                 )
             except Exception:
                 logger.warning("play_media failed %s", self.log_context, exc_info=True)
-                self._safety_timer.cancel()
+                self._cancel_safety_timer()
                 await self._safe_hang_up()
         except Exception:
             logger.exception("terminate failed %s", self.log_context)
 
+    # Status codes meaning the call is already gone server-side, so the hang_up
+    # is done in spirit even though it "failed" — nothing to retry.
+    _TERMINAL_HANGUP_STATUSES = frozenset({404, 410})
+
     async def _safe_hang_up(self) -> None:
-        if self.disconnected or self._hung_up or not self.call_connection_id:
+        if self.disconnected or self._hung_up:
+            return
+        if not self.call_connection_id:
+            # #D: nothing to hang up yet — remember to retry once set_answered()
+            # supplies a call_connection_id, so the caller isn't stranded.
+            self._hangup_pending_answer = True
             return
         self._hung_up = True
         try:
-            await self._acs_client.get_call_connection(self.call_connection_id).hang_up(is_for_everyone=True)
+            # #A: shield so that if this coroutine's own task gets cancelled
+            # (e.g. by a stray timer cancel that races past _cancel_safety_timer's
+            # guard), the underlying hang_up request is not dropped mid-flight.
+            await asyncio.shield(
+                self._acs_client.get_call_connection(self.call_connection_id).hang_up(is_for_everyone=True)
+            )
         except HttpResponseError as exc:
-            logger.info("hang_up ignored status=%s %s", exc.status_code, self.log_context)
+            if exc.status_code in self._TERMINAL_HANGUP_STATUSES:
+                logger.info("hang_up ignored status=%s %s", exc.status_code, self.log_context)
+            else:
+                # #B: a transient failure (5xx, 429, network-ish error surfaced as
+                # HttpResponseError) must not be treated as "done" — clear the
+                # flag so a later _safe_hang_up() call (safety timer, sweep,
+                # another end path) can retry instead of silently no-op'ing
+                # forever with the caller still connected.
+                logger.warning("hang_up failed status=%s %s", exc.status_code, self.log_context, exc_info=True)
+                self._hung_up = False
+        except asyncio.CancelledError:
+            raise
         except Exception:
             logger.warning("hang_up failed %s", self.log_context, exc_info=True)
+            self._hung_up = False
+
+    def force_hang_up(self) -> None:
+        """Best-effort hang-up used by sweep(): fire-and-forget, never raises."""
+        if not self.disconnected and not self._hung_up and self.call_connection_id:
+            self._spawn(self._safe_hang_up())
 
     async def _finalize(self) -> None:
         try:

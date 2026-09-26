@@ -267,3 +267,130 @@ async def test_sweep_ends_and_removes_stale_sessions(fake_acs):
     assert session.terminated_reason == "stale"
     assert len(registry) == 0
     assert registry.get_by_connection("conn-1") is None
+
+
+class SlowHangUpConnection:
+    """A call connection whose hang_up() takes a while to resolve, so tests can
+    exercise races between an in-flight hang_up and a concurrent timer cancel."""
+
+    def __init__(self, acs, delay):
+        self._acs = acs
+        self._delay = delay
+
+    async def play_media(self, play_source, play_to="all", operation_context=None, **kwargs):
+        if self._acs.play_error is not None:
+            raise self._acs.play_error
+        self._acs.log.append(("play", play_source.text))
+
+    async def hang_up(self, is_for_everyone, **kwargs):
+        self._acs.log.append(("hang_up_start", is_for_everyone))
+        await asyncio.sleep(self._delay)
+        self._acs.log.append(("hang_up_sent", is_for_everyone))
+
+
+class SlowHangUpAcs:
+    def __init__(self, delay):
+        self.log = []
+        self.play_error = None
+        self._delay = delay
+
+    def get_call_connection(self, call_connection_id):
+        return SlowHangUpConnection(self, self._delay)
+
+
+async def test_late_play_done_during_inflight_safety_hangup_still_completes():
+    # Reviewer-found bug #A: if PlayCompleted arrives while the safety timer's
+    # hang_up is already awaiting the HTTP call, on_play_done must not cancel
+    # that in-flight request out from under it.
+    acs = SlowHangUpAcs(delay=0.05)
+    session, _ = make(acs)
+    connected(session)
+    session.ws_used = True
+    session.request_end("call_cap", GOODBYE)
+    await settle()
+    assert acs.log == [("play", GOODBYE)]
+    # Let the safety timer fire and start its hang_up, then race on_play_done
+    # against it while the hang_up call is still in flight.
+    await settle(0.1)
+    assert acs.log[-1] == ("hang_up_start", True)
+    session.on_play_done(failed=False)
+    await settle(0.1)
+    assert ("hang_up_sent", True) in acs.log
+    assert acs.log.count(("hang_up_sent", True)) == 1
+
+
+class FlakyThenOkConnection:
+    def __init__(self, acs):
+        self._acs = acs
+
+    async def play_media(self, play_source, play_to="all", operation_context=None, **kwargs):
+        self._acs.log.append(("play", play_source.text))
+
+    async def hang_up(self, is_for_everyone, **kwargs):
+        self._acs.attempts += 1
+        if self._acs.attempts <= self._acs.fail_times:
+            raise HttpResponseError(message="server error", response=SimpleNamespaceResponse(503))
+        self._acs.log.append(("hang_up", is_for_everyone))
+
+
+class SimpleNamespaceResponse:
+    def __init__(self, status_code):
+        self.status_code = status_code
+
+
+class FlakyThenOkAcs:
+    def __init__(self, fail_times=1):
+        self.log = []
+        self.attempts = 0
+        self.fail_times = fail_times
+
+    def get_call_connection(self, call_connection_id):
+        return FlakyThenOkConnection(self)
+
+
+async def test_transient_hangup_failure_is_retried_by_safety_timer():
+    # Reviewer-found bug #B: a transient (5xx) hang_up failure must not be
+    # treated as terminal — a later attempt (here, a direct retry, standing in
+    # for sweep()/force_hang_up() finding the session still up) must still get
+    # the call down.
+    acs = FlakyThenOkAcs(fail_times=1)
+    session, registry = make(acs)
+    session.set_answered("conn-1")
+    session.ws_used = True
+    session.request_end("voicelive_connect_failed", FALLBACK)
+    await settle(0.1)  # wait_timeout elapses (never connected) -> _safe_hang_up
+    assert acs.attempts == 1
+    assert ("hang_up", True) not in acs.log
+    assert session._hung_up is False
+    # A later retry path (e.g. another end-path or sweep) can still succeed.
+    await session._safe_hang_up()
+    assert acs.attempts == 2
+    assert ("hang_up", True) in acs.log
+
+
+async def test_sweep_hangs_up_stale_answered_session():
+    acs = FlakyThenOkAcs(fail_times=0)
+    session, registry = make(acs)
+    session.set_answered("conn-1")
+    removed = registry.sweep(max_age=10, now=session.created_at + 11)
+    await settle()
+    assert removed == 1
+    assert ("hang_up", True) in acs.log
+
+
+async def test_request_end_before_set_answered_still_hangs_up_once_answered(fake_acs):
+    # Reviewer-found bug #D: request_end() can run before set_answered() ever
+    # supplies call_connection_id (e.g. CallConnected racing ahead of the
+    # answer_call() response). _terminate() then waits up to wait_timeout for
+    # _answered, times out, and _safe_hang_up() no-ops for lack of a connection
+    # id. If set_answered() then arrives late, the caller must not be left in
+    # silence forever.
+    session, registry = make(fake_acs, route=None)
+    session.mark_connected()
+    await settle(0.1)  # wait_timeout (0.05) elapses with call_connection_id still None
+    assert session.terminated_reason == "route_miss"
+    assert fake_acs.log == []
+    assert session._hung_up is False
+    session.set_answered("conn-1")
+    await settle()
+    assert fake_acs.log == [("hang_up", True)]
