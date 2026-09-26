@@ -256,6 +256,16 @@ class VoiceLiveMediaHandler:
         )
 
     # ------------------------------------------------------------------
+    # Lifecycle hooks — no-ops here; telephony subclasses override
+    # ------------------------------------------------------------------
+
+    async def on_call_cap(self):
+        return None
+
+    async def on_idle(self):
+        return None
+
+    # ------------------------------------------------------------------
     # Audio output to client
     # ------------------------------------------------------------------
 
