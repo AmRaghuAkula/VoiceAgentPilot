@@ -25,12 +25,15 @@ Last updated: 2026-09-25 · Plan: [2026-09-25-telephony-bridge-step3.md](2026-09
 | U06 | Task 5 — expiry reasons and cap/idle hooks | M2 | `feat/tb-t05-expiry-hooks` | 4 |
 | U07 | Task 6 — Voice Live agent mode | M2 | `feat/tb-t06-voicelive-agent-mode` | 11 |
 | U08 | Task 7 — signing and call session lifecycle | M3 | `feat/tb-t07-call-session` | 31 |
-| U09 | Task 8 — IncomingCall answer and callbacks | M4 | `feat/tb-t08-bridge-calls` | 12 |
-| U10 | Task 9 — ACS media handler bound to session | M4 | `feat/tb-t09-acs-media-handler` | 9 |
-| U11 | Task 10 — callback JWT and ACS routes | M4 | `feat/tb-t10-acs-routes` | 17 |
-| U12 | Task 11 — docs and config sample | M5 | `feat/tb-t11-docs` | 0 (runs the full ~151-test suite + 2 grep checks) |
+| U09 | Task 7.5 — fail closed if web client + telephony both active (D-028) | M3 | `feat/tb-t075-webclient-guard` | not yet written; small, see task text below |
+| U10 | Task 8 — IncomingCall answer and callbacks | M4 | `feat/tb-t08-bridge-calls` | 12 |
+| U11 | Task 9 — ACS media handler bound to session | M4 | `feat/tb-t09-acs-media-handler` | 9 |
+| U12 | Task 10 — callback JWT and ACS routes | M4 | `feat/tb-t10-acs-routes` | 17 |
+| U13 | Task 11 — docs and config sample | M5 | `feat/tb-t11-docs` | 0 (runs the full ~151-test suite + 2 grep checks) |
 
-**Test readiness today:** all ~151 unit tests are **written out in full in the plan**, but **none exist in the repo or have run yet**. The 9 live acceptance tests (spec §8) can't run until M6.
+**Test readiness today:** all ~151 original unit tests are **written out in full in the plan**, but as of U08's merge, 200 exist and pass in the repo (the plan's estimates have grown at every reviewed unit so far — see STATUS.md §1). U09 is new, added 2026-09-27 (see below), not in the original ~151 count. The 9 live acceptance tests (spec §8) can't run until M6.
+
+**U09 was inserted after the original plan was written.** It answers Q-007/implements D-028 (see DECISIONS.md): the bridge must refuse to start, not just warn, if `ENABLE_WEB_CLIENT=true` and a telephony provider is active at the same time. It has no "Task 7.5" text in the step3.md plan document (that file's Task numbering is untouched) — the builder implements it directly against `server/server.py`'s existing structure (see U05's Task 4 for the pattern: `BridgeConfigError` → log → `sys.exit(1)`), writes its own small test file, and follows the same TDD/review/PR lifecycle as every other unit.
 
 ---
 
@@ -84,7 +87,7 @@ Last updated: 2026-09-25 · Plan: [2026-09-25-telephony-bridge-step3.md](2026-09
 | Expiry reasons and hooks | 4 |
 | Agent-mode connect, session contents, id logging, drop detection, force close | 11 |
 
-## M3 — Call lifecycle (U08)
+## M3 — Call lifecycle (U08–U09)
 
 This is the part the four design reviews focused on.
 
@@ -95,15 +98,17 @@ This is the part the four design reviews focused on.
 - The goodbye at the call limit plays immediately.
 - Every call is removed from memory when it ends.
 - The signed per-call URLs reject tampering without crashing.
+- **(U09, added 2026-09-27) The bridge refuses to start — does not merely warn — if the unauthenticated web debug client and a telephony provider are configured active at the same time (D-028).**
 
-**Test coverage (31):**
+**Test coverage (31 original + U09's new tests):**
 
 | Area | Tests |
 | --- | --- |
 | URL signing | 9 |
 | Lifecycle, including every race condition from the design reviews | 22 |
+| Web-client/telephony mutual-exclusion startup guard (U09) | new, written test-first by the builder |
 
-## M4 — Phone-call integration and security (U09–U11)
+## M4 — Phone-call integration and security (U10–U12)
 
 **Definition of done:**
 - Incoming calls are answered by route. A known number is connected to the agent; an unknown number hears the fallback, then the call ends.
@@ -121,7 +126,7 @@ This is the part the four design reviews focused on.
 | Callback token check | 9 |
 | End-to-end routes | 8 |
 
-## M5 — Docs and final polish (U12)
+## M5 — Docs and final polish (U13)
 
 **Definition of done:**
 - The README documents:
@@ -134,7 +139,7 @@ This is the part the four design reviews focused on.
 - **The full suite passes (~151 tests).**
 - A code search finds no real-estate words, agent names or phone numbers in application code.
 
-Once U12 merges, `main` is the complete Step 3 bridge.
+Once U13 merges, `main` is the complete Step 3 bridge.
 
 ---
 

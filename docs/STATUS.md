@@ -23,10 +23,11 @@ This table is updated **inside each unit's own PR** (D-017), so what `main` show
 | U06 | Task 5 — expiry hooks | M2 | CLOSED | `feat/tb-t05-expiry-hooks` | [#7](https://github.com/AmRaghuAkula/VoiceAgentPilot/pull/7) | 153/4 (149 pre-existing + 4 new) | 1 round; clean, low-severity notes only | 1 round; clean, 1 medium latent finding logged as Q-008 |
 | U07 | Task 6 — Voice Live agent mode | M2 | CLOSED | `feat/tb-t06-voicelive-agent-mode` | [#8](https://github.com/AmRaghuAkula/VoiceAgentPilot/pull/8) | 165/11 (grew via review) | 2 rounds; round 1 found a real blocking bug (B1) plus 3 recommended fixes, all fixed; round 2 clean | 2 rounds; round 1 found the same B1 bug independently, confirmed D-004 intact both rounds |
 | U08 | Task 7 — call session | M3 | CLOSED | `feat/tb-t07-call-session` | [#9](https://github.com/AmRaghuAkula/VoiceAgentPilot/pull/9) | 35/31 (200 total; grew via review) | 2 rounds; round 1 found 3 real bugs (#A/#B/#D), all fixed; round 2 clean, ready to merge | 2 rounds; both clean |
-| U09 | Task 8 — bridge calls | M4 | NEXT | `feat/tb-t08-bridge-calls` | — | 0/12 | — | — — **also implements D-028: refuse to start (not just warn) if `ENABLE_WEB_CLIENT=true` and a telephony provider is active, per founder answer to Q-007** |
-| U10 | Task 9 — ACS media handler | M4 | QUEUED | `feat/tb-t09-acs-media-handler` | — | 0/9 | — | — |
-| U11 | Task 10 — ACS routes | M4 | QUEUED | `feat/tb-t10-acs-routes` | — | 0/17 | — | — |
-| U12 | Task 11 — docs | M5 | QUEUED | `feat/tb-t11-docs` | — | full suite | — | — |
+| U09 | Task 7.5 — web-client/telephony mutual exclusion (D-028) | M3 | NEXT | `feat/tb-t075-webclient-guard` | — | 0/(not yet written) | — | — — **inserted 2026-09-27, not in the original plan; implements D-028/Q-007: refuse to start (not just warn) if `ENABLE_WEB_CLIENT=true` and a telephony provider is active. See milestones doc M3.** |
+| U10 | Task 8 — bridge calls | M4 | QUEUED | `feat/tb-t08-bridge-calls` | — | 0/12 | — | — |
+| U11 | Task 9 — ACS media handler | M4 | QUEUED | `feat/tb-t09-acs-media-handler` | — | 0/9 | — | — |
+| U12 | Task 10 — ACS routes | M4 | QUEUED | `feat/tb-t10-acs-routes` | — | 0/17 | — | — |
+| U13 | Task 11 — docs | M5 | QUEUED | `feat/tb-t11-docs` | — | full suite | — | — |
 | M6 | Deploy (Step 4) | M6 | BLOCKED | — | — | — | — | — |
 | M7 | Live acceptance tests | M7 | BLOCKED | — | — | 0/9 live | — | — |
 
@@ -37,9 +38,9 @@ This table is updated **inside each unit's own PR** (D-017), so what `main` show
 | M0 | not started |
 | M1 | complete (U02–U05 all CLOSED) |
 | M2 | complete (U06–U07 all CLOSED) |
-| M3 | complete (U08 CLOSED, its only unit) |
-| M4 | not started |
-| M5 | not started |
+| M3 | in progress (U08 CLOSED; U09 added 2026-09-27 and NEXT) |
+| M4 | not started (U10–U12) |
+| M5 | not started (U13) |
 | M6–M8 | blocked (§3: Q-002 to Q-006) |
 
 **Unit tests passing overall:** 200 / ~250 (running total, `pytest --collect-only`). U01: 1 planned → 3; U02: 7 planned → 10; U03: 20 planned → 38; U04: 34 planned → 92 (four review rounds on the startup validator — see §2); U05: 5 planned → 5 (+1 regression test landed in U04's `test_bridge_config.py` for a `cso` finding, so the file-level total this unit touched is 149); U06: 4 planned → 4; U07: 11 planned → 12 (one regression test added for the interim_response deep-thaw bug found in review — see D-026); U08: 31 planned → 35 (4 regression tests added for the hang-up-retry bugs found in review — see D-027). Later units' "planned" counts in this table are the plan's original estimates and will likely grow the same way once reviewed.
