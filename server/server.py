@@ -83,6 +83,18 @@ for _finder, _mod_name, _ispkg in pkgutil.iter_modules(_providers_pkg.__path__):
 
 _telephony_client = detect_provider()
 
+# D-028: the web debug client (/web/ws, unauthenticated) and a real telephony provider must
+# never both be active. Fail startup rather than just warn (supersedes the warn-only behavior
+# D-005/D-024/U05 shipped; answers Q-007).
+if bridge.enable_web_client and _telephony_client:
+    logger.error(
+        "Refusing to start: ENABLE_WEB_CLIENT=true and telephony provider '%s' are both "
+        "active. The unauthenticated web debug client must never run alongside a real "
+        "telephony provider (D-028). Disable one of the two and restart.",
+        _telephony_client,
+    )
+    sys.exit(1)
+
 # Warn if multiple telephony credentials are set — only one can be active
 _configured_providers = get_configured_providers()
 if len(_configured_providers) > 1:
