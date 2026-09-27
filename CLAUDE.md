@@ -2,7 +2,32 @@
 
 > Claude Code reads this file automatically at the start of every session. It is the **startup guide**: the rules every agent follows, in every session, with no exceptions. Do not delete or rename it.
 > Modeled on HireAstra's session protocol (see D-010 in [docs/DECISIONS.md](docs/DECISIONS.md)).
-> Last updated: 2026-09-25
+> Last updated: 2026-09-27
+
+---
+
+## 0. Model routing (read this first, every session)
+
+**Implementing a unit (the builder), fixing review findings, the Opus code review, `cso`, and writing or revising a design spec all run on Opus, unconditionally** — not just when the unit looks architecturally subtle. This supersedes D-014's mechanical/architectural split for these specific task types.
+
+Everything else — running the test suite, opening/merging a PR, sequencing the next unit, status/decision commits, the daily email, and session-start checks — stays on **Sonnet**.
+
+| Task | Model |
+| --- | --- |
+| Implement a unit (code + tests) | **Opus** |
+| Fix review findings | **Opus** |
+| Opus code-review | **Opus** |
+| `cso` security review | **Opus** |
+| Write or revise a design spec | **Opus** |
+| Design-review round on a spec | **Opus** |
+| Run the test suite | Sonnet |
+| Open the PR / merge + delete branch | Sonnet |
+| Pick/sequence the next unit | Sonnet (escalate per D-014 only if genuinely subtle) |
+| Status/Decisions commit, daily email | Sonnet |
+| Session-start protocol checks | Sonnet |
+| Architecture-tradeoff / D-002-tension decisions (D-030 delegation) | **Opus** |
+
+Full reasoning and history: [D-034](docs/DECISIONS.md). Founder instruction, no stated end condition — applies until the founder says otherwise.
 
 ---
 
@@ -179,6 +204,7 @@ Modeled on HireAstra's rule, which was written after a real incident: code was r
 - **Upstream:** changes go in new files where possible; upstream files get small hooks only. `git merge upstream/main` must stay clean (D-002). PRs are merged with merge commits, never squashed (D-016).
 - **Don't touch** `infra/`, `hooks/` or `azure.yaml`, and don't run `azd`, until M6 is unblocked.
 - **Commits:** author `Raghu Akula` (repo-local git config, see §4 bootstrap). Every commit message, including merge commits, ends with the `Co-Authored-By:` trailer of the model doing the work.
+- **Model routing:** see §0 above (D-034) — build/review/spec-drafting work is Opus-only, unconditionally.
 
 ## 11. File map
 
