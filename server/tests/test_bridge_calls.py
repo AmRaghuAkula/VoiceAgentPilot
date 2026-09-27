@@ -1,5 +1,7 @@
 import asyncio
 
+import pytest
+
 from app.bridge_config import load_bridge_config
 from app.providers.acs.bridge_calls import BridgeCallController
 from app.providers.acs.call_session import CallSessionRegistry
@@ -134,3 +136,103 @@ async def test_dev_tunnel_override(fake_acs):
     await controller.handle_incoming(incoming(), HOST)
     assert fake_acs.answer_kwargs["callback_url"].startswith("https://tunnel.example/acs/callbacks/")
     assert fake_acs.answer_kwargs["media_streaming"].transport_url.startswith("wss://tunnel.example/acs/ws/")
+
+
+# --- malformed input (review finding: the controller must never raise on bad payloads) ---
+
+MALFORMED_INCOMING = [
+    None,
+    {"a": 1},
+    "x",
+    ["x", 1, None],
+    [{"eventType": "Microsoft.EventGrid.SubscriptionValidationEvent"}],
+    [{"eventType": "Microsoft.EventGrid.SubscriptionValidationEvent", "data": None}],
+    [{"eventType": "Microsoft.EventGrid.SubscriptionValidationEvent", "data": {"validationCode": 5}}],
+    [{"eventType": "Microsoft.EventGrid.SubscriptionValidationEvent", "data": {"validationCode": ""}}],
+    [{"eventType": "Microsoft.Communication.IncomingCall", "data": "str"}],
+    [{"eventType": "Microsoft.Communication.IncomingCall", "data": None}],
+]
+
+
+@pytest.mark.parametrize("body", MALFORMED_INCOMING)
+async def test_malformed_incoming_body_is_400_without_session(fake_acs, body):
+    controller, registry = make(fake_acs)
+    _, status = await controller.handle_incoming(body, HOST)
+    assert status == 400
+    assert len(registry) == 0
+    assert fake_acs.answer_kwargs is None
+
+
+async def test_non_string_incoming_call_context_is_400_without_session(fake_acs):
+    controller, registry = make(fake_acs)
+    _, status = await controller.handle_incoming(incoming(context={"not": "a string"}), HOST)
+    assert status == 400
+    assert len(registry) == 0
+    assert fake_acs.answer_kwargs is None
+
+
+@pytest.mark.parametrize("events", [None, {"type": "Microsoft.Communication.CallConnected"}, "x",
+                                    ["x", 1, None], [{"data": {}}]])
+async def test_malformed_callbacks_for_known_key_do_not_raise_or_change_state(fake_acs, events):
+    controller, registry = make(fake_acs)
+    await controller.handle_incoming(incoming(), HOST)
+    (key,) = list(registry._by_key)
+    session = registry.get(key)
+    controller.handle_callbacks(key, events)
+    await asyncio.sleep(0.02)
+    assert not session._connected.is_set()
+    assert session.terminated_reason is None
+    assert registry.get(key) is session
+    assert fake_acs.log == []
+
+
+# --- base URL handling (review finding: broken URLs from a bad override) ---
+
+@pytest.mark.parametrize("override", ["tunnel.example", "tunnel.example/path", "ftp://tunnel.example",
+                                      "https://", "https://tunnel.example/?x=1"])
+def test_invalid_override_is_rejected_at_construction(fake_acs, override):
+    bridge = load_bridge_config(acs_env(), acs_active=True)
+    with pytest.raises(ValueError):
+        BridgeCallController(acs_client=fake_acs, bridge=bridge, registry=CallSessionRegistry(),
+                             public_base_url_override=override)
+
+
+async def test_override_with_path_keeps_path_in_both_urls(fake_acs):
+    bridge = load_bridge_config(acs_env(), acs_active=True)
+    controller = BridgeCallController(
+        acs_client=fake_acs, bridge=bridge, registry=CallSessionRegistry(),
+        public_base_url_override="https://tunnel.example/bridge/",
+    )
+    await controller.handle_incoming(incoming(), HOST)
+    assert fake_acs.answer_kwargs["callback_url"].startswith("https://tunnel.example/bridge/acs/callbacks/")
+    assert fake_acs.answer_kwargs["media_streaming"].transport_url.startswith("wss://tunnel.example/bridge/acs/ws/")
+
+
+@pytest.mark.parametrize("host_url", ["", None, "bridge.example"])
+async def test_invalid_host_url_is_400_without_session(fake_acs, host_url):
+    controller, registry = make(fake_acs)
+    _, status = await controller.handle_incoming(incoming(), host_url)
+    assert status == 400
+    assert len(registry) == 0
+    assert fake_acs.answer_kwargs is None
+
+
+# --- race: caller hangs up while answer_call is still in flight ---
+
+async def test_disconnect_during_answer_leaves_no_connection_index(fake_acs):
+    controller, registry = make(fake_acs)
+    real_answer = fake_acs.answer_call
+
+    async def answer_with_disconnect_racing_ahead(**kwargs):
+        (key,) = list(registry._by_key)
+        controller.handle_callbacks(key, [{"type": "Microsoft.Communication.CallDisconnected", "data": {}}])
+        await asyncio.sleep(0.02)  # let the session finalize (and leave the registry) before answer returns
+        assert len(registry) == 0
+        return await real_answer(**kwargs)
+
+    fake_acs.answer_call = answer_with_disconnect_racing_ahead
+    await controller.handle_incoming(incoming(), HOST)
+    await asyncio.sleep(0.02)
+    assert len(registry) == 0
+    assert registry._by_conn == {}
+    assert registry.get_by_connection("conn-1") is None

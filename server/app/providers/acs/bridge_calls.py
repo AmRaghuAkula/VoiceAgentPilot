@@ -24,6 +24,20 @@ VALIDATION_EVENT = "Microsoft.EventGrid.SubscriptionValidationEvent"
 INCOMING_CALL_EVENT = "Microsoft.Communication.IncomingCall"
 
 
+def _valid_base(url: object) -> bool:
+    """An absolute http(s) base URL with a host and no query/fragment, so URLs can be appended to it."""
+    if not isinstance(url, str):
+        return False
+    parsed = urlparse(url)
+    return (
+        parsed.scheme in ("http", "https")
+        and bool(parsed.hostname)
+        and not parsed.query
+        and not parsed.fragment
+        and not parsed.params
+    )
+
+
 def settings_from_bridge(bridge: BridgeConfig) -> SessionSettings:
     return SessionSettings(
         fallback_message=bridge.fallback_message,
@@ -38,6 +52,8 @@ def settings_from_bridge(bridge: BridgeConfig) -> SessionSettings:
 class BridgeCallController:
     def __init__(self, *, acs_client, bridge: BridgeConfig, registry: CallSessionRegistry,
                  public_base_url_override: str = ""):
+        if public_base_url_override and not _valid_base(public_base_url_override):
+            raise ValueError("public_base_url_override must be an absolute http(s) URL with a host")
         self.acs_client = acs_client
         self.bridge = bridge
         self.registry = registry
@@ -45,20 +61,34 @@ class BridgeCallController:
         self.settings = settings_from_bridge(bridge)
 
     async def handle_incoming(self, events: list | None, host_url: str) -> tuple[dict | str, int]:
-        for event in events or []:
+        # Never raise on a malformed Event Grid body: anything unexpected is a 400.
+        if not isinstance(events, list):
+            return "", 400
+        for event in events:
+            if not isinstance(event, dict):
+                continue
             event_type = event.get("eventType")
+            data = event.get("data")
+            data = data if isinstance(data, dict) else {}
             if event_type == VALIDATION_EVENT:
-                return {"validationResponse": event["data"]["validationCode"]}, 200
+                code = data.get("validationCode")
+                if not isinstance(code, str) or not code:
+                    return "", 400
+                return {"validationResponse": code}, 200
             if event_type == INCOMING_CALL_EVENT:
-                return await self._answer(event.get("data") or {}, host_url)
+                return await self._answer(data, host_url)
         return "", 400
 
     async def _answer(self, data: dict, host_url: str) -> tuple[str, int]:
         context = data.get("incomingCallContext")
         called = called_number_from_event(data)
         caller = caller_number_from_event(data)
-        if not context:
+        if not isinstance(context, str) or not context:
             logger.warning("incoming_call missing incomingCallContext called=%s", mask_number(called))
+            return "", 400
+        base = (self.public_base_url_override or host_url or "").rstrip("/")
+        if not _valid_base(base):
+            logger.error("incoming_call rejected: no valid public base url called=%s", mask_number(called))
             return "", 400
 
         route = resolve_route(self.bridge.routes, called)
@@ -73,7 +103,6 @@ class BridgeCallController:
         )
         self.registry.add(session)
 
-        base = (self.public_base_url_override or host_url).rstrip("/")
         secret = self.bridge.media_ws_token
         kwargs = {
             "incoming_call_context": context,
@@ -82,9 +111,12 @@ class BridgeCallController:
             "operation_context": "bridge",
         }
         if route is not None:
-            netloc = urlparse(base).netloc
+            # Media always goes over wss, but keeps the base's host and path so the callback
+            # and media URLs point at the same deployment (e.g. a dev tunnel with a path prefix).
+            parsed = urlparse(base)
+            ws_base = f"wss://{parsed.netloc}{parsed.path}"
             kwargs["media_streaming"] = MediaStreamingOptions(
-                transport_url=f"wss://{netloc}/acs/ws/{session.call_key}/{sign(secret, 'ws', session.call_key)}",
+                transport_url=f"{ws_base}/acs/ws/{session.call_key}/{sign(secret, 'ws', session.call_key)}",
                 transport_type=StreamingTransportType.WEBSOCKET,
                 content_type=MediaStreamingContentType.AUDIO,
                 audio_channel_type=MediaStreamingAudioChannelType.MIXED,
@@ -104,6 +136,11 @@ class BridgeCallController:
             session.mark_answer_failed()
             return "", 200
         session.set_answered(result.call_connection_id)
+        if self.registry.get(session.call_key) is not session:
+            # The call already ended (e.g. CallDisconnected raced ahead of answer_call's
+            # response) and was removed before its connection id was known; drop the
+            # connection index set_answered() just added so it doesn't leak.
+            self.registry.remove(session)
         return "", 200
 
     def handle_callbacks(self, call_key: str, events: list | None) -> None:
@@ -111,8 +148,12 @@ class BridgeCallController:
         if session is None:
             logger.info("callback for unknown call_key=%s", call_key[:8])
             return
-        for event in events or []:
-            event_type = (event or {}).get("type", "")
+        if not isinstance(events, list):
+            return
+        for event in events:
+            if not isinstance(event, dict):
+                continue
+            event_type = event.get("type", "")
             if event_type == "Microsoft.Communication.CallConnected":
                 session.mark_connected()
             elif event_type == "Microsoft.Communication.CallDisconnected":
