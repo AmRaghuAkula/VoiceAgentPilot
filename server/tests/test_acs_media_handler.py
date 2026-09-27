@@ -20,6 +20,7 @@ class FakeSession:
         self.settings = SETTINGS
         self.terminated_reason = None
         self.log_context = "call_key=abc conn=conn-1"
+        self.disconnected = False
         self.ends = []
         self.closes = 0
 
@@ -125,6 +126,24 @@ class _HangingAcs:
         return _HangingConnection()
 
 
+def make_real_session(acs_client):
+    registry = CallSessionRegistry()
+    real = CallSession(
+        call_key="k" * 32, route=AgentRoute("proj", "agent-a", "10"), masked_caller="***9876",
+        masked_called="***1234", settings=SETTINGS, acs_client=acs_client, registry=registry,
+    )
+    registry.add(real)
+    real.set_answered("conn-1")
+    real.mark_connected()
+    return real
+
+
+async def drain(real):
+    for task in list(real._tasks):
+        task.cancel()
+    await asyncio.gather(*real._tasks, return_exceptions=True)
+
+
 @pytest.mark.parametrize("hook", ["on_call_cap", "on_idle"])
 async def test_cap_and_idle_hooks_do_not_block_on_acs_io(hook):
     """Q-008: run_call_loop awaits these hooks with no timeout, so they must not await ACS I/O.
@@ -132,17 +151,65 @@ async def test_cap_and_idle_hooks_do_not_block_on_acs_io(hook):
     A real CallSession whose ACS play/hang-up never return must still let the hook return at once;
     the goodbye/fallback play runs in a task the session owns.
     """
-    registry = CallSessionRegistry()
-    real = CallSession(
-        call_key="k" * 32, route=AgentRoute("proj", "agent-a", "10"), masked_caller="***9876",
-        masked_called="***1234", settings=SETTINGS, acs_client=_HangingAcs(), registry=registry,
-    )
-    registry.add(real)
-    real.set_answered("conn-1")
-    real.mark_connected()
+    real = make_real_session(_HangingAcs())
     handler = ACSMediaHandler(handler_config(), session=real)
     await asyncio.wait_for(getattr(handler, hook)(), 0.5)
     assert real.terminated_reason == ("call_cap" if hook == "on_call_cap" else "idle")
-    for task in list(real._tasks):
-        task.cancel()
-    await asyncio.gather(*real._tasks, return_exceptions=True)
+    await drain(real)
+
+
+class _RecordingConnCtx:
+    def __init__(self):
+        self.exited = 0
+
+    async def __aexit__(self, *exc):
+        self.exited += 1
+
+
+async def test_call_ending_mid_connect_still_closes_the_late_connection(monkeypatch, fake_acs):
+    """The session's memoized close can run while connect is half-open (nothing to close yet).
+
+    When connect then completes, the handler must close the now-live connection itself rather
+    than rely on ensure_voicelive_closed(), which only returns the already-finished close task.
+    """
+    real = make_real_session(fake_acs)
+    ctx = _RecordingConnCtx()
+
+    async def late_connect(self):
+        real.on_call_disconnected()  # caller hangs up mid-connect
+        await asyncio.sleep(0.02)  # the session's close runs against the half-open handler
+        assert real._close_task is not None and real._close_task.done()
+        self._conn_ctx = ctx  # the SDK connection completes afterwards
+
+    patch_base_connect(monkeypatch, late_connect)
+    handler = ACSMediaHandler(handler_config(), session=real)
+    real.handler = handler
+    await handler.connect_voicelive()
+    assert ctx.exited == 1
+    assert handler._conn_ctx is None
+    await drain(real)
+
+
+async def test_connect_skipped_when_session_already_ended(monkeypatch, session):
+    calls = []
+
+    async def ok(self):
+        calls.append("connected")
+
+    patch_base_connect(monkeypatch, ok)
+    session.terminated_reason = "media_timeout"
+    handler = ACSMediaHandler(handler_config(), session=session)
+    await handler.connect_voicelive()
+    assert calls == []
+    assert session.ends == []
+
+
+async def test_stop_forwarding_skips_stop_audio_after_caller_hangup(session):
+    session.disconnected = True
+    handler = ACSMediaHandler(handler_config(), session=session)
+    ws = SimpleNamespace(send=AsyncMock())
+    await handler.init_websocket(ws)
+    handler.stop_forwarding_agent_audio()
+    await asyncio.sleep(0)
+    ws.send.assert_not_called()
+    assert handler._forward_agent_audio is False

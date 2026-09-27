@@ -6,6 +6,7 @@ import json
 import logging
 
 from app.handler.voicelive_media_handler import DEFAULT_CHUNK_SIZE, VoiceLiveMediaHandler
+from app.providers.acs.call_session import close_voicelive
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +35,8 @@ class ACSMediaHandler(VoiceLiveMediaHandler):
         if self.session is None:
             await super().connect_voicelive()
             return
+        if self.session.terminated_reason is not None:
+            return  # the call already ended: don't open (and bill) a Voice Live session for it
         try:
             await asyncio.wait_for(super().connect_voicelive(), self.session.settings.voice_live_connect_timeout)
         except Exception:
@@ -41,7 +44,13 @@ class ACSMediaHandler(VoiceLiveMediaHandler):
             self.session.request_end("voicelive_connect_failed", self.session.settings.fallback_message)
             raise
         if self.session.terminated_reason is not None:
-            self.session.ensure_voicelive_closed()
+            # The call ended while we were connecting. ensure_voicelive_closed() is memoized, so a
+            # close the session already ran against the half-open handler can't have closed the
+            # connection that completed afterwards: wait for it, then close again ourselves.
+            close = self.session.ensure_voicelive_closed()
+            if close is not None:
+                await asyncio.shield(close)
+            await close_voicelive(self, self.session.settings.close_timeout, self.log_context)
 
     async def on_voicelive_ended(self):
         if self.session is None:
@@ -61,8 +70,8 @@ class ACSMediaHandler(VoiceLiveMediaHandler):
 
     def stop_forwarding_agent_audio(self) -> None:
         super().stop_forwarding_agent_audio()
-        if self.client_ws is None:
-            return
+        if self.client_ws is None or (self.session is not None and self.session.disconnected):
+            return  # no media socket, or the caller already hung up: nothing to stop
         stop = json.dumps({"Kind": "StopAudio", "AudioData": None, "StopAudio": {}})
         task = asyncio.get_running_loop().create_task(self.send_message(stop))
         self._pending_sends.add(task)
