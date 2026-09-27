@@ -189,7 +189,9 @@ async def test_malformed_callbacks_for_known_key_do_not_raise_or_change_state(fa
 # --- base URL handling (review finding: broken URLs from a bad override) ---
 
 @pytest.mark.parametrize("override", ["tunnel.example", "tunnel.example/path", "ftp://tunnel.example",
-                                      "https://", "https://tunnel.example/?x=1"])
+                                      "https://", "https://tunnel.example/?x=1",
+                                      "https://user:pw@tunnel.example", "http://tunnel.example:99999",
+                                      "http://[::1"])
 def test_invalid_override_is_rejected_at_construction(fake_acs, override):
     bridge = load_bridge_config(acs_env(), acs_active=True)
     with pytest.raises(ValueError):
@@ -208,7 +210,7 @@ async def test_override_with_path_keeps_path_in_both_urls(fake_acs):
     assert fake_acs.answer_kwargs["media_streaming"].transport_url.startswith("wss://tunnel.example/bridge/acs/ws/")
 
 
-@pytest.mark.parametrize("host_url", ["", None, "bridge.example"])
+@pytest.mark.parametrize("host_url", ["", None, "bridge.example", "http://[::1", "https://a@evil.example/"])
 async def test_invalid_host_url_is_400_without_session(fake_acs, host_url):
     controller, registry = make(fake_acs)
     _, status = await controller.handle_incoming(incoming(), host_url)

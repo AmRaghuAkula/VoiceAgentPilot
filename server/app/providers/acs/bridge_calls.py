@@ -28,14 +28,20 @@ def _valid_base(url: object) -> bool:
     """An absolute http(s) base URL with a host and no query/fragment, so URLs can be appended to it."""
     if not isinstance(url, str):
         return False
-    parsed = urlparse(url)
-    return (
-        parsed.scheme in ("http", "https")
-        and bool(parsed.hostname)
-        and not parsed.query
-        and not parsed.fragment
-        and not parsed.params
-    )
+    try:
+        parsed = urlparse(url)
+        parsed.port  # raises ValueError on an out-of-range/non-numeric port
+        return (
+            parsed.scheme in ("http", "https")
+            and bool(parsed.hostname)
+            and parsed.username is None  # no credentials copied into URLs sent to ACS (D-006)
+            and parsed.password is None
+            and not parsed.query
+            and not parsed.fragment
+            and not parsed.params
+        )
+    except ValueError:  # e.g. a malformed IPv6 host from a bad Host header
+        return False
 
 
 def settings_from_bridge(bridge: BridgeConfig) -> SessionSettings:
