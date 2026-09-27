@@ -12,6 +12,8 @@ from app.provider_registry import register_provider
 
 logger = logging.getLogger(__name__)
 
+SWEEP_INTERVAL_SECONDS = 60
+
 
 @register_provider(
     name="acs",
@@ -23,57 +25,101 @@ def register_acs_routes(app, call_manager: CallManager):
     """Register ACS webhook and WebSocket routes."""
     import os
 
-    from app.providers.acs.event_handler import AcsEventHandler
-    from app.providers.acs.media_handler import ACSMediaHandler
+    from azure.communication.callautomation.aio import CallAutomationClient
 
-    # Load provider-specific config
+    from app.providers.acs.bridge_calls import BridgeCallController
+    from app.providers.acs.call_session import CallSessionRegistry
+    from app.providers.acs.callback_auth import CallbackJwtVerifier
+    from app.providers.acs.media_handler import ACSMediaHandler
+    from app.providers.acs.signing import verify
+
     app.config["ACS_CONNECTION_STRING"] = os.getenv("ACS_CONNECTION_STRING")
-    # ACS_DEV_TUNNEL: local dev only — overrides callback URL for devtunnel/ngrok.
-    # Not needed for azd up (Container Apps uses its own ingress URL).
+    # ACS_DEV_TUNNEL: local dev only — overrides the public base URL for devtunnel/ngrok.
     app.config["ACS_DEV_TUNNEL"] = os.getenv("ACS_DEV_TUNNEL", "")
 
-    acs_handler = AcsEventHandler(app.config)
+    bridge = app.config["BRIDGE"]
+    registry = CallSessionRegistry()
+    app.config["ACS_CALL_REGISTRY"] = registry
+    acs_client = CallAutomationClient.from_connection_string(app.config["ACS_CONNECTION_STRING"])
+    controller = BridgeCallController(
+        acs_client=acs_client, bridge=bridge, registry=registry,
+        public_base_url_override=app.config["ACS_DEV_TUNNEL"],
+    )
+    jwt_verifier = CallbackJwtVerifier(bridge.callback_jwt_audience) if bridge.callback_jwt_audience else None
+    if jwt_verifier is None:
+        logger.warning("ACS callback JWT check disabled (ACS_CALLBACK_JWT_AUDIENCE unset); signed URLs only")
 
     @app.route("/acs/incomingcall", methods=["POST"])
     async def incoming_call_handler():
-        """Handles initial incoming call event from EventGrid."""
-        cid = new_correlation_id()
-        logger.info("ACS incoming call event")
-        events = await request.get_json()
-        host_url = request.host_url.replace("http://", "https://", 1).rstrip("/")
-        return await acs_handler.process_incoming_call(events, host_url, app.config)
-
-    @app.route("/acs/callbacks/<context_id>", methods=["POST"])
-    async def acs_event_callbacks(context_id):
-        """Handles ACS event callbacks for call connection and streaming events."""
         new_correlation_id()
-        raw_events = await request.get_json()
-        return await acs_handler.process_callback_events(raw_events)
+        events = await request.get_json(silent=True)
+        host_url = request.host_url.replace("http://", "https://", 1).rstrip("/")
+        body, status = await controller.handle_incoming(events, host_url)
+        return body, status
 
-    @app.websocket("/acs/ws")
-    async def acs_ws():
-        """WebSocket endpoint for ACS to send audio to Voice Live."""
-        cid = new_correlation_id()
-        logger.info("Incoming ACS WebSocket connection")
+    @app.route("/acs/callbacks/<call_key>/<sig>", methods=["POST"])
+    async def acs_event_callbacks(call_key, sig):
+        new_correlation_id()
+        if not verify(bridge.media_ws_token, "cb", call_key, sig):
+            logger.warning("callback_rejected reason=bad_signature call_key=%s", call_key[:8])
+            return "", 403
+        if jwt_verifier is not None and not await jwt_verifier.verify(request.headers.get("Authorization")):
+            logger.warning("callback_rejected reason=bad_jwt call_key=%s", call_key[:8])
+            return "", 403
+        controller.handle_callbacks(call_key, await request.get_json(silent=True))
+        return "", 200
 
-        call_id = cid
-        if not await call_manager.acquire(call_id, "acs"):
+    @app.websocket("/acs/ws/<call_key>/<sig>")
+    async def acs_ws(call_key, sig):
+        new_correlation_id()
+        session = registry.get(call_key)
+        reason = None
+        if session is None:
+            reason = "unknown_call"
+        elif not verify(bridge.media_ws_token, "ws", call_key, sig):
+            reason = "bad_signature"
+        elif session.ws_used:
+            reason = "reused"
+        elif session.terminated_reason is not None:
+            reason = "terminated"
+        if reason is not None:
+            logger.warning("media_ws_rejected reason=%s call_key=%s", reason, call_key[:8])
+            return "", 403
+
+        session.ws_used = True
+        if not await call_manager.acquire(call_key, "acs"):
+            session.request_end("at_capacity", bridge.fallback_message)
             await websocket.close(4429, "Too Many Connections")
             return
 
-        handler = ACSMediaHandler(app.config)
+        handler = ACSMediaHandler(app.config, session=session)
+        session.handler = handler
         await handler.init_websocket(websocket)
+        logger.info("media_ws_accepted %s", session.log_context)
         try:
-            await run_call_loop(
-                call_manager=call_manager,
-                call_id=call_id,
-                ws=websocket,
-                handler=handler,
-            )
+            await run_call_loop(call_manager=call_manager, call_id=call_key, ws=websocket, handler=handler)
         except asyncio.CancelledError:
-            logger.info("ACS WebSocket cancelled")
+            logger.info("media_ws_closed %s", session.log_context)
         except Exception:
-            logger.exception("ACS WebSocket connection closed")
+            logger.exception("media_ws_error %s", session.log_context)
         finally:
-            await call_manager.release(call_id)
-            await handler.cleanup()
+            await call_manager.release(call_key)
+            session.on_media_ws_closed()
+            session.ensure_voicelive_closed()
+
+    async def _sweep_forever():
+        while True:
+            await asyncio.sleep(SWEEP_INTERVAL_SECONDS)
+            removed = registry.sweep(bridge.max_call_seconds + 120)
+            if removed:
+                logger.warning("stale_calls_swept count=%d", removed)
+
+    @app.before_serving
+    async def _start_sweeper():
+        app.config["ACS_SWEEPER"] = asyncio.get_running_loop().create_task(_sweep_forever())
+
+    @app.after_serving
+    async def _stop_sweeper():
+        task = app.config.get("ACS_SWEEPER")
+        if task is not None:
+            task.cancel()
