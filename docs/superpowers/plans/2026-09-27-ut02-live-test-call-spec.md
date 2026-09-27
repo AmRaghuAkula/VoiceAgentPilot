@@ -31,35 +31,43 @@ ACS has an explicit `ACS_DEV_TUNNEL` override (`bridge_calls.py`'s `public_base_
 
 ---
 
-## Tunnel: Cloudflare named tunnel (not ngrok)
+## Tunnel: Cloudflare quick tunnel (revised — named tunnel does not work without a real domain)
 
-**Decision, not still-open:** use `cloudflared` with a named tunnel, not ngrok, for the reasons below. `cloudflared` is confirmed available via `winget install Cloudflare.cloudflared` (verified present in the winget catalog on this machine, not yet installed).
+**Revision note:** this section originally specified a Cloudflare *named* tunnel, on the assumption that a free `*.cfargotunnel.com`-backed address was available with no domain owned. **That assumption was wrong, confirmed by actually attempting the flow, not by re-reading documentation:** `cloudflared tunnel login` opens a Cloudflare "Authorize Cloudflare Tunnel" page that requires selecting an existing DNS zone (domain) — with no domain on the account, the zone list is empty and there is nothing to authorize against. A named tunnel genuinely requires a real domain routed through Cloudflare DNS; there is no domain-free named-tunnel path.
 
-| | ngrok free tier | Cloudflare named tunnel |
+**Decision, revised: use the Cloudflare quick tunnel instead (`cloudflared tunnel --url ...`, no account, no domain).** This was already live-tested end-to-end before this revision (see "Verified working" below) — not a fallback taken on faith.
+
+**Why not add a domain instead:** the founder has `hireastra.ai`, but adding it to Cloudflare's free tier requires migrating its nameservers to Cloudflare, which risks breaking the domain's existing email/website DNS if anything is missed during migration — a real, hard-to-reverse risk disproportionate to a one-week pilot tunnel need. A disposable throwaway domain was considered and declined in favor of just using the quick tunnel. **This section documents why the original plan changed, so a future session doesn't re-attempt the named-tunnel path expecting it to be domain-free.**
+
+| | Quick tunnel (chosen) | Named tunnel (does not work without a domain) |
 | --- | --- | --- |
-| Cost | Free | Free |
-| URL stability across restarts | New random URL every restart, unless paid tier | Fixed hostname, permanent |
-| Setup | No account needed for a random URL | One-time: free Cloudflare account + a domain (a free `*.cfargotunnel.com`-backed setup works, or use an existing/cheap domain if the founder has one) |
-| Webhook re-pointing needed | Every tunnel restart, across Wed/Thu/Fri | Once, ever |
+| Cost | Free | Free, but requires a domain (owned or newly registered) |
+| Account/login needed | None | Yes, plus a DNS zone to authorize against |
+| URL stability across restarts | New random `*.trycloudflare.com` URL every restart | Fixed hostname, permanent — but blocked on the domain requirement above |
+| Webhook re-pointing needed | Every tunnel restart, across Wed/Thu/Fri | N/A — not used |
 
-Given the plan needs at least 2 separate test-call sessions (Wed, Thu) plus the live demo (Fri), a fixed hostname avoids re-pointing the Twilio console webhook 3+ times and avoids the specific failure mode of testing against a stale URL because the webhook wasn't updated after a tunnel restart.
+**Practical consequence:** the Twilio console webhook URL must be re-checked (and re-pointed if it changed) at the start of every test session — Wednesday, Thursday, and again before Friday's demo — since each `cloudflared tunnel --url` invocation issues a new random hostname. This is a real, recurring 30-second manual step, not a one-time setup cost; call it out explicitly in each session's pre-call checklist rather than assuming a value from a previous session still applies.
 
-**Setup steps (once):**
-1. `winget install Cloudflare.cloudflared`
-2. `cloudflared tunnel login` (opens a browser, authorizes against a free Cloudflare account — founder does this once)
-3. `cloudflared tunnel create voiceagentpilot-pilot` (creates a named tunnel, gets a stable tunnel ID)
-4. `cloudflared tunnel route dns voiceagentpilot-pilot <chosen-subdomain>.<a domain the founder controls, or a free Cloudflare-provided one>`
-5. Run `cloudflared tunnel run voiceagentpilot-pilot` alongside the local bridge, pointed at `http://localhost:8000`
+**Setup steps (per session, since the URL doesn't persist):**
+1. `winget install Cloudflare.cloudflared` (one-time only — confirmed already installed on this machine as of 2026-09-27)
+2. Start the local bridge (`python server.py`, port 8000)
+3. `cloudflared tunnel --url http://localhost:8000` — no login, no account interaction. Read the resulting `https://<random-words>.trycloudflare.com` URL from its own log output.
+4. Update the Twilio console's webhook for **+1 (226) 741-3885** to `POST https://<that session's tunnel URL>/voice` — **every session**, since the hostname changes each time.
+5. Run the acceptance criteria below.
 
-**First-step verification (per the "no PUBLIC_BASE_URL" finding above):** before pointing the real Twilio webhook at the tunnel, send one manual `curl -X POST https://<tunnel-host>/voice` (or open it in a browser) and confirm the bridge receives a request with the correct `Host` header — this single check either confirms the tunnel is safe to proceed with or surfaces a `Host`-header mismatch immediately, before it costs a wasted real test call.
+**Verified working (2026-09-27, live test, not assumed):** the quick tunnel was installed, started against a live local bridge instance, and hit with a real POST request through the resulting public URL. Confirmed via direct evidence:
+- The bridge correctly receives the tunnel's real hostname as its `Host` header (no mangling).
+- The connection is internally plain `http://` at the app layer (Cloudflare terminates TLS upstream and forwards over HTTP), which could have broken Twilio's `https`-signed-URL validation — **but the bridge already defends against this**: both `TwilioEventHandler._reconstruct_url()` (used for signature validation, `event_handler.py:21-24`) and the `/voice` route's WS-URL builder (`__init__.py:73-74`) force-rewrite the scheme to `https` before using it, independently of what the raw request showed. No code change was needed; this was already correctly handled by the existing implementation.
+- An unsigned test request correctly received `403 Forbidden` — the signature check itself is active and working, not bypassed.
+- **Not yet verified:** a real, correctly-signed Twilio webhook request through the tunnel (requires the number's webhook actually pointed here) — this remains the first live thing to confirm once UT02 proper starts.
 
 ---
 
 ## Prerequisites checklist (from the founder, in order)
 
 1. **Foundry auth for local testing** — resolve explicitly, don't assume: either (a) the local machine's `az login` identity has Foundry User on the `hireastra` project and pinned agent v10 (agent mode's `DefaultAzureCredential` path, per D-004's Entra-ID-only intent — no key needed), or (b) a Voice Live API key/endpoint is issued separately. **Path (a) is checked first** (lower setup cost, matches D-004's preference) — verify with a direct API call or the SDK's own auth check before assuming it's sufficient; if it fails, fall back to (b).
-2. **Cloudflare tunnel set up** per the steps above, verified reachable.
-3. **Webhook configured** in the Twilio console: Phone Numbers → Manage → Active Numbers → **+1 (226) 741-3885** → Voice Configuration → "A call comes in" → webhook = `POST https://<tunnel-host>/voice`.
+2. **Cloudflare quick tunnel started** per the revised steps above, this session's URL noted.
+3. **Webhook configured** in the Twilio console: Phone Numbers → Manage → Active Numbers → **+1 (226) 741-3885** → Voice Configuration → "A call comes in" → webhook = `POST https://<this session's tunnel URL>/voice` — **re-confirm/re-set this every session**, the URL is not stable across tunnel restarts.
 
 ---
 
