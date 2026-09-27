@@ -30,11 +30,11 @@ Last updated: 2026-09-25 · Plan: [2026-09-25-telephony-bridge-step3.md](2026-09
 | U11 | Task 9 — ACS media handler bound to session | M4 | `feat/tb-t09-acs-media-handler` | 9 |
 | U12 | Task 10 — callback JWT and ACS routes | M4 | `feat/tb-t10-acs-routes` | 17 |
 | U13 | Task 11 — docs and config sample | M5 | `feat/tb-t11-docs` | 0 (runs the full ~151-test suite + 2 grep checks) |
-| U14a | M6 — existing AI resource (cross-subscription), ACS text-to-speech wiring, Container App scale fix | M6 | `feat/tb-m6-u14a-existing-ai-resource` | n/a (infra: `az bicep build` + `azd provision --preview`, see [M6 plan](2026-09-27-m6-deploy-plan.md) — pending Cowork's resource inventory, Q-016) |
-| U14b | M6 — resequence to system-assigned identity (circular-dependency fix); **Opus**, per D-014 | M6 | `feat/tb-m6-u14b-system-identity` | n/a (infra: `azd provision --preview` against a clean environment) |
+| U14a | M6 — existing AI resource (cross-subscription), ACS text-to-speech wiring, Container App scale fix | M6 | `feat/tb-m6-u14a-existing-ai-resource` | n/a (infra: `az bicep build` + `azd provision --preview`, see [M6 plan](2026-09-27-m6-deploy-plan.md) — Q-012/Q-014/Q-016/Q-017 all answered, clear to start) |
+| U14b | M6 — fix the circular-dependency problem (C1); the Container App keeps the accelerator's user-assigned identity for everything, including Voice Live/Foundry User, per D-031 — not resequenced to system-assigned; **Opus**, per D-014 | M6 | `feat/tb-m6-u14b-system-identity` | n/a (infra: `azd provision --preview` against a clean environment) |
 | U14c | M6 — Key Vault media token, container right-sizing, Foundry User role GUID verification | M6 | `feat/tb-m6-u14c-secrets-and-sizing` | n/a (infra) |
-| U14d | M6 — resource-group/existing-resource naming resolution (may fold into U14a) | M6 | `feat/tb-m6-u14d-resource-naming` | n/a (infra; possibly a no-op, pending Q-016) |
-| U-CFG | M6 — hook upstream `config_validator.py`'s credential check for system-assigned identity (no API-key workaround, D-004/Q-009) | M6 | `feat/tb-m6-ucfg-identity-credential-check` | new pytest coverage, see [M6 plan](2026-09-27-m6-deploy-plan.md) |
+| U14d | M6 — RESOLVED 2026-09-27, folded into U14a | M6 | — | n/a |
+| ~~U-CFG~~ | RETIRED 2026-09-27 (D-031) — `config_validator.py`'s existing check already passes under D-031's chosen identity design; no hook needed | M6 | — | n/a |
 | U15 | M6 — `azd up`, verify, VoIP-only smoke test (requires U10–U13 also merged, not infra alone) | M6 | `feat/tb-m6-u15-deploy` | n/a (infra: `az`/`azd` verification commands + live smoke test) |
 | U16 | M6 — Event Grid number-based advanced filter (BLOCKED on Q-002) | M6 | not yet cut | n/a |
 
@@ -154,19 +154,19 @@ Once U13 merges, `main` is the complete Step 3 bridge.
 
 ### M6 — Deploy to Azure (Step 4)
 
-**Unblocked ahead of the ACS phone number (D-029, 2026-09-27).** Q-003 (region: East US 2), Q-004 (system-assigned identity), Q-005 (verify JWT at deploy time) and Q-006 (`az login`/`azd auth login`) are all answered — see [STATUS.md](../../STATUS.md) §3. Q-002 (the ACS number itself) remains open but no longer blocks M6; it blocks only M7 (live acceptance tests). Q-004's system-assigned answer is under a fresh, explicit reconsideration request as Q-015, once U14b's circular-dependency finding is factored in — see the plan doc.
+**Unblocked ahead of the ACS phone number (D-029, 2026-09-27).** Q-003 (region: East US 2), Q-005 (verify JWT at deploy time) and Q-006 (`az login`/`azd auth login`) are all answered — see [STATUS.md](../../STATUS.md) §3. Q-002 (the ACS number itself) remains open but no longer blocks M6; it blocks only M7 (live acceptance tests). **Q-004's system-assigned answer is now superseded for the Container App specifically by D-031 (Q-015, 2026-09-27):** the Container App keeps the accelerator's user-assigned identity for everything, including Voice Live/Foundry User, per D-031's own reasoning — this was a deliberate choice, not a forced consequence of the circular-dependency fix. See the plan doc and D-031.
 
-**Full implementation plan (rev 3, after two Opus review rounds):** [2026-09-27-m6-deploy-plan.md](2026-09-27-m6-deploy-plan.md) — units U14a–d, U-CFG, U15, U16, definition of done, verification steps, and the corrected Q-011 (VoIP-only validation) analysis all live there rather than being duplicated here.
+**Full implementation plan (rev 4, after Q-014/Q-015/Q-017 were answered):** [2026-09-27-m6-deploy-plan.md](2026-09-27-m6-deploy-plan.md) — units U14a–c, U15, U16 (U14d resolved/folded into U14a; **U-CFG retired**, see D-031), definition of done, verification steps, and the corrected Q-011 (VoIP-only validation) analysis all live there rather than being duplicated here.
 
 **Units and branches (see the plan doc for full detail):**
 
 | Unit | What | Branch | Status |
 | --- | --- | --- | --- |
-| U14a | Existing AI resource (cross-subscription), ACS text-to-speech wiring, Container App scale fix | `feat/tb-m6-u14a-existing-ai-resource` | QUEUED (pending Cowork's resource inventory, Q-016) |
-| U14b | Resequence to system-assigned identity — the circular-dependency fix; **Opus**, per D-014 | `feat/tb-m6-u14b-system-identity` | QUEUED |
+| U14a | Existing AI resource (cross-subscription), ACS text-to-speech wiring, Container App scale fix | `feat/tb-m6-u14a-existing-ai-resource` | QUEUED (Q-012/Q-014/Q-016/Q-017 all answered — clear to start once the founder gives "go") |
+| U14b | Fix the circular-dependency problem (C1); Container App keeps the user-assigned identity for everything per D-031, not resequenced to system-assigned; **Opus**, per D-014 | `feat/tb-m6-u14b-system-identity` | QUEUED (Q-015 answered; prerequisite is U14a merged) |
 | U14c | Key Vault media token, container right-sizing, Foundry User role GUID verification | `feat/tb-m6-u14c-secrets-and-sizing` | QUEUED |
-| U14d | Resource-group/existing-resource naming resolution (may fold into U14a) | `feat/tb-m6-u14d-resource-naming` | QUEUED |
-| U-CFG | Hook upstream `config_validator.py`'s credential check for system-assigned identity, no API-key workaround | `feat/tb-m6-ucfg-identity-credential-check` | QUEUED |
+| U14d | RESOLVED 2026-09-27, folded into U14a | — | RETIRED |
+| ~~U-CFG~~ | RETIRED 2026-09-27 (D-031) — `config_validator.py`'s existing check already passes under D-031's chosen identity design | — | RETIRED |
 | U15 | `azd up`, verify infra, run the VoIP-only smoke test (Q-011) — requires U10–U13 merged too, not infra alone | `feat/tb-m6-u15-deploy` | QUEUED |
 | U16 | Event Grid number-based advanced filter (BLOCKED on Q-002) | not yet cut | BLOCKED |
 
