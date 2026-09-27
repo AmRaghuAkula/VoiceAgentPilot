@@ -212,3 +212,25 @@ U14a–c's Bicep changes touch up to 10 files that are otherwise pure upstream: 
 ### D-033 · 2026-09-27 · Q-014 answered by the founder directly: Application Insights instrumentation deferred to production hardening (Stage 3)
 M6's monitoring scope is **Log Analytics container logs plus Foundry's own conversation tracing** — not Application Insights. No Bicep wiring of `appInsightsConnectionString` and no `azure-monitor-*`/`opentelemetry-*` SDK dependency or instrumentation code is added to `server/` as part of M6. This is a backlog item, revisited at production hardening (HANDOFF.md's Stage 3), not part of U14a's scope. **Foundry's own conversation tracing depends on tracing/telemetry being enabled on the Foundry project's own side** (in `rg-hireastra`, outside this repo's Bicep and outside M6's scope) — this entry records the M6 monitoring decision, it does not itself confirm that project-side setting is on; U15's verification step should check it rather than assume it.
 **Why:** the founder's direct call (option B of the two the M6 plan's C8/Q-014 finding presented) — App Insights needs real Bicep wiring *and* new OpenTelemetry/Application Insights SDK code in `server/` (confirmed: `server/pyproject.toml` has no such dependency today), which is real application code work, not a one-line infra fix, and is better scoped deliberately at hardening time than bolted onto the first production deploy. **Source:** founder, direct answer, 2026-09-27 (no further partner analysis needed — the founder answered this one directly, unlike Q-015/Q-017).
+
+### D-034 · 2026-09-27 · Model routing: build, review and design-drafting work all run on Opus, unconditionally — supersedes D-014's mechanical/architectural split for these specific task types
+**Supersedes D-014 in part.** D-014 said: *"Mechanical work runs on Sonnet. Complex, architectural or subtle work pauses to ask the founder to switch to Opus (or Fable), and the model is never switched silently."* That split still governs planning/sequencing/status/session-check work. It no longer governs the task types below, which now run on Opus unconditionally, regardless of whether the specific unit looks mechanical or architecturally subtle:
+
+| Task | Model |
+| --- | --- |
+| Implement a unit (code + tests, the builder role) | **Opus** |
+| Fix review findings | **Opus** |
+| Opus code-review (`/code-review`) | **Opus** (unchanged — already Opus per D-013) |
+| `cso` security review | **Opus** (unchanged — already Opus per D-013) |
+| Write or revise a design spec | **Opus** |
+| Design-review round on a spec | **Opus** (unchanged — already Opus per D-013/D-008) |
+| Run the test suite | Sonnet |
+| Open the PR / merge + delete branch | Sonnet |
+| Pick/sequence the next unit | Sonnet (escalate to Opus per D-014 only if the sequencing call is itself genuinely subtle) |
+| Status/Decisions commit, daily email | Sonnet |
+| Session-start protocol checks | Sonnet |
+| Architecture-tradeoff / D-002-tension decisions (D-030 delegation) | **Opus** (unchanged) |
+
+**Why:** the founder gave this instruction directly and explicitly, in two steps, at the start of the M4 build push (U10 onward): first "ensure all the builds are happening on Opus only, reviews on Opus and CSO also on Opus only," then, on seeing an early draft of this table that had put design-spec drafting on Sonnet, the correction "mechanical work still runs on Sonnet, but the build work moves to Opus" — followed by a direct correction that spec-drafting itself belongs on Opus too, since drafting a design spec is design work, not mechanical transcription (only the design-review round was previously known to require Opus). No stated end condition or unit-count limit was given, so this applies to all units going forward, not just U10 or M4, until the founder says otherwise.
+
+**Source:** founder, direct instruction, 2026-09-27, given verbally across three messages in the same session (not filed as a Q-NNN, since it's the founder's own standing instruction, not a partner-proposed option awaiting sign-off — matching how D-013's original review-pipeline instruction was also recorded directly as a founder standing rule).

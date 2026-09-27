@@ -179,6 +179,7 @@ Modeled on HireAstra's rule, which was written after a real incident: code was r
 - **Upstream:** changes go in new files where possible; upstream files get small hooks only. `git merge upstream/main` must stay clean (D-002). PRs are merged with merge commits, never squashed (D-016).
 - **Don't touch** `infra/`, `hooks/` or `azure.yaml`, and don't run `azd`, until M6 is unblocked.
 - **Commits:** author `Raghu Akula` (repo-local git config, see §4 bootstrap). Every commit message, including merge commits, ends with the `Co-Authored-By:` trailer of the model doing the work.
+- **Model routing (supersedes D-014 for build/review/design-drafting work):** implementing a unit (the builder), fixing review findings, the Opus code review, `cso`, and writing or revising a design spec all run on **Opus**, unconditionally — not just when the unit looks architecturally subtle. Running the test suite, opening/merging a PR, sequencing the next unit, status/decision commits, the daily email, and session-start checks stay on **Sonnet**. See D-034 for the full task-by-task table and why.
 
 ## 11. File map
 
