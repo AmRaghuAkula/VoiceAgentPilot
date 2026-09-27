@@ -65,7 +65,11 @@ class TwilioCallSession:
     async def wait_closed(self, timeout: float) -> None:
         """Give a scheduled Twilio socket close a bounded chance to finish. Never raises."""
         if self._close_task is not None:
-            await asyncio.wait([self._close_task], timeout=timeout)
+            _, pending = await asyncio.wait([self._close_task], timeout=timeout)
+            if pending:
+                # A close that hangs must not outlive the call.
+                logger.warning("twilio ws close timed out %s", self.log_context)
+                self._close_task.cancel()
 
     async def receive(self):
         """Receive the next Twilio message, or raise CallEnded as soon as request_end() has run.
@@ -75,6 +79,7 @@ class TwilioCallSession:
         ASGI server reported the disconnect or the idle timeout fired.
         """
         if self._ended.is_set():
+            self._discard_pending_recv()
             raise CallEnded
         recv = self._pending_recv or asyncio.ensure_future(self._ws.receive())
         self._pending_recv = None
@@ -96,3 +101,9 @@ class TwilioCallSession:
                 recv.exception()  # mark any socket error as retrieved; the call is ending anyway
             raise CallEnded
         return recv.result()
+
+    def _discard_pending_recv(self) -> None:
+        """Drop a kept-over receive, marking a stored socket error as retrieved (no asyncio warning)."""
+        recv, self._pending_recv = self._pending_recv, None
+        if recv is not None and recv.done() and not recv.cancelled():
+            recv.exception()

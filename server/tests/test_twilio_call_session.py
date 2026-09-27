@@ -131,6 +131,15 @@ async def test_request_end_survives_a_failing_ws_close():
     assert session.terminated_reason == "idle"
 
 
+async def test_wait_closed_cancels_a_hanging_close():
+    """A Twilio socket close that never returns must not outlive the call (review fix)."""
+    _, ws, session = _session(ws=FakeWs(close_blocks=True))
+    session.request_end("idle", "fb")
+    await session.wait_closed(0.05)
+    await _settle()
+    assert session._close_task.cancelled()
+
+
 # --- receive(): the call loop's exit path --------------------------------------------------------
 
 
@@ -160,6 +169,20 @@ async def test_receive_cancelled_by_timeout_leaves_no_pending_inner_receive():
     await ws.inbox.put("next")
     # The earlier inner receive was cancelled, so it didn't swallow this message.
     assert await asyncio.wait_for(session.receive(), 1.0) == "next"
+
+
+async def test_receive_after_end_retrieves_a_kept_over_socket_error():
+    """A kept-over receive that failed must be marked retrieved when the call ends (review fix), so
+    asyncio doesn't log a spurious 'Future exception was never retrieved'."""
+    _, _, session = _session()
+    failed = asyncio.get_running_loop().create_future()
+    failed.set_exception(ConnectionError("socket gone"))
+    session._pending_recv = failed
+    session.request_end("voicelive_dropped", "fb")
+    with pytest.raises(CallEnded):
+        await session.receive()
+    assert session._pending_recv is None
+    assert failed._log_traceback is False  # asyncio's "exception was retrieved" flag
 
 
 # --- TwilioMediaHandler hooks --------------------------------------------------------------------
