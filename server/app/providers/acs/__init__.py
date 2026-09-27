@@ -1,6 +1,7 @@
 """ACS (Azure Communication Services) provider route registration."""
 
 import asyncio
+import contextlib
 import logging
 
 from quart import request, websocket
@@ -110,7 +111,12 @@ def register_acs_routes(app, call_manager: CallManager):
     async def _sweep_forever():
         while True:
             await asyncio.sleep(SWEEP_INTERVAL_SECONDS)
-            removed = registry.sweep(bridge.max_call_seconds + 120)
+            # One failing sweep must not kill the loop: stale calls would then never be hung up again.
+            try:
+                removed = registry.sweep(bridge.max_call_seconds + 120)
+            except Exception:
+                logger.exception("stale_call_sweep_failed")
+                continue
             if removed:
                 logger.warning("stale_calls_swept count=%d", removed)
 
@@ -120,6 +126,8 @@ def register_acs_routes(app, call_manager: CallManager):
 
     @app.after_serving
     async def _stop_sweeper():
-        task = app.config.get("ACS_SWEEPER")
+        task = app.config.pop("ACS_SWEEPER", None)
         if task is not None:
             task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
