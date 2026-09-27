@@ -32,8 +32,57 @@ class TwilioMediaHandler(VoiceLiveMediaHandler):
         self.stream_sid = None
         self.call_sid = None
         self.called_number = None  # set by authenticate_and_start() from the signed token
+        self.session = None  # TwilioCallSession, attached by /twilio/ws once the route resolves (UT01b)
         self._ratecv_state_in = None
         self._ratecv_state_out = None
+
+    @property
+    def log_context(self) -> str:
+        return self.session.log_context if self.session is not None else ""
+
+    # ------------------------------------------------------------------
+    # Call lifecycle (UT01b) — every end goes through TwilioCallSession.request_end()
+    # ------------------------------------------------------------------
+
+    async def connect_voicelive(self):
+        """Connect to Voice Live, bounded by VOICE_LIVE_CONNECT_TIMEOUT_SECONDS (the base has no timeout).
+
+        A failure or timeout ends the call. Voice Live itself is closed only by /twilio/ws's finally,
+        after run_call_loop has cancelled and awaited this task.
+        """
+        if self.session is None:
+            await super().connect_voicelive()
+            return
+        if self.session.terminated_reason is not None:
+            return  # the call already ended: don't open (and bill) a Voice Live session for it
+        try:
+            await asyncio.wait_for(super().connect_voicelive(), self.session.voice_live_connect_timeout)
+        except Exception:
+            if self.session.terminated_reason is None:
+                logger.exception("voicelive_connect_failed %s", self.log_context)
+                self.session.request_end("voicelive_connect_failed", self.session.fallback_message)
+            raise
+
+    async def on_voicelive_ended(self):
+        """Voice Live dropped mid-call (B3): end the call instead of leaving the caller in silence.
+
+        The base hook closes client_ws, which this handler never sets (it uses twilio_ws).
+        """
+        if self.session is None:
+            await super().on_voicelive_ended()
+            return
+        logger.warning("[TwilioMediaHandler] Voice Live disconnected, ending call %s", self.log_context)
+        self.session.request_end("voicelive_dropped", self.session.fallback_message)
+
+    # on_call_cap / on_idle are awaited by run_call_loop with no timeout (Q-008). They must stay
+    # non-blocking: request_end() is synchronous and schedules the socket close as its own task.
+    async def on_call_cap(self):
+        if self.session is not None:
+            self.session.request_end("call_cap", self.session.goodbye_message)
+
+    async def on_idle(self):
+        if self.session is not None:
+            self.session.request_end("idle", self.session.fallback_message)
 
     # ------------------------------------------------------------------
     # Authentication

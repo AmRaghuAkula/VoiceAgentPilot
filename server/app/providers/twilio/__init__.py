@@ -12,6 +12,11 @@ from app.provider_registry import register_provider
 
 logger = logging.getLogger(__name__)
 
+# Matches ACS's SessionSettings.close_timeout default: a Voice Live close that takes longer is
+# force-closed rather than awaited indefinitely.
+_VOICELIVE_CLOSE_TIMEOUT_SECONDS = 5.0
+_WS_CLOSE_WAIT_SECONDS = 2.0
+
 
 @register_provider(
     name="twilio",
@@ -25,7 +30,9 @@ def register_twilio_routes(app, call_manager: CallManager):
 
     from twilio.twiml.voice_response import VoiceResponse
 
+    from app.handler.voicelive_close import close_voicelive
     from app.log_mask import mask_number
+    from app.providers.twilio.call_session import CallEnded, TwilioCallSession
     from app.providers.twilio.event_handler import TwilioEventHandler
     from app.providers.twilio.media_handler import TwilioMediaHandler
     from app.routing import normalize_number, resolve_route
@@ -78,36 +85,57 @@ def register_twilio_routes(app, call_manager: CallManager):
         handler.twilio_ws = websocket
         handler.correlation_id = cid
 
-        if not await handler.authenticate_and_start():
-            return
-
-        # Re-resolve the route from the token-bound called number (UT01a). A miss here (e.g.
-        # routing changed since /voice) closes the call: non-agent mode would violate D-004.
-        route = resolve_route(bridge.routes, handler.called_number)
-        if route is None:
-            logger.warning(
-                "Twilio WS: no route for called=%s, closing", mask_number(handler.called_number)
-            )
-            await websocket.close(4404, "No Route")
-            return
-        handler.route = route
-
-        call_id = handler.stream_sid or cid
-        if not await call_manager.acquire(call_id, "twilio"):
-            await websocket.close(4429, "Too Many Connections")
-            return
-
+        # Every exit below (auth failure, route miss, at capacity, call end) goes through this
+        # finally, so the handler's resources are always released.
         try:
-            await run_call_loop(
-                call_manager=call_manager,
-                call_id=call_id,
-                ws=websocket,
+            if not await handler.authenticate_and_start():
+                return
+
+            # Re-resolve the route from the token-bound called number (UT01a). A miss here (e.g.
+            # routing changed since /voice) closes the call: non-agent mode would violate D-004.
+            route = resolve_route(bridge.routes, handler.called_number)
+            if route is None:
+                logger.warning(
+                    "Twilio WS: no route for called=%s, closing", mask_number(handler.called_number)
+                )
+                await websocket.close(4404, "No Route")
+                return
+            handler.route = route
+
+            call_id = handler.stream_sid or cid
+            session = TwilioCallSession(
                 handler=handler,
+                twilio_ws=websocket,
+                fallback_message=bridge.fallback_message,
+                goodbye_message=bridge.goodbye_message,
+                voice_live_connect_timeout=bridge.voice_live_connect_timeout,
+                log_context=f"call_id={call_id}",
             )
-        except asyncio.CancelledError:
-            logger.info("Twilio WebSocket cancelled")
-        except Exception:
-            logger.exception("Twilio WebSocket connection closed")
+            handler.session = session
+
+            if not await call_manager.acquire(call_id, "twilio"):
+                await websocket.close(4429, "Too Many Connections")
+                return
+
+            try:
+                # The loop reads through the session, so request_end() (Voice Live drop, connect
+                # failure, cap, idle) makes it exit at once rather than wait on the socket.
+                await run_call_loop(
+                    call_manager=call_manager,
+                    call_id=call_id,
+                    ws=session,
+                    handler=handler,
+                )
+            except CallEnded:
+                logger.info("Twilio call loop exited: reason=%s %s", session.terminated_reason, session.log_context)
+            except asyncio.CancelledError:
+                logger.info("Twilio WebSocket cancelled")
+            except Exception:
+                logger.exception("Twilio WebSocket connection closed")
+            finally:
+                await call_manager.release(call_id)
+                await session.wait_closed(_WS_CLOSE_WAIT_SECONDS)
         finally:
-            await call_manager.release(call_id)
-            await handler.cleanup()
+            # The one and only Voice Live close. run_call_loop has already cancelled and awaited
+            # the connect task by now, so no connection can complete after this cleanup (U11).
+            await close_voicelive(handler, _VOICELIVE_CLOSE_TIMEOUT_SECONDS, handler.log_context)
