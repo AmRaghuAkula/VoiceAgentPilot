@@ -81,7 +81,7 @@ Same discipline as the rest of this repo: one unit = one branch = one PR, founde
 - [ ] A called number with no matching route never opens `/twilio/ws`'s underlying media session; the caller hears the fallback message via TwiML `<Say>` and the call ends there.
 - [ ] The WS auth token is bound to the called number, not just a timestamp — a token replayed with a different called number is rejected.
 - [ ] `twilio_active=True` with `AGENT_ROUTING_JSON` unset fails startup with a clear error (mirrors ACS's existing behavior).
-- [ ] `server.py` computes `twilio_active` via `detect_provider()`, so ACS-and-Twilio-both-configured behaves predictably (ACS wins, matching today's registration order) rather than silently disagreeing between two independent boolean checks.
+- [ ] `server.py` computes `twilio_active` via the direct env-var check (`bool(TWILIO_AUTH_TOKEN) and not acs_active`), per the rev 3 correction above — **not** `detect_provider()`, which returns `None` at the point `load_bridge_config()` runs. This mirrors the real registration-order outcome (ACS wins when both are set) without needing to reorder `server.py`'s startup sequence. (Rev 3 fix note: an earlier draft of this DoD line still said `detect_provider()`, left over from before the correction above — this line is now consistent with the rest of the unit's design.)
 - [ ] `server/.env.sample`'s `ACS_CONNECTION_STRING` is commented out.
 - [ ] Test environment syncs `--extra twilio` (confirm the bootstrap command used for this unit's own test run, and note in the PR whether `server/pyproject.toml`'s dev sync instructions need updating for future sessions).
 - [ ] No real phone numbers, agent names, or "real-estate" words in committed code (masked numbers only in logs, matching D-021).

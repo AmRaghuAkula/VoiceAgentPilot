@@ -127,6 +127,8 @@ python -m pip install --user uv
 
 Once U01 has merged (after that, `server/` exists), also run: `cd server && python -m uv sync --extra acs --group dev`.
 
+Once UT01a has merged (Twilio pilot work, D-037), the ACS-only sync above no longer covers all the tests in the suite — it **uninstalls** the `twilio` extra if it was previously synced. Use `cd server && python -m uv sync --extra acs --extra twilio --group dev` instead, so both provider test suites collect correctly.
+
 ## 5. Per-unit execution loop
 
 1. **Builder — verify prerequisites.** Every earlier unit this one depends on is `CLOSED` in STATUS.md §1. If not, stop.
