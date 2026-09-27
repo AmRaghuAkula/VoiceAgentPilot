@@ -27,6 +27,7 @@ acs = [
     "azure-eventgrid>=4.22.0",
 ]
 twilio = [
+    "audioop-lts>=0.2.1 ; python_full_version >= '3.13'",
     "twilio>=9.10.0",
 ]
 infobip = []

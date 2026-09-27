@@ -31,6 +31,7 @@ class TwilioMediaHandler(VoiceLiveMediaHandler):
         self.twilio_ws = None
         self.stream_sid = None
         self.call_sid = None
+        self.called_number = None  # set by authenticate_and_start() from the signed token
         self._ratecv_state_in = None
         self._ratecv_state_out = None
 
@@ -38,14 +39,19 @@ class TwilioMediaHandler(VoiceLiveMediaHandler):
     # Authentication
     # ------------------------------------------------------------------
 
-    def _verify_ws_token(self, token: str) -> bool:
-        """Verify a WebSocket token is valid and not expired."""
-        if not self.auth_token or not token:
+    def _verify_ws_token(self, token: str, called_number: str) -> bool:
+        """Verify a WebSocket token is valid, not expired, and bound to this called number."""
+        if not self.auth_token or not isinstance(token, str) or not token:
+            return False
+        if not isinstance(called_number, str) or not called_number:
             return False
         parts = token.split(".", 1)
         if len(parts) != 2:
             return False
         timestamp_str, sig = parts
+        # Non-ASCII input would make compare_digest/encode() raise instead of rejecting cleanly.
+        if not sig.isascii() or not called_number.isascii():
+            return False
         try:
             timestamp = int(timestamp_str)
         except ValueError:
@@ -53,7 +59,7 @@ class TwilioMediaHandler(VoiceLiveMediaHandler):
         if time.time() - timestamp > _TOKEN_TTL:
             return False
         expected = hmac.new(
-            self.auth_token.encode(), timestamp_str.encode(), hashlib.sha256
+            self.auth_token.encode(), f"{timestamp_str}.{called_number}".encode(), hashlib.sha256
         ).hexdigest()
         return hmac.compare_digest(sig, expected)
 
@@ -80,19 +86,25 @@ class TwilioMediaHandler(VoiceLiveMediaHandler):
                 await self.twilio_ws.close(4400, "Bad Request")
                 return False
 
-            event = data.get("event")
+            event = data.get("event") if isinstance(data, dict) else None
 
             if event == "connected":
                 logger.info("[TwilioMediaHandler] Twilio connected: protocol=%s", data.get("protocol"))
                 continue
 
             if event == "start":
-                custom_params = data.get("start", {}).get("customParameters", {})
+                start = data.get("start")
+                custom_params = start.get("customParameters") if isinstance(start, dict) else None
+                if not isinstance(custom_params, dict):
+                    custom_params = {}
                 token = custom_params.get("token", "")
-                if not self._verify_ws_token(token):
+                called_number = custom_params.get("calledNumber", "")
+                if not self._verify_ws_token(token, called_number):
                     logger.warning("[TwilioMediaHandler] Invalid or expired stream token")
                     await self.twilio_ws.close(4403, "Forbidden")
                     return False
+                # The token binds the called number, so it is now trusted for route resolution.
+                self.called_number = called_number
                 # Process the start message
                 await self.on_message(msg)
                 return True

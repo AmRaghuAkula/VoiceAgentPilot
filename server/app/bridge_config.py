@@ -129,10 +129,17 @@ def _positive(env: Mapping[str, str], name: str, default, cast, *, ceiling: floa
     return value
 
 
-def load_bridge_config(env: Mapping[str, str], *, acs_active: bool) -> BridgeConfig:
+def load_bridge_config(
+    env: Mapping[str, str], *, acs_active: bool, twilio_active: bool = False
+) -> BridgeConfig:
     routing_raw = _get(env, "AGENT_ROUTING_JSON")
     token = _get(env, "MEDIA_WS_TOKEN") or ""
     cognitive = _get(env, "ACS_COGNITIVE_SERVICES_ENDPOINT") or ""
+
+    # Twilio needs routing too, or every call would silently route-miss. MEDIA_WS_TOKEN and the
+    # Cognitive Services endpoint are ACS-only (Twilio signs its WS token with TWILIO_AUTH_TOKEN).
+    if twilio_active and not routing_raw:
+        raise BridgeConfigError("AGENT_ROUTING_JSON is required when Twilio is configured")
 
     if acs_active:
         for name, value in (
