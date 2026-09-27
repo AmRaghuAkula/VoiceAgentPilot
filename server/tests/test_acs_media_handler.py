@@ -196,7 +196,7 @@ async def _hang_up_mid_handshake(sdk_like, fake_acs):
     real = make_real_session(fake_acs, SessionSettings(fallback_message="fb", goodbye_message="bye", tts_voice="v"))
     handler = ACSMediaHandler(handler_config(), session=real)
     real.handler = handler
-    task =asyncio.get_running_loop().create_task(handler.connect_voicelive())
+    task = asyncio.get_running_loop().create_task(handler.connect_voicelive())
     await asyncio.sleep(0.01)  # the base connect has set _conn_ctx and is inside __aenter__
     real.on_call_disconnected()
     await asyncio.sleep(0.01)  # the session's memoized close runs against the half-open handler
@@ -219,8 +219,11 @@ async def test_late_connection_closed_even_if_connect_task_is_cancelled(sdk_like
     """run_call_loop cancels the connect task as soon as the media loop exits; that must not cut the
     late close short."""
     real, handler, task = await _hang_up_mid_handshake(sdk_like, fake_acs)
-    while handler._late_close is None:
+    for _ in range(1000):  # bounded: a regression must fail, not hang the suite
+        if handler._late_close is not None:
+            break
         await asyncio.sleep(0)
+    assert handler._late_close is not None, "late close was never scheduled"
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
