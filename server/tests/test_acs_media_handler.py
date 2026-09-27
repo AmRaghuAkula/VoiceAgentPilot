@@ -9,7 +9,7 @@ import app.handler.voicelive_media_handler as vmh
 from app.providers.acs.call_session import CallSession, CallSessionRegistry, SessionSettings
 from app.providers.acs.media_handler import ACSMediaHandler
 from app.routing import AgentRoute
-from tests.test_voicelive_handler import handler_config
+from tests.test_voicelive_handler import FakeConn, FakeCredential, handler_config
 
 SETTINGS = SessionSettings(fallback_message="fb", goodbye_message="bye", tts_voice="v", voice_live_connect_timeout=0.05)
 
@@ -126,11 +126,11 @@ class _HangingAcs:
         return _HangingConnection()
 
 
-def make_real_session(acs_client):
+def make_real_session(acs_client, settings=SETTINGS):
     registry = CallSessionRegistry()
     real = CallSession(
         call_key="k" * 32, route=AgentRoute("proj", "agent-a", "10"), masked_caller="***9876",
-        masked_called="***1234", settings=SETTINGS, acs_client=acs_client, registry=registry,
+        masked_called="***1234", settings=settings, acs_client=acs_client, registry=registry,
     )
     registry.add(real)
     real.set_answered("conn-1")
@@ -158,35 +158,74 @@ async def test_cap_and_idle_hooks_do_not_block_on_acs_io(hook):
     await drain(real)
 
 
-class _RecordingConnCtx:
+class _ClosableConn(FakeConn):
     def __init__(self):
-        self.exited = 0
+        super().__init__()
+        self.closed = 0
+
+    async def close(self):
+        self.closed += 1
+
+
+class _SdkLikeCtx:
+    """Mirrors azure.ai.voicelive.aio: __aexit__ only closes once __aenter__ has returned a connection."""
+
+    def __init__(self):
+        self.release = asyncio.Event()
+        self.conn = None
+
+    async def __aenter__(self):
+        await self.release.wait()  # the WebSocket handshake
+        self.conn = _ClosableConn()
+        return self.conn
 
     async def __aexit__(self, *exc):
-        self.exited += 1
+        if self.conn is not None:
+            await self.conn.close()
 
 
-async def test_call_ending_mid_connect_still_closes_the_late_connection(monkeypatch, fake_acs):
-    """The session's memoized close can run while connect is half-open (nothing to close yet).
+@pytest.fixture
+def sdk_like(monkeypatch):
+    ctx = _SdkLikeCtx()
+    monkeypatch.setattr(vmh, "voicelive_connect", lambda **kwargs: ctx)
+    monkeypatch.setattr(vmh, "DefaultAzureCredential", FakeCredential)
+    return ctx
 
-    When connect then completes, the handler must close the now-live connection itself rather
-    than rely on ensure_voicelive_closed(), which only returns the already-finished close task.
-    """
-    real = make_real_session(fake_acs)
-    ctx = _RecordingConnCtx()
 
-    async def late_connect(self):
-        real.on_call_disconnected()  # caller hangs up mid-connect
-        await asyncio.sleep(0.02)  # the session's close runs against the half-open handler
-        assert real._close_task is not None and real._close_task.done()
-        self._conn_ctx = ctx  # the SDK connection completes afterwards
-
-    patch_base_connect(monkeypatch, late_connect)
+async def _hang_up_mid_handshake(sdk_like, fake_acs):
+    real = make_real_session(fake_acs, SessionSettings(fallback_message="fb", goodbye_message="bye", tts_voice="v"))
     handler = ACSMediaHandler(handler_config(), session=real)
     real.handler = handler
-    await handler.connect_voicelive()
-    assert ctx.exited == 1
-    assert handler._conn_ctx is None
+    task =asyncio.get_running_loop().create_task(handler.connect_voicelive())
+    await asyncio.sleep(0.01)  # the base connect has set _conn_ctx and is inside __aenter__
+    real.on_call_disconnected()
+    await asyncio.sleep(0.01)  # the session's memoized close runs against the half-open handler
+    assert real._close_task is not None and real._close_task.done()
+    sdk_like.release.set()  # the handshake completes after the call ended
+    return real, handler, task
+
+
+async def test_call_ending_mid_handshake_still_closes_the_late_connection(sdk_like, fake_acs):
+    """The session's close ran while __aenter__ was in flight, so it had nothing to close and cleared
+    _conn_ctx. The connection that arrives afterwards must still be closed (it is live and billing)."""
+    real, handler, task = await _hang_up_mid_handshake(sdk_like, fake_acs)
+    await task
+    assert sdk_like.conn.closed == 1
+    assert handler.conn is None
+    await drain(real)
+
+
+async def test_late_connection_closed_even_if_connect_task_is_cancelled(sdk_like, fake_acs):
+    """run_call_loop cancels the connect task as soon as the media loop exits; that must not cut the
+    late close short."""
+    real, handler, task = await _hang_up_mid_handshake(sdk_like, fake_acs)
+    while handler._late_close is None:
+        await asyncio.sleep(0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await handler._late_close
+    assert sdk_like.conn.closed == 1
     await drain(real)
 
 

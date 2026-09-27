@@ -22,6 +22,7 @@ class ACSMediaHandler(VoiceLiveMediaHandler):
         super().__init__(config, route=session.route if session is not None else None)
         self.session = session
         self._pending_sends: set[asyncio.Task] = set()
+        self._late_close: asyncio.Task | None = None
 
     @property
     def log_context(self) -> str:
@@ -37,20 +38,50 @@ class ACSMediaHandler(VoiceLiveMediaHandler):
             return
         if self.session.terminated_reason is not None:
             return  # the call already ended: don't open (and bill) a Voice Live session for it
+        failed_first = False
+        late_close = None
         try:
             await asyncio.wait_for(super().connect_voicelive(), self.session.settings.voice_live_connect_timeout)
         except Exception:
-            logger.exception("voicelive_connect_failed %s", self.log_context)
-            self.session.request_end("voicelive_connect_failed", self.session.settings.fallback_message)
+            if self.session.terminated_reason is None:
+                failed_first = True
+                logger.exception("voicelive_connect_failed %s", self.log_context)
+                self.session.request_end("voicelive_connect_failed", self.session.settings.fallback_message)
+            else:
+                logger.info("voicelive_connect_aborted reason=%s %s", self.session.terminated_reason, self.log_context)
             raise
-        if self.session.terminated_reason is not None:
-            # The call ended while we were connecting. ensure_voicelive_closed() is memoized, so a
-            # close the session already ran against the half-open handler can't have closed the
-            # connection that completed afterwards: wait for it, then close again ourselves.
-            close = self.session.ensure_voicelive_closed()
-            if close is not None:
-                await asyncio.shield(close)
-            await close_voicelive(self, self.session.settings.close_timeout, self.log_context)
+        finally:
+            # If the call ended (elsewhere) while we were connecting, the session's memoized close may
+            # already have run against the half-open handler, so it can't have closed a connection that
+            # completed afterwards. Close again ourselves, in a task run_call_loop's cancel can't cut short.
+            if not failed_first and self.session.terminated_reason is not None:
+                late_close = self._start_late_close()
+        if late_close is not None:
+            await asyncio.shield(late_close)
+
+    def _start_late_close(self) -> asyncio.Task:
+        if self._late_close is None:
+            self._late_close = asyncio.get_running_loop().create_task(self._close_late_connection())
+        return self._late_close
+
+    async def _close_late_connection(self) -> None:
+        close = self.session.ensure_voicelive_closed()
+        if close is not None:
+            await asyncio.wait([close])  # let the session's close finish first; never raises
+        await close_voicelive(self, self.session.settings.close_timeout, self.log_context)
+
+    async def cleanup(self):
+        # The base cleanup closes the connection only through _conn_ctx. A cleanup that ran while the
+        # SDK handshake was in flight found nothing to close yet and cleared _conn_ctx, so a connection
+        # that arrived afterwards is orphaned: close it directly (VoiceLiveConnection.close()).
+        orphan = self.conn if self._conn_ctx is None else None
+        await super().cleanup()
+        if orphan is not None and self.conn is orphan:
+            self.conn = None
+            try:
+                await orphan.close()
+            except Exception:
+                logger.warning("voicelive orphan close failed %s", self.log_context, exc_info=True)
 
     async def on_voicelive_ended(self):
         if self.session is None:
