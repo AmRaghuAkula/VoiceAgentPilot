@@ -8,7 +8,10 @@ from dataclasses import dataclass
 from azure.communication.callautomation import TextSource
 from azure.core.exceptions import HttpResponseError
 
+from app.handler.voicelive_close import close_voicelive  # re-exported for ACS callers (UT01b)
 from app.routing import AgentRoute
+
+__all__ = ["CallSession", "CallSessionRegistry", "SessionSettings", "close_voicelive"]
 
 logger = logging.getLogger(__name__)
 
@@ -24,20 +27,6 @@ class SessionSettings:
     wait_timeout: float = 5.0
     close_timeout: float = 5.0
     play_safety_timeout: float = 15.0
-
-
-async def close_voicelive(handler, timeout: float, log_context: str) -> None:
-    cleanup = asyncio.ensure_future(handler.cleanup())
-    try:
-        await asyncio.wait_for(asyncio.shield(cleanup), timeout)
-    except TimeoutError:
-        logger.warning("voicelive_force_closed %s", log_context)
-        try:
-            handler.force_close()
-        except Exception:
-            logger.exception("force_close failed %s", log_context)
-    except Exception:
-        logger.exception("voicelive cleanup failed %s", log_context)
 
 
 class CallSessionRegistry:
