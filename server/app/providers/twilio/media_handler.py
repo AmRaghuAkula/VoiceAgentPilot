@@ -49,6 +49,9 @@ class TwilioMediaHandler(VoiceLiveMediaHandler):
         if len(parts) != 2:
             return False
         timestamp_str, sig = parts
+        # Non-ASCII input would make compare_digest/encode() raise instead of rejecting cleanly.
+        if not sig.isascii() or not called_number.isascii():
+            return False
         try:
             timestamp = int(timestamp_str)
         except ValueError:

@@ -240,6 +240,30 @@ async def test_ws_route_miss_closes_without_opening_voicelive(twilio_server, fak
     assert UNROUTED not in logs.text
 
 
+def test_ws_token_non_ascii_input_rejected_not_raised():
+    token = TwilioEventHandler({"TWILIO_AUTH_TOKEN": AUTH})._generate_ws_token(ROUTED)
+    ts = token.split(".", 1)[0]
+    handler = _handler()
+    assert handler._verify_ws_token(f"{ts}.éé", ROUTED) is False
+    assert handler._verify_ws_token(token, "+1416555\ud8001234") is False
+
+
+@pytest.mark.parametrize("variant", ["non_ascii_sig", "surrogate_number"])
+async def test_ws_non_ascii_token_input_closes_4403(twilio_server, fake_voicelive, variant):
+    token = TwilioEventHandler({"TWILIO_AUTH_TOKEN": AUTH})._generate_ws_token(ROUTED)
+    if variant == "non_ascii_sig":
+        token, called = token.split(".", 1)[0] + ".éé", ROUTED
+    else:
+        called = "+1416555\ud8001234"
+    # json.dumps escapes the lone surrogate as \ud800, which json.loads restores server-side.
+    async with twilio_server.app.test_client().websocket("/twilio/ws") as ws:
+        await ws.send(_start_msg(token, called))
+        with pytest.raises(WebsocketDisconnectError) as exc:
+            await asyncio.wait_for(ws.receive(), timeout=2)
+    assert exc.value.args[0] == 4403  # quart's test client carries the close code in args[0]
+    assert "kwargs" not in fake_voicelive
+
+
 async def test_ws_malformed_start_rejected(twilio_server, fake_voicelive):
     with contextlib.suppress(WebsocketResponseError, WebsocketDisconnectError):
         async with twilio_server.app.test_client().websocket("/twilio/ws") as ws:
