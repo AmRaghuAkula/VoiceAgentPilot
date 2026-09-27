@@ -31,6 +31,28 @@ Full reasoning and history: [D-034](docs/DECISIONS.md). Founder instruction, no 
 
 ---
 
+## 0.5 Work announcements and message prefixes (read this first, every session)
+
+**Before dispatching the builder for any unit**, post a work announcement in chat with:
+1. Task name and brief
+2. Model it runs on
+3. The spec path it's picked up from (file + section/line reference)
+4. Any dependent task still pending/not started (real prerequisites not yet CLOSED)
+5. Who approved and assigned the task (e.g. "founder go on <date>, sequenced by partner")
+
+**After the unit's work is done**, append to that same announcement:
+6. Tokens consumed
+7. PR number
+8. Reviews done and their verdicts (Opus code-review + `cso`, rounds and PASS/needs-fixes)
+
+This is in addition to, not a replacement for, STATUS.md's own audit log (§5 step 8 still applies).
+
+**Every message names the acting agent.** Prefix chat messages with the role tag (`[voice-agent-partner]`/`[voice-agent-builder]`) and, where a specific dispatched agent instance is acting, its identifying name/label — so the founder can tell which concrete agent produced which message when more than one is in flight.
+
+**Source:** founder, direct instruction, 2026-09-27, standing effective immediately, no stated end condition.
+
+---
+
 ## 1. What this repo is
 
 This repo is a telephony bridge that connects a real inbound phone call (Azure Communication Services) to a Foundry agent through Voice Live. It is being built for Hireastra's real-estate voice-agent pilot, and the bridge code is client-agnostic.
