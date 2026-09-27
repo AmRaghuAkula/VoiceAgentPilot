@@ -23,11 +23,14 @@ class TwilioEventHandler:
         parsed = urlparse(raw_url)
         return urlunparse(("https", parsed.hostname, parsed.path, parsed.params, parsed.query, ""))
 
-    def _generate_ws_token(self) -> str:
-        """Generate a short-lived HMAC token for WebSocket authentication."""
+    def _generate_ws_token(self, called_number: str) -> str:
+        """Generate a short-lived HMAC token for WebSocket authentication.
+
+        Bound to the called number (UT01a) so it can't be replayed for a different route.
+        """
         timestamp = str(int(time.time()))
         sig = hmac.new(
-            self.auth_token.encode(), timestamp.encode(), hashlib.sha256
+            self.auth_token.encode(), f"{timestamp}.{called_number}".encode(), hashlib.sha256
         ).hexdigest()
         return f"{timestamp}.{sig}"
 
@@ -42,13 +45,14 @@ class TwilioEventHandler:
         reconstructed_url = self._reconstruct_url(url)
         return validator.validate(reconstructed_url, params, signature)
 
-    def generate_stream_twiml(self, ws_url: str) -> str:
+    def generate_stream_twiml(self, ws_url: str, called_number: str) -> str:
         """Generate TwiML response that connects the call to a media stream with auth token."""
-        token = self._generate_ws_token()
+        token = self._generate_ws_token(called_number)
         resp = VoiceResponse()
         resp.say("Please wait while we connect you to our AI assistant.")
         connect = resp.connect()
         stream = connect.stream(url=ws_url)
         stream.parameter(name="token", value=token)
+        stream.parameter(name="calledNumber", value=called_number)
         logger.info("Returning TwiML with stream URL: %s", ws_url)
         return str(resp)

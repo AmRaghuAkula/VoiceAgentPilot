@@ -24,8 +24,13 @@ _debug = os.getenv("DEBUG_MODE", "false").lower() == "true"
 configure_logging(level=logging.DEBUG if _debug else logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Provider packages aren't registered yet (see below), so detect_provider() can't be used here.
+# These checks mirror its outcome for ACS vs Twilio: ACS registers first, so it wins when both are set.
+_acs_active = bool(os.getenv("ACS_CONNECTION_STRING"))
+_twilio_active = bool(os.getenv("TWILIO_AUTH_TOKEN")) and not _acs_active
+
 try:
-    bridge = load_bridge_config(os.environ, acs_active=bool(os.getenv("ACS_CONNECTION_STRING")))
+    bridge = load_bridge_config(os.environ, acs_active=_acs_active, twilio_active=_twilio_active)
 except BridgeConfigError as exc:
     logger.error("Bridge configuration error: %s", exc)
     sys.exit(1)

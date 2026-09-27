@@ -23,31 +23,49 @@ def register_twilio_routes(app, call_manager: CallManager):
     """Register Twilio webhook and WebSocket routes."""
     import os
 
+    from twilio.twiml.voice_response import VoiceResponse
+
+    from app.log_mask import mask_number
     from app.providers.twilio.event_handler import TwilioEventHandler
     from app.providers.twilio.media_handler import TwilioMediaHandler
+    from app.routing import normalize_number, resolve_route
 
     # Load provider-specific config
     app.config["TWILIO_AUTH_TOKEN"] = os.getenv("TWILIO_AUTH_TOKEN", "")
+    bridge = app.config["BRIDGE"]
 
     twilio_handler = TwilioEventHandler(app.config)
 
-    @app.route("/voice", methods=["GET", "POST"])
+    # POST only (UT01a): a GET would carry To/From in the URL, where the access log records
+    # them unmasked, and its empty form would always miss the route lookup.
+    @app.route("/voice", methods=["POST"])
     async def twilio_voice():
         """Handles incoming Twilio phone calls with bidirectional media stream."""
         cid = new_correlation_id()
         logger.info("Twilio /voice webhook called")
 
         signature = request.headers.get("X-Twilio-Signature", "")
-        params = dict(await request.form) if request.method == "POST" else {}
+        params = dict(await request.form)
         valid = twilio_handler.validate_request(request.url, params, signature)
         if valid is None:
             return "Service Unavailable", 503
         if not valid:
             return "Forbidden", 403
 
+        called_number = normalize_number(params.get("To"))
+        route = resolve_route(bridge.routes, called_number)
+        if route is None:
+            # Route miss: speak the fallback and end the call; the media stream is never opened.
+            logger.warning("Twilio /voice: no route for called=%s", mask_number(called_number))
+            resp = VoiceResponse()
+            resp.say(bridge.fallback_message)
+            resp.hangup()
+            return str(resp), 200, {"Content-Type": "text/xml"}
+
+        logger.info("Twilio /voice: route hit called=%s", mask_number(called_number))
         host_url = request.host_url.replace("http://", "https://", 1).rstrip("/")
         ws_url = host_url.replace("https://", "wss://") + "/twilio/ws"
-        twiml = twilio_handler.generate_stream_twiml(ws_url)
+        twiml = twilio_handler.generate_stream_twiml(ws_url, called_number)
         return twiml, 200, {"Content-Type": "text/xml"}
 
     @app.websocket("/twilio/ws")
@@ -62,6 +80,17 @@ def register_twilio_routes(app, call_manager: CallManager):
 
         if not await handler.authenticate_and_start():
             return
+
+        # Re-resolve the route from the token-bound called number (UT01a). A miss here (e.g.
+        # routing changed since /voice) closes the call: non-agent mode would violate D-004.
+        route = resolve_route(bridge.routes, handler.called_number)
+        if route is None:
+            logger.warning(
+                "Twilio WS: no route for called=%s, closing", mask_number(handler.called_number)
+            )
+            await websocket.close(4404, "No Route")
+            return
+        handler.route = route
 
         call_id = handler.stream_sid or cid
         if not await call_manager.acquire(call_id, "twilio"):
