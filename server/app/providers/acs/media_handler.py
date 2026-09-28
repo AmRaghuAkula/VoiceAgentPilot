@@ -99,6 +99,11 @@ class ACSMediaHandler(VoiceLiveMediaHandler):
         if self.session is not None:
             self.session.request_end("idle", self.session.settings.fallback_message)
 
+    async def on_response_unrecoverable(self):
+        """Q-036 / D-036: repeated failed Voice Live responses end the call instead of leaving silence."""
+        if self.session is not None:
+            self.session.request_end("response_failed", self.session.settings.fallback_message)
+
     def stop_forwarding_agent_audio(self) -> None:
         super().stop_forwarding_agent_audio()
         if self.client_ws is None or (self.session is not None and self.session.disconnected):

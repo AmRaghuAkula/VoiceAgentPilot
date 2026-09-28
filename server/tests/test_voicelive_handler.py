@@ -28,6 +28,7 @@ class FakeConn:
     def __init__(self, events=None, block=True):
         self.session = SimpleNamespace(update=AsyncMock())
         self.response = SimpleNamespace(create=AsyncMock())
+        self.conversation = SimpleNamespace(item=SimpleNamespace(create=AsyncMock()))
         self._events = list(events or [])
         self._block = block
 
@@ -197,3 +198,141 @@ def test_force_close_closes_underlying_response():
     handler.conn = SimpleNamespace(_connection=SimpleNamespace(_response=SimpleNamespace(close=lambda: closed.append(1))))
     handler.force_close()
     assert closed == [1]
+
+
+# ----------------------------------------------------------------------
+# Q-036 / D-036: a failed Voice Live response must never leave the caller in silence
+# ----------------------------------------------------------------------
+
+from azure.ai.voicelive.models import ServerEventResponseDone, UserMessageItem
+
+# The exact failure shape seen on the live call (Q-036), parsed by the real SDK model.
+_FAILED_ERROR = {
+    "type": "invalid_request_error",
+    "code": "agent_missing_required_parameter",
+    "message": "Foundry agent service response error: One of 'input' or 'prompt' must be provided "
+               "and yield at least one input item.",
+}
+
+
+def response_done(status, rid="r1", details=None):
+    response = {"id": rid, "object": "realtime.response", "status": status, "output": [],
+                "conversation_id": "conv-1"}
+    if details is not None:
+        response["status_details"] = details
+    return ServerEventResponseDone({"type": "response.done", "event_id": f"e-{rid}", "response": response})
+
+
+def failed(rid="r1"):
+    return response_done("failed", rid, {"type": "failed", "error": _FAILED_ERROR})
+
+
+class UnrecoverableRecorder(vmh.VoiceLiveMediaHandler):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.unrecoverable = 0
+        self.ended = 0
+
+    async def on_response_unrecoverable(self):
+        self.unrecoverable += 1
+
+    async def on_voicelive_ended(self):
+        self.ended += 1
+
+
+async def run_events(events, conn=None):
+    handler = UnrecoverableRecorder(handler_config(), route=ROUTE)
+    handler.conn = conn or FakeConn(events=events, block=False)
+    await handler._receiver_loop()
+    return handler
+
+
+async def test_failed_response_injects_marker_and_retries(caplog):
+    caplog.set_level("WARNING", logger=vmh.logger.name)
+    handler = await run_events([failed()])
+    create_item = handler.conn.conversation.item.create
+    create_item.assert_awaited_once()
+    item = create_item.await_args.kwargs["item"]
+    assert isinstance(item, UserMessageItem)
+    assert item.as_dict()["content"] == [{"type": "input_text", "text": vmh.FAILED_RESPONSE_MARKER}]
+    handler.conn.response.create.assert_awaited_once_with()  # plain retry: no instructions, no overrides
+    assert handler.unrecoverable == 0
+    warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+    assert any("response_failed" in m and "agent_missing_required_parameter" in m and "attempt=1" in m
+               for m in warnings)
+
+
+async def test_marker_is_neutral_not_a_scripted_line():
+    # D-036: a factual marker only; the agent authors what is actually said (D-004).
+    marker = vmh.FAILED_RESPONSE_MARKER
+    assert marker.startswith("[") and marker.endswith("]")
+    assert "say" not in marker.lower() and "sorry" not in marker.lower()
+
+
+async def test_completed_response_unchanged():
+    handler = await run_events([response_done("completed")])
+    handler.conn.conversation.item.create.assert_not_awaited()
+    handler.conn.response.create.assert_not_awaited()
+    assert handler.unrecoverable == 0
+    assert handler.conversation_id == "conv-1"
+
+
+@pytest.mark.parametrize("status, details", [
+    ("cancelled", {"type": "cancelled", "reason": "turn_detected"}),
+    ("incomplete", {"type": "incomplete", "reason": "max_output_tokens"}),
+])
+async def test_cancelled_and_incomplete_take_no_action(status, details):
+    handler = await run_events([response_done(status, details=details)])
+    handler.conn.conversation.item.create.assert_not_awaited()
+    handler.conn.response.create.assert_not_awaited()
+    assert handler.unrecoverable == 0
+
+
+async def test_second_consecutive_failure_ends_call_without_second_retry(caplog):
+    caplog.set_level("WARNING", logger=vmh.logger.name)
+    handler = await run_events([failed("r1"), failed("r2")])
+    handler.conn.response.create.assert_awaited_once()  # bounded: exactly one retry
+    handler.conn.conversation.item.create.assert_awaited_once()
+    assert handler.unrecoverable == 1
+    warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+    assert any("response_failed" in m and "attempt=2" in m for m in warnings)
+
+
+async def test_cancelled_between_failures_does_not_reset_counter():
+    handler = await run_events([
+        failed("r1"),
+        response_done("cancelled", "r2", {"type": "cancelled", "reason": "turn_detected"}),
+        failed("r3"),
+    ])
+    handler.conn.response.create.assert_awaited_once()
+    assert handler.unrecoverable == 1
+
+
+async def test_completed_resets_failure_counter():
+    handler = await run_events([failed("r1"), response_done("completed", "r2"), failed("r3")])
+    assert handler.conn.response.create.await_count == 2
+    assert handler.conn.conversation.item.create.await_count == 2
+    assert handler.unrecoverable == 0
+
+
+async def test_retry_send_error_ends_call_instead_of_silence():
+    conn = FakeConn(events=[failed()], block=False)
+    conn.response.create.side_effect = RuntimeError("socket closed")
+    handler = await run_events(None, conn=conn)
+    assert handler.unrecoverable == 1
+
+
+async def test_unrecoverable_hook_error_does_not_kill_receiver_loop():
+    class Boom(UnrecoverableRecorder):
+        async def on_response_unrecoverable(self):
+            raise RuntimeError("boom")
+
+    handler = Boom(handler_config(), route=ROUTE)
+    handler.conn = FakeConn(events=[failed("r1"), failed("r2"), response_done("completed", "r3")], block=False)
+    await handler._receiver_loop()
+    assert handler.conversation_id == "conv-1"  # r3 still processed after the hook raised
+
+
+async def test_base_unrecoverable_hook_is_safe_noop():
+    handler = vmh.VoiceLiveMediaHandler(handler_config())
+    await handler.on_response_unrecoverable()

@@ -208,6 +208,7 @@ class RecordingSession:
         ("on_voicelive_ended", ("voicelive_dropped", "fb")),
         ("on_call_cap", ("call_cap", "bye")),
         ("on_idle", ("idle", "fb")),
+        ("on_response_unrecoverable", ("response_failed", "fb")),
     ],
 )
 async def test_hooks_route_to_request_end(hook, expected):
@@ -217,7 +218,7 @@ async def test_hooks_route_to_request_end(hook, expected):
     assert handler.session.ends == [expected]
 
 
-@pytest.mark.parametrize("hook", ["on_call_cap", "on_idle", "on_voicelive_ended"])
+@pytest.mark.parametrize("hook", ["on_call_cap", "on_idle", "on_voicelive_ended", "on_response_unrecoverable"])
 async def test_hooks_do_not_await_twilio_io(hook):
     """Q-008: run_call_loop awaits cap/idle with no timeout. Even if closing the Twilio socket never
     returns, the hook must return at once; the close runs in a task the session owns."""
