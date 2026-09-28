@@ -201,7 +201,7 @@ def test_force_close_closes_underlying_response():
 
 
 # ----------------------------------------------------------------------
-# Q-036 / D-036: a failed Voice Live response must never leave the caller in silence
+# Q-036 / D-038: a failed Voice Live response must never leave the caller in silence
 # ----------------------------------------------------------------------
 
 from azure.ai.voicelive.models import ServerEventResponseDone, UserMessageItem
@@ -249,7 +249,7 @@ async def run_events(events, conn=None):
 
 async def test_failed_response_injects_marker_and_retries(caplog):
     caplog.set_level("WARNING", logger=vmh.logger.name)
-    handler = await run_events([failed()])
+    handler = await run_events([speech_started(), failed()])
     create_item = handler.conn.conversation.item.create
     create_item.assert_awaited_once()
     item = create_item.await_args.kwargs["item"]
@@ -263,7 +263,7 @@ async def test_failed_response_injects_marker_and_retries(caplog):
 
 
 async def test_marker_is_neutral_not_a_scripted_line():
-    # D-036: a factual marker only; the agent authors what is actually said (D-004).
+    # D-038: a factual marker only; the agent authors what is actually said (D-004).
     marker = vmh.FAILED_RESPONSE_MARKER
     assert marker.startswith("[") and marker.endswith("]")
     assert "say" not in marker.lower() and "sorry" not in marker.lower()
@@ -290,7 +290,7 @@ async def test_cancelled_and_incomplete_take_no_action(status, details):
 
 async def test_second_consecutive_failure_ends_call_without_second_retry(caplog):
     caplog.set_level("WARNING", logger=vmh.logger.name)
-    handler = await run_events([failed("r1"), failed("r2")])
+    handler = await run_events([speech_started(), failed("r1"), failed("r2")])
     handler.conn.response.create.assert_awaited_once()  # bounded: exactly one retry
     handler.conn.conversation.item.create.assert_awaited_once()
     assert handler.unrecoverable == 1
@@ -300,6 +300,7 @@ async def test_second_consecutive_failure_ends_call_without_second_retry(caplog)
 
 async def test_cancelled_between_failures_does_not_reset_counter():
     handler = await run_events([
+        speech_started(),
         failed("r1"),
         response_done("cancelled", "r2", {"type": "cancelled", "reason": "turn_detected"}),
         failed("r3"),
@@ -309,14 +310,14 @@ async def test_cancelled_between_failures_does_not_reset_counter():
 
 
 async def test_completed_resets_failure_counter():
-    handler = await run_events([failed("r1"), response_done("completed", "r2"), failed("r3")])
+    handler = await run_events([speech_started(), failed("r1"), response_done("completed", "r2"), failed("r3")])
     assert handler.conn.response.create.await_count == 2
     assert handler.conn.conversation.item.create.await_count == 2
     assert handler.unrecoverable == 0
 
 
 async def test_retry_send_error_ends_call_instead_of_silence():
-    conn = FakeConn(events=[failed()], block=False)
+    conn = FakeConn(events=[speech_started(), failed()], block=False)
     conn.response.create.side_effect = RuntimeError("socket closed")
     handler = await run_events(None, conn=conn)
     assert handler.unrecoverable == 1
@@ -336,3 +337,35 @@ async def test_unrecoverable_hook_error_does_not_kill_receiver_loop():
 async def test_base_unrecoverable_hook_is_safe_noop():
     handler = vmh.VoiceLiveMediaHandler(handler_config())
     await handler.on_response_unrecoverable()
+
+
+def speech_started():
+    return SimpleNamespace(type=vmh.ServerEventType.INPUT_AUDIO_BUFFER_SPEECH_STARTED, audio_start_ms=0)
+
+
+def transcription_completed(text=""):
+    return SimpleNamespace(type=vmh.ServerEventType.CONVERSATION_ITEM_INPUT_AUDIO_TRANSCRIPTION_COMPLETED,
+                           transcript=text)
+
+
+async def test_greeting_failure_before_any_caller_turn_retries_without_marker():
+    # The connect-time greeting can fail before the caller has said anything: the
+    # "caller audio was not understood" marker would be false, so retry plainly.
+    handler = await run_events([failed()])  # no speech/transcription events first
+    handler.conn.conversation.item.create.assert_not_awaited()
+    handler.conn.response.create.assert_awaited_once_with()
+    assert handler.unrecoverable == 0
+
+
+async def test_greeting_failure_twice_still_ends_call():
+    handler = await run_events([failed("r1"), failed("r2")])
+    handler.conn.conversation.item.create.assert_not_awaited()
+    handler.conn.response.create.assert_awaited_once()
+    assert handler.unrecoverable == 1
+
+
+@pytest.mark.parametrize("caller_event", [speech_started, transcription_completed])
+async def test_failure_after_caller_turn_injects_marker(caller_event):
+    handler = await run_events([caller_event(), failed()])
+    handler.conn.conversation.item.create.assert_awaited_once()
+    handler.conn.response.create.assert_awaited_once_with()

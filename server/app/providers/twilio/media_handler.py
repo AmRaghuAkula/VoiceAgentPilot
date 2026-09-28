@@ -85,7 +85,7 @@ class TwilioMediaHandler(VoiceLiveMediaHandler):
             self.session.request_end("idle", self.session.fallback_message)
 
     async def on_response_unrecoverable(self):
-        """Q-036 / D-036: repeated failed Voice Live responses end the call instead of leaving silence."""
+        """Q-036 / D-038: repeated failed Voice Live responses end the call instead of leaving silence."""
         if self.session is not None:
             self.session.request_end("response_failed", self.session.fallback_message)
 

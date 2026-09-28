@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 # Default chunk size in bytes (100ms of audio at 24kHz, 16-bit mono)
 DEFAULT_CHUNK_SIZE = 4800  # 24000 samples/sec * 0.1 sec * 2 bytes
 
-# Q-036 / D-036: on a failed response the bridge adds this neutral, factual marker as a conversation
+# Q-036 / D-038: on a failed response the bridge adds this neutral, factual marker as a conversation
 # item and retries once. It is not a scripted line: the agent still authors what is said (D-004).
 FAILED_RESPONSE_MARKER = "[caller audio was not understood]"
 # Consecutive failed responses tolerated before the call is ended (one retry, then end).
@@ -92,6 +92,7 @@ class VoiceLiveMediaHandler:
         self._receiver_task = None
         self._voicelive_connected = False  # True while Voice Live WS is healthy
         self._consecutive_failed_responses = 0  # Q-036: reset by a completed response
+        self._caller_turn_seen = False  # Q-036: no marker on a failure before the caller has spoken
 
         # Client WebSocket
         self.client_ws = None
@@ -217,12 +218,14 @@ class VoiceLiveMediaHandler:
                             "[VoiceLive] Speech started at %s ms",
                             event.audio_start_ms,
                         )
+                        self._caller_turn_seen = True
                         await self.on_speech_started()
 
                     case ServerEventType.INPUT_AUDIO_BUFFER_SPEECH_STOPPED:
                         logger.info("[VoiceLive] Speech stopped")
 
                     case ServerEventType.CONVERSATION_ITEM_INPUT_AUDIO_TRANSCRIPTION_COMPLETED:
+                        self._caller_turn_seen = True
                         transcript = event.transcript
                         logger.debug("[VoiceLive] User: %s", transcript)
 
@@ -272,12 +275,14 @@ class VoiceLiveMediaHandler:
                     logger.exception("[VoiceLive] on_voicelive_ended hook raised")
 
     async def _on_response_status(self, response) -> None:
-        """Q-036 / D-036: never leave the caller in silence after a failed response.
+        """Q-036 / D-038: never leave the caller in silence after a failed response.
 
         completed -> reset the failure counter. cancelled (barge-in) / incomplete / anything else ->
         no action. failed -> WARNING log, then either one retry (neutral marker item + plain
         response.create(), no instruction overrides) or, on a repeat failure, end the call through
-        on_response_unrecoverable() (the subclass's request_end() path, D-005).
+        on_response_unrecoverable() (the subclass's request_end() path, D-005). If the caller has
+        not spoken yet (the connect-time greeting failed), the marker would be false, so the retry
+        is a plain response.create() only.
         """
         status = getattr(response, "status", None)
         if status == ResponseStatus.COMPLETED:
@@ -300,11 +305,15 @@ class VoiceLiveMediaHandler:
 
         if attempt < MAX_CONSECUTIVE_FAILED_RESPONSES:
             try:
-                await self.conn.conversation.item.create(
-                    item=UserMessageItem(content=[InputTextContentPart(text=FAILED_RESPONSE_MARKER)])
-                )
+                marker = self._caller_turn_seen
+                if marker:
+                    await self.conn.conversation.item.create(
+                        item=UserMessageItem(content=[InputTextContentPart(text=FAILED_RESPONSE_MARKER)])
+                    )
                 await self.conn.response.create()
-                logger.warning("[VoiceLive] response_retry attempt=%d %s", attempt, self.log_context)
+                logger.warning(
+                    "[VoiceLive] response_retry attempt=%d marker=%s %s", attempt, marker, self.log_context,
+                )
                 return
             except Exception:
                 logger.exception("[VoiceLive] response_retry_failed attempt=%d %s", attempt, self.log_context)
