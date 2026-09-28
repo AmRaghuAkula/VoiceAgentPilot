@@ -81,7 +81,8 @@ async def test_connect_completing_after_termination_closes_voicelive(monkeypatch
 
 @pytest.mark.parametrize(
     "hook, expected",
-    [("on_voicelive_ended", ("voicelive_dropped", "fb")), ("on_call_cap", ("call_cap", "bye")), ("on_idle", ("idle", "fb"))],
+    [("on_voicelive_ended", ("voicelive_dropped", "fb")), ("on_call_cap", ("call_cap", "bye")), ("on_idle", ("idle", "fb")),
+     ("on_response_unrecoverable", ("response_failed", "fb"))],
 )
 async def test_hooks_route_to_request_end(session, hook, expected):
     handler = ACSMediaHandler(handler_config(), session=session)
@@ -144,7 +145,7 @@ async def drain(real):
     await asyncio.gather(*real._tasks, return_exceptions=True)
 
 
-@pytest.mark.parametrize("hook", ["on_call_cap", "on_idle"])
+@pytest.mark.parametrize("hook", ["on_call_cap", "on_idle", "on_response_unrecoverable"])
 async def test_cap_and_idle_hooks_do_not_block_on_acs_io(hook):
     """Q-008: run_call_loop awaits these hooks with no timeout, so they must not await ACS I/O.
 
@@ -154,7 +155,8 @@ async def test_cap_and_idle_hooks_do_not_block_on_acs_io(hook):
     real = make_real_session(_HangingAcs())
     handler = ACSMediaHandler(handler_config(), session=real)
     await asyncio.wait_for(getattr(handler, hook)(), 0.5)
-    assert real.terminated_reason == ("call_cap" if hook == "on_call_cap" else "idle")
+    assert real.terminated_reason == {"on_call_cap": "call_cap", "on_idle": "idle",
+                                     "on_response_unrecoverable": "response_failed"}[hook]
     await drain(real)
 
 
