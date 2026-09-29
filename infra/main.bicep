@@ -112,11 +112,12 @@ resource newRg 'Microsoft.Resources/resourceGroups@2024-11-01' = if (!useExistin
   tags: tags
 }
 
-// Every module deploys here. The explicit dependsOn on newRg orders creation when it is new.
-resource rg 'Microsoft.Resources/resourceGroups@2024-11-01' existing = {
-  name: rgName
-  dependsOn: [ newRg ]
-}
+// Every module scoped to resourceGroup(rgName) carries an explicit dependsOn on newRg, which orders
+// creation when the group is new (a no-op when newRg's condition is false). aiRoleAssignments is
+// scoped to the AI account's resource group instead and is ordered through its appIdentity and
+// aiServices references. Do not add an `existing` resource-group symbol with dependsOn: [newRg]: it
+// compiles to the same resource ID as newRg, and ARM's sequencer rejects it as a self-dependency
+// (Q-058).
 
 var useExistingAiServices = !empty(existingAiServicesName)
 // Only honor the subscription override when an existing account is actually named; otherwise the
@@ -131,12 +132,13 @@ resource existingAiServices 'Microsoft.CognitiveServices/accounts@2025-06-01' ex
 // [ User Assigned Identity for App to avoid circular dependency ]
 module appIdentity './modules/identity.bicep' = {
   name: 'uami'
-  scope: rg
+  scope: resourceGroup(rgName)
   params: {
     location: location
     environmentName: environmentName
     uniqueSuffix: uniqueSuffix
   }
+  dependsOn: [ newRg ]
 }
 
 var sanitizedEnvName = toLower(replace(replace(replace(environmentName, ' ', '-'), '--', '-'), '_', '-'))
@@ -144,29 +146,31 @@ var logAnalyticsName = take('log-${sanitizedEnvName}-${uniqueSuffix}', 63)
 var appInsightsName = take('insights-${sanitizedEnvName}-${uniqueSuffix}', 63)
 module monitoring 'modules/monitoring/monitor.bicep' = {
   name: 'monitor'
-  scope: rg
+  scope: resourceGroup(rgName)
   params: {
     logAnalyticsName: logAnalyticsName
     appInsightsName: appInsightsName
     tags: tags
   }
+  dependsOn: [ newRg ]
 }
 
 module registry 'modules/containerregistry.bicep' = {
   name: 'registry'
-  scope: rg
+  scope: resourceGroup(rgName)
   params: {
     location: location
     uniqueSuffix: uniqueSuffix
     identityName: appIdentity.outputs.name
     tags: tags
   }
+  dependsOn: [ newRg ]
 }
 
 
 module aiServices 'modules/aiservices.bicep' = if (!useExistingAiServices) {
   name: 'ai-foundry-deployment'
-  scope: rg
+  scope: resourceGroup(rgName)
   params: {
     location: location
     environmentName: environmentName
@@ -174,6 +178,7 @@ module aiServices 'modules/aiservices.bicep' = if (!useExistingAiServices) {
     identityId: appIdentity.outputs.identityId
     tags: tags
   }
+  dependsOn: [ newRg ]
 }
 
 #disable-next-line BCP318
@@ -184,7 +189,7 @@ var aiServicesResourceGroup = useExistingAiServices ? existingAiServicesResource
 
 module acs 'modules/acs.bicep' = if (telephonyProvider == 'acs') {
   name: 'acs-deployment'
-  scope: rg
+  scope: resourceGroup(rgName)
   params: {
     environmentName: environmentName
     uniqueSuffix: uniqueSuffix
@@ -192,13 +197,14 @@ module acs 'modules/acs.bicep' = if (telephonyProvider == 'acs') {
     existingAcsName: existingAcsName
     dataLocation: acsDataLocation
   }
+  dependsOn: [ newRg ]
 }
 
 var rawKvName = take(toLower(replace(replace(replace(replace('kv-${environmentName}-${uniqueSuffix}', ' ', ''), '.', ''), '--', '-'), '_', '')), 24)
 var keyVaultName = endsWith(rawKvName, '-') ? take(rawKvName, length(rawKvName) - 1) : rawKvName
 module keyvault 'modules/keyvault.bicep' = {
   name: 'keyvault-deployment'
-  scope: rg
+  scope: resourceGroup(rgName)
   params: {
     location: location
     keyVaultName: keyVaultName
@@ -213,17 +219,18 @@ module keyvault 'modules/keyvault.bicep' = {
     bandwidthClientId: bandwidthClientId
     bandwidthClientSecret: bandwidthClientSecret
   }
+  dependsOn: [ newRg ]
 }
 
 // Add role assignments 
 module RoleAssignments 'modules/roleassignments.bicep' = {
-  scope: rg
+  scope: resourceGroup(rgName)
   name: 'role-assignments'
   params: {
     identityPrincipalId: appIdentity.outputs.principalId
     keyVaultName: keyVaultName
   }
-  dependsOn: [ keyvault ]
+  dependsOn: [ newRg, keyvault ]
 }
 
 // AI Services role assignments, deployed at the AI account's own resource group scope, which may
@@ -242,7 +249,7 @@ module aiRoleAssignments 'modules/airoleassignments.bicep' = {
 
 module containerapp 'modules/containerapp.bicep' = {
   name: 'containerapp-deployment'
-  scope: rg
+  scope: resourceGroup(rgName)
   params: {
     location: location
     environmentName: environmentName
@@ -277,7 +284,7 @@ module containerapp 'modules/containerapp.bicep' = {
     debugMode: debugMode
     imageName: 'mcr.microsoft.com/azuredocs/containerapps-helloworld:latest'
   }
-  dependsOn: [RoleAssignments, aiRoleAssignments]
+  dependsOn: [ newRg, RoleAssignments, aiRoleAssignments ]
 }
 
 

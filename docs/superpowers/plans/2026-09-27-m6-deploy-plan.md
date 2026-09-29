@@ -377,7 +377,8 @@ Both `newRg` and `rg` compile to the same resource ID (`[variables('rgName')]`),
 2. **The first check, then pin the subscription.**
    - `azd env get-value TELEPHONY_PROVIDER -e <env-name>` must print `twilio`. Stop if it doesn't.
    - Then run `az account set --subscription 13b3dbed-…`. Rev 4's reason for this step, the silent Event Grid failure, no longer applies. But `preprovision.ps1` still reads the ambient `az` account (line 24), and being explicit costs nothing.
-3. **Preview, then provision. This proves C1's Key Vault half.**
+3. **Preview, validate, then provision. This proves C1's Key Vault half.**
+   - **Validate first (added after Q-058):** `az deployment sub validate` against the same parameters is also a **hard gate**, run before `--preview`. It is read-only and catches ARM-level template errors that neither `--preview` nor `what-if` exercise — exactly the class of bug that made U15's first real attempt fail (`InvalidTemplate`, "the sequencer action cannot depend on itself," fixed by U15-fix). Stop if it does not report success.
    - **Preview:** `azd provision --preview -e <env-name>` is a **hard gate**. Stop unless its output shows:
      - no `Microsoft.CognitiveServices/accounts` creation;
      - no `Microsoft.Communication/*` resource;
