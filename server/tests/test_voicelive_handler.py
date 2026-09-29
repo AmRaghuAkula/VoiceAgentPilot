@@ -99,7 +99,7 @@ async def test_agent_mode_unpinned_route_omits_agent_version(fake_sdk):
     assert fake_sdk["agent_name"] == "agent-a"
     assert fake_sdk["project_name"] == "proj"
     assert "model" not in fake_sdk
-    assert "latest" not in [v for k, v in fake_sdk.items() if k != "_conn"]
+    assert not any(v == "latest" for v in fake_sdk.values())
     await handler.cleanup()
 
 
