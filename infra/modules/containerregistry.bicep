@@ -3,15 +3,18 @@ param uniqueSuffix string
 param identityName string
 param tags object = {}
 
-param adminUserEnabled bool = true
+// Admin user off: the Container App pulls with AcrPull on its managed identity (below), and
+// azd's remote build (ACR Tasks) runs under the deploying principal's ARM token, never admin creds.
+param adminUserEnabled bool = false
 param dataEndpointEnabled bool = false
 param encryption object = {
   status: 'disabled'
 }
 param networkRuleBypassOptions string = 'AzureServices'
 param publicNetworkAccess string = 'Enabled'
+// Basic: one image, one pilot app; ACR Tasks (remote build) is available on every tier.
 param sku object = {
-  name: 'Standard'
+  name: 'Basic'
 }
 param zoneRedundancy string = 'Disabled'
 

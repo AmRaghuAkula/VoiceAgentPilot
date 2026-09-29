@@ -13,3 +13,10 @@ __pycache__/
 
 # Optional docs/assets outside server folder
 ../../docs/
+
+# Local secrets: keep every .env out of the build context. azd remoteBuild uploads
+# this whole folder to ACR Tasks, so an unignored .env would leave the machine.
+# The sample holds no secrets and stays in.
+**/.env
+**/.env.*
+!.env.sample

@@ -241,9 +241,11 @@ resource containerApp 'Microsoft.App/containerApps@2024-10-02-preview' = {
               secretRef: 'bandwidth-client-secret'
             }
           ] : [])
+          // 1.0 vCPU / 2.0 GiB (a valid Consumption pairing): headroom for the Twilio path's
+          // per-frame mu-law<->PCM conversion and 8k<->24k resampling in Python (M6 plan U14c, C11).
           resources: {
-            cpu: json('2.0')
-            memory: '4.0Gi'
+            cpu: json('1.0')
+            memory: '2.0Gi'
           }
         }
       ]
