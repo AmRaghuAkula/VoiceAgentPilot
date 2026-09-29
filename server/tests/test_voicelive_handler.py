@@ -515,6 +515,7 @@ def test_call_connected_marker_is_neutral_not_a_scripted_line():
 # ----------------------------------------------------------------------
 
 from azure.ai.voicelive.models import (
+    ServerEventError,
     ServerEventResponseAudioDelta,
     ServerEventResponseCreated,
     ServerEventResponseMcpCallInProgress,
@@ -593,6 +594,14 @@ async def start_handler(route=ROUTE, events=()):
     return handler
 
 
+def assert_plain_tagged_retry(create):
+    # The timeout path's retry carries only an event_id tag (to match a rejection): no instructions,
+    # no response overrides (D-004).
+    create.assert_awaited_once()
+    kwargs = create.await_args.kwargs
+    assert set(kwargs) == {"event_id"} and kwargs["event_id"].startswith("retry-")
+
+
 def all_watchdog_tasks(handler):
     tasks = set(handler._recovery_tasks)
     if handler._watchdog_task is not None:
@@ -616,7 +625,7 @@ async def test_stuck_response_triggers_marker_retry(fast_watchdog, caplog):
     item = create_item.await_args.kwargs["item"]
     assert isinstance(item, UserMessageItem)
     assert item.as_dict()["content"] == [{"type": "input_text", "text": vmh.FAILED_RESPONSE_MARKER}]
-    handler.conn.response.create.assert_awaited_once_with()  # plain retry: no instructions, no overrides
+    assert_plain_tagged_retry(handler.conn.response.create)  # plain retry: no instructions, no overrides
     assert handler.unrecoverable == 0
     messages = [r.getMessage() for r in caplog.records]
     assert any("response_stuck id=r1" in m and "attempt=1" in m for m in messages)
@@ -804,7 +813,7 @@ async def test_stuck_retry_uses_the_same_marker_choice_as_failed(fast_watchdog, 
         assert_call_connected_item(create_item.await_args.kwargs["item"])
     else:
         create_item.assert_not_awaited()
-    handler.conn.response.create.assert_awaited_once_with()
+    assert_plain_tagged_retry(handler.conn.response.create)
     await handler.cleanup()
 
 
@@ -1021,8 +1030,12 @@ async def test_voicelive_drop_during_recovery_cancels_it(fast_watchdog):
     await handler.cleanup()
 
 
-def error_event(code="conversation_already_has_active_response"):
-    return SimpleNamespace(type=vmh.ServerEventType.ERROR, error={"type": "invalid_request_error", "code": code})
+def error_event(code="conversation_already_has_active_response", event_id=None):
+    # Parsed by the real SDK model, so error.event_id is read the way it is on a live call.
+    error = {"type": "invalid_request_error", "code": code, "message": "rejected"}
+    if event_id is not None:
+        error["event_id"] = event_id
+    return ServerEventError({"type": "error", "event_id": "srv-1", "error": error})
 
 
 async def retried_with_pending_watch(monkeypatch, events=None):
@@ -1040,11 +1053,28 @@ async def retried_with_pending_watch(monkeypatch, events=None):
 async def test_rejected_retry_ends_the_call_without_another_timeout(fast_watchdog, monkeypatch, caplog):
     caplog.set_level("WARNING", logger=vmh.logger.name)
     handler = await retried_with_pending_watch(monkeypatch)
-    handler.conn.queue.put_nowait(error_event())
+    retry_event_id = handler.conn.response.create.await_args.kwargs["event_id"]
+    handler.conn.queue.put_nowait(error_event(event_id=retry_event_id))
     await eventually(lambda: handler.unrecoverable == 1)  # timers can't fire: the error did this
     handler.conn.response.create.assert_awaited_once()
-    assert any("response_retry_rejected" in r.getMessage() for r in caplog.records)
+    assert any("response_stuck id=pending_retry reason=retry_rejected attempt=2" in r.getMessage()
+               for r in caplog.records)
     await eventually(lambda: not all_watchdog_tasks(handler))
+    await handler.cleanup()
+
+
+@pytest.mark.parametrize("event_id", [None, "some-other-client-event"])
+async def test_unrelated_error_during_the_pending_retry_does_not_end_the_call(fast_watchdog, monkeypatch, event_id):
+    # e.g. a late error for the marker item or the cancel: not the retry's own rejection.
+    handler = await retried_with_pending_watch(monkeypatch)
+    timer = handler._watchdog_task
+    handler.conn.queue.put_nowait(error_event("response_cancel_not_active", event_id=event_id))
+    handler.conn.queue.put_nowait(created("r2"))  # the retry then starts normally
+    await eventually(lambda: handler._watched_response_id == "r2")
+    await eventually(timer.done)
+    assert timer.cancelled()  # replaced by r2's watch, not claimed by a rejection
+    assert handler.unrecoverable == 0 and handler._consecutive_failed_responses == 1
+    assert not handler._recovery_tasks
     await handler.cleanup()
 
 
@@ -1083,15 +1113,19 @@ async def test_progress_is_not_credited_to_a_retry_that_has_not_started(fast_wat
     await handler.cleanup()
 
 
-async def test_response_without_an_id_does_not_mute_later_audio(fast_watchdog, monkeypatch):
+async def test_response_without_an_id_is_not_watched_and_does_not_mute_audio(fast_watchdog, caplog):
+    # Its response.done could never be matched, so watching it would only cause a spurious retry.
+    caplog.set_level("WARNING", logger=vmh.logger.name)
     no_id = SimpleNamespace(type=vmh.ServerEventType.RESPONSE_CREATED, response=SimpleNamespace(id=None))
     handler = await start_handler(events=[speech_started(), no_id])
-    await eventually(lambda: handler.conn.response.create.await_count == 1)
-    assert None not in handler._timed_out_response_ids
-    no_more_timeouts(monkeypatch)
     handler.on_audio_delta = AsyncMock()
     handler.conn.queue.put_nowait(SimpleNamespace(type=vmh.ServerEventType.RESPONSE_AUDIO_DELTA, delta=b"\x01\x02"))
     await eventually(lambda: handler.on_audio_delta.await_count == 1)
+    await settle()
+    assert handler._watchdog_task is None and not handler._recovery_tasks
+    assert None not in handler._timed_out_response_ids
+    handler.conn.response.create.assert_not_awaited()
+    assert any("response_created_without_id" in r.getMessage() for r in caplog.records)
     await handler.cleanup()
 
 
