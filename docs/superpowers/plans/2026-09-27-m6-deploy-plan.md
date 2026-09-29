@@ -309,7 +309,10 @@ These come from T11/T12 and apply to every step below. They are recorded in the 
    azd env set TWILIO_AUTH_TOKEN ([Net.NetworkCredential]::new('', $t).Password) -e <env-name>
    # Routing: the real Twilio number (D-041) → agent route, base64-encoded (U14a mechanism), never committed.
    # Q-045 was answered (b): no staging number in M6. Option (d) is deferred; if adopted later, U15b adds it (U15b step 2).
-   $json = '{"<E.164 Twilio number>": {"project": "hireastra", "agent": "re-intake-pilot-agent", "version": "10"}}'
+   $json = '{"<E.164 Twilio number>": {"project": "hireastra", "agent": "re-intake-pilot-agent", "version": "24"}}'
+   # Confirm the exact published version in the Foundry portal (Build tab, top of the agent page) immediately
+   # before this step — this pin has drifted silently before (was "10" in docs, "11" on the laptop, while the
+   # real published version was 24). Never trust this file's own number without checking the portal first.
    azd env set AGENT_ROUTING_JSON_B64 ([Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($json))) -e <env-name>
    ```
    **Deliberately left unset:**
@@ -421,7 +424,7 @@ The laptop's `server/.env` must be updated too, if the laptop path is still in u
       5. Confirm with one real call.
 4. **Live smoke test, with real calls from the founder's own phone.** Per HANDOFF.md §7, the founder places test calls, and the builder or Cowork stages the checks and tails the logs. Every criterion is judged from **log evidence**, not only from how the call sounded (the UT02 standard). Mask numbers as `***NNNN` in anything pasted (D-021).
    1. **Connects within 10 s**, measured from the Twilio `start` to a successful agent-mode connect (`[VoiceLive] SDK connected in …`). This is UT02 criterion 1. The 10 s allows for the 8 s `VOICE_LIVE_CONNECT_TIMEOUT_SECONDS` default, plus headroom.
-   2. **Correct agent, pinned version:** `[VoiceLive] Agent mode project=hireastra agent=re-intake-pilot-agent version=10` appears in the log (UT02 criterion 2). This also proves the user-assigned identity's Foundry User grant works end to end, and that D-032's role trim didn't break agent auth.
+   2. **Correct agent, pinned version:** `[VoiceLive] Agent mode project=hireastra agent=re-intake-pilot-agent version=24` appears in the log (UT02 criterion 2) — confirm the expected number against the Foundry portal at test time, since it has drifted before (D-045). This also proves the user-assigned identity's Foundry User grant works end to end, and that D-032's role trim didn't break agent auth.
    3. **Two-way audio:** the founder confirms it, and continuous speech-started/stopped events appear in the log (UT02 criterion 3).
    4. **Clean hang-up:** `call_ended reason=…`, then `[VoiceLive] Cleaned up`, with no force-close or timeout path (UT02 criterion 4).
    5. **Quick hang-up**, about 2 s after connecting: the session ends cleanly, with no stuck call slot. This is UT02 criterion 5, which has still not been exercised live (Q-035).
