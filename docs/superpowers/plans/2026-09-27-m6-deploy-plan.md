@@ -1,8 +1,10 @@
 # M6 — Deploy (Step 4) Implementation Plan
 
-Last updated: 2026-09-28 (rev 5.1, plus Q-045 answered (b) by the founder — rev 5 re-targeted M6 from ACS to Twilio as the call path, per D-041, answering Q-044; rev 5.1 applies its Opus design-review fix pass: 2 blocking, 8 should-fix, 9 nits — see "What changed in rev 5.1") · Supersedes the M6 placeholder in [2026-09-25-telephony-bridge-milestones.md](2026-09-25-telephony-bridge-milestones.md) · Spec: [../../TELEPHONY_BRIDGE_SPEC.md](../../TELEPHONY_BRIDGE_SPEC.md) §6 (ACS-era text; see "Spec drift" below) · Twilio code this deploys: [2026-09-27-twilio-pilot-plan.md](2026-09-27-twilio-pilot-plan.md) (UT01a/UT01b, merged) · Decisions: [D-029](../../DECISIONS.md) (M6 unblocked), [D-030](../../DECISIONS.md) (partner delegation), [D-031](../../DECISIONS.md) (identity), [D-032](../../DECISIONS.md)/[D-039](../../DECISIONS.md) (upstream divergence, role trim and its correction), [D-033](../../DECISIONS.md) (monitoring deferred), [D-034](../../DECISIONS.md) (Opus routing), [D-036](../../DECISIONS.md) (ACS callback JWT), [D-040](../../DECISIONS.md) (U14a follow-ups), **[D-041](../../DECISIONS.md) (Twilio is the permanent number provider — the reason for this revision)** · Live status: [../../STATUS.md](../../STATUS.md)
+Last updated: 2026-09-29 (rev 5.2, adds U15-fix — U15's first real `azd provision` attempt found a genuine ARM template bug in U14a-origin Bicep, Q-058; see "Revision note (rev 5.2)" below) · Supersedes the M6 placeholder in [2026-09-25-telephony-bridge-milestones.md](2026-09-25-telephony-bridge-milestones.md) · Spec: [../../TELEPHONY_BRIDGE_SPEC.md](../../TELEPHONY_BRIDGE_SPEC.md) §6 (ACS-era text; see "Spec drift" below) · Twilio code this deploys: [2026-09-27-twilio-pilot-plan.md](2026-09-27-twilio-pilot-plan.md) (UT01a/UT01b, merged) · Decisions: [D-029](../../DECISIONS.md) (M6 unblocked), [D-030](../../DECISIONS.md) (partner delegation), [D-031](../../DECISIONS.md) (identity), [D-032](../../DECISIONS.md)/[D-039](../../DECISIONS.md) (upstream divergence, role trim and its correction), [D-033](../../DECISIONS.md) (monitoring deferred), [D-034](../../DECISIONS.md) (Opus routing), [D-036](../../DECISIONS.md) (ACS callback JWT), [D-040](../../DECISIONS.md) (U14a follow-ups), [D-041](../../DECISIONS.md) (Twilio is the permanent number provider), [D-044](../../DECISIONS.md) (Q-042, resource-group locks), **[D-045](../../DECISIONS.md) (agent-version drift corrected — pinned at 24)** · Live status: [../../STATUS.md](../../STATUS.md)
 
-**Revision note (rev 5.1, this revision).** Rev 5.1 is rev 5 plus a fix pass from rev 5's own Opus design review. That review returned 2 blocking findings, 8 should-fix and 9 nits. Its verdict was "fix pass, not rewrite", and it independently confirmed T1–T3, the Q-005/Q-043/D-036 reasoning and the Bicep line references. The main changes are:
+**Revision note (rev 5.2, this revision).** U15's first real `azd provision` attempt (2026-09-29) failed ARM template validation on a genuine bug: `main.bicep`'s `existing rg` resource has a `dependsOn` on `newRg`, but both compile to the same resource ID, which ARM's sequencer treats as a self-dependency. Neither `--preview` nor `what-if` catches this, which is why it shipped unnoticed through U14a, U14b and U14c. Nothing was created in Azure; the builder correctly stopped per the plan's own stop rule (S6) rather than fix it inside U15. This revision adds a new **U15-fix** unit (below, before U15's own section) to resolve it, and records the process gap (add `az deployment sub validate` to the preview gate) for future infra units. Full finding: **Q-058**.
+
+**Revision note (rev 5.1).** Rev 5.1 is rev 5 plus a fix pass from rev 5's own Opus design review. That review returned 2 blocking findings, 8 should-fix and 9 nits. Its verdict was "fix pass, not rewrite", and it independently confirmed T1–T3, the Q-005/Q-043/D-036 reasoning and the Bicep line references. The main changes are:
 - the rule that every `azd provision` is paired with an `azd deploy` (T11);
 - clean-up of the stale ACS azd environments (T12);
 - splitting U15 into U15 (deploy) and U15b (live smoke test and cutover);
@@ -268,6 +270,55 @@ These come from T11/T12 and apply to every step below. They are recorded in the 
 ### U14d — RETIRED (folded into U14a, 2026-09-27). Do not cut `feat/tb-m6-u14d-resource-naming`.
 
 ### U-CFG — RETIRED (D-031). Do not implement. Still true under Twilio: the Container App's `AZURE_USER_ASSIGNED_IDENTITY_CLIENT_ID` is always populated.
+
+### U15-fix — Fix the self-referencing resource-group declaration in `main.bicep` (new in rev 5.2, from Q-058)
+
+**Branch:** `feat/tb-m6-u15-fix-rg-selfdep` · **Model: Opus** (CLAUDE.md §0; infra fix on live-deploy-critical code).
+
+**Why this exists:** U15's first real `azd provision` attempt failed ARM template validation with `InvalidTemplate: The sequencer action cannot depend on itself. Parameter name: runBeforeActionId`. Reproduced safely, read-only, with `az deployment sub validate` — no resource was ever created. Full finding: **Q-058**.
+
+**Root cause, read directly in `infra/main.bicep` (lines 109–119, U14a-origin):**
+```bicep
+resource newRg 'Microsoft.Resources/resourceGroups@2024-11-01' = if (!useExistingResourceGroup) {
+  name: rgName
+  location: location
+  tags: tags
+}
+
+resource rg 'Microsoft.Resources/resourceGroups@2024-11-01' existing = {
+  name: rgName
+  dependsOn: [ newRg ]
+}
+```
+Both `newRg` and `rg` compile to the same resource ID (`[variables('rgName')]`), so `rg`'s `dependsOn: [newRg]` is, to ARM's deployment sequencer, a resource depending on itself. This is languageVersion 2.0 behavior; `azd provision --preview` and `az deployment sub what-if` do not run the sequencer check that catches it, which is why U14a, U14b and U14c's own preview/what-if verification all passed cleanly despite this bug already being present.
+
+**What it does:**
+1. Remove the `rg`/`newRg` alias pair entirely. Every module currently scoped with `scope: rg` (8 sites: `appIdentity`, `monitoring`, `registry`, `aiServices`, `acs`, and three more — grep `scope: rg` in `main.bicep` for the exact current list, don't trust this count without re-checking) is rescoped to `scope: resourceGroup(rgName)` — the built-in subscription-scope function, which needs no resource declaration and cannot alias against `newRg`.
+2. Keep `newRg`'s conditional creation (`if (!useExistingResourceGroup)`) exactly as-is — that part is correct and still needed for the create-new path.
+3. Add an explicit `dependsOn: [newRg]` on each module that previously depended on `rg` implicitly through the old alias, so creation ordering is preserved on the create-new path (a module must not try to deploy into a resource group that doesn't exist yet). On the existing-resource-group path (`useExistingResourceGroup == true`), `newRg` is never created, so `dependsOn: [newRg]` on a conditional resource with `if: false` is a no-op — confirm this is actually true Bicep behavior (test it, don't assume) rather than something that needs its own conditional.
+4. Re-verify every other reference to `rg`/`rgName` in the file (line 183's `aiServicesResourceGroup = ... : rgName` and any others) is unaffected by removing the `rg` symbol — `rgName` (the string variable) stays; only the `rg` *resource* symbol goes away.
+
+**Verification, in order:**
+1. `az bicep build --file infra/main.bicep` — must exit 0.
+2. `az deployment sub validate` against BOTH the existing-resource-group path (the real `vp-twilio-prod` parameters — reuse the environment `builder-u15` already prepared, do not recreate it) AND the create-new path (dummy/empty existing-resource params) — this is the exact read-only command that caught the original bug; it must now pass on both paths.
+3. `azd provision --preview -e vp-twilio-prod` — must still show all the same T1 negatives U15 already verified (no ACS resource, no Cognitive Services account creation, Foundry User + Key Vault Secrets User grants correct).
+4. **The real proof: resume U15 with this fix in place** — but that is U15's job, not this unit's. This unit's own DoD is satisfied by `az deployment sub validate` passing; it does NOT run a real `azd provision` itself, to avoid creating real Azure resources from a fix-only unit. U15 (resumed after this merges) is where the real provision happens.
+5. `cd server && python -m uv run pytest -q` — 367 expected, unaffected (infra-only change).
+
+**Process addition, apply to this unit's own verification and record for future infra units:** add `az deployment sub validate` as a standing step alongside `--preview`/`what-if` in this plan's own guidance — it is read-only, catches ARM-level template errors that `--preview`/`what-if` don't, and would have caught this bug at U14a's own review stage had it been run then.
+
+**Scope note (D-016/D-032):** `main.bicep` is U14a-origin code already inside D-032's scoped upstream-divergence exception — this fix does not expand that exception, it corrects a bug within code already inside it.
+
+**DoD:**
+- [ ] `rg`/`newRg` alias pair removed; all 8 (confirm exact count) module scopes changed to `scope: resourceGroup(rgName)`.
+- [ ] `az bicep build` exits 0.
+- [ ] `az deployment sub validate` passes on both the existing-RG path (reusing `vp-twilio-prod`) and the create-new path.
+- [ ] `azd provision --preview -e vp-twilio-prod` still shows all of U15's original T1 negatives.
+- [ ] No real `azd provision`/`azd deploy` run by this unit — that stays U15's job.
+- [ ] `pytest` 367/367 unaffected.
+- [ ] Opus code review and `cso`, scoped to `main...HEAD`.
+- [ ] STATUS.md/DECISIONS.md updated inside this PR (closes Q-058; U15 moves back to NEXT).
+- [ ] Add the `az deployment sub validate` recommendation to this plan document's own text for future infra units, if not already reflected by the time this unit is built.
 
 ### U15 — Deploy and pre-cutover verification (redesigned in rev 5; split from U15b in rev 5.1)
 
