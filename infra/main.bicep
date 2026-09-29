@@ -69,6 +69,12 @@ param debugMode bool = false
 
 // [ Existing resources (M6 plan U14a) ]
 // Each "existing" name below is optional: empty keeps the accelerator's create-new behavior.
+// WARNING: when adopting existing resources, do NOT run `azd down` against that environment. It
+// can delete resource groups this deployment touched, which then include the adopted resource
+// group (with the ACS resource and its phone number) and, via the cross-subscription role
+// assignment deployment, the AI account's resource group. Tear down individual resources instead.
+// Set all of EXISTING_RESOURCE_GROUP_NAME, EXISTING_ACS_NAME and ACS_DATA_LOCATION together (a
+// resource group without an ACS name would create a second ACS resource next to the real one).
 @description('Existing resource group (in this deployment\'s subscription) to deploy into. Empty creates rg-<env>-<suffix>.')
 param existingResourceGroupName string = ''
 @description('Existing ACS resource (in the target resource group) to adopt. Empty creates a new one. Its system-assigned identity is turned on by this deployment.')
@@ -113,7 +119,9 @@ resource rg 'Microsoft.Resources/resourceGroups@2024-11-01' existing = {
 }
 
 var useExistingAiServices = !empty(existingAiServicesName)
-var aiServicesSubscriptionId = empty(existingAiServicesSubscriptionId) ? subscription().subscriptionId : existingAiServicesSubscriptionId
+// Only honor the subscription override when an existing account is actually named; otherwise the
+// role-assignment module would target the new account's resource group in the wrong subscription.
+var aiServicesSubscriptionId = (useExistingAiServices && !empty(existingAiServicesSubscriptionId)) ? existingAiServicesSubscriptionId : subscription().subscriptionId
 
 resource existingAiServices 'Microsoft.CognitiveServices/accounts@2025-06-01' existing = if (useExistingAiServices) {
   name: existingAiServicesName

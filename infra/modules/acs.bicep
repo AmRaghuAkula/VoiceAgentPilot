@@ -6,6 +6,9 @@ param existingAcsName string = ''
 @description('ACS data location. Immutable after creation: must equal the existing resource\'s value when adopting one.')
 param dataLocation string = 'United States'
 
+// Adopting an existing resource is a full PUT: tags are replaced and properties not declared here
+// (e.g. linkedDomains) would be reset. Re-run `azd provision --preview` before each provision and
+// mirror any portal-side ACS configuration here first.
 var acsName string = empty(existingAcsName) ? 'acs-${environmentName}-${uniqueSuffix}' : existingAcsName
 
 resource acs 'Microsoft.Communication/communicationServices@2025-05-01-preview' = {
