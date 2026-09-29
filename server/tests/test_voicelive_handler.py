@@ -508,3 +508,379 @@ def test_call_connected_marker_is_neutral_not_a_scripted_line():
     assert marker == "[call connected]"
     for word in ("say", "greet", "welcome", "hello", "introduce", "respond", "you"):
         assert word not in marker.lower()
+
+
+# ----------------------------------------------------------------------
+# Q-070 / D-050: a response.created that never resolves must not leave the caller in silence
+# ----------------------------------------------------------------------
+
+from azure.ai.voicelive.models import ServerEventResponseAudioDelta, ServerEventResponseCreated
+
+FAST_TIMEOUT = 0.05
+
+
+def created(rid="r1"):
+    return ServerEventResponseCreated({"type": "response.created", "event_id": f"c-{rid}", "response": {
+        "id": rid, "object": "realtime.response", "status": "in_progress", "output": []}})
+
+
+def audio_delta(rid="r1"):
+    return ServerEventResponseAudioDelta({"type": "response.audio.delta", "event_id": f"d-{rid}",
+                                          "response_id": rid, "item_id": "i1", "output_index": 0,
+                                          "content_index": 0, "delta": "AAAA"})
+
+
+class QueueConn(FakeConn):
+    """A Voice Live connection the test feeds event by event (None ends the stream)."""
+
+    def __init__(self):
+        super().__init__()
+        self.response.cancel = AsyncMock()
+        self.queue = asyncio.Queue()
+
+    async def __anext__(self):
+        event = await self.queue.get()
+        if event is None:
+            raise StopAsyncIteration
+        return event
+
+
+@pytest.fixture
+def fast_watchdog(monkeypatch):
+    monkeypatch.setattr(vmh, "RESPONSE_TIMEOUT_SECONDS", FAST_TIMEOUT)
+
+
+async def eventually(predicate, timeout=2.0):
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while not predicate():
+        assert loop.time() < deadline, "condition not reached in time"
+        await asyncio.sleep(0.005)
+
+
+async def settle(multiple=5):
+    """Let well over one watchdog timeout pass."""
+    await asyncio.sleep(FAST_TIMEOUT * multiple)
+
+
+async def start_handler(route=ROUTE, events=()):
+    handler = UnrecoverableRecorder(handler_config(), route=route)
+    handler.conn = QueueConn()
+    for event in events:
+        handler.conn.queue.put_nowait(event)
+    handler._receiver_task = asyncio.create_task(handler._receiver_loop())
+    return handler
+
+
+def all_watchdog_tasks(handler):
+    tasks = set(handler._recovery_tasks)
+    if handler._watchdog_task is not None:
+        tasks.add(handler._watchdog_task)
+    return tasks
+
+
+async def test_response_timeout_constant_has_real_margin():
+    # D-050: normal responses resolved in ~2-4 s on the live calls; the timeout must sit well
+    # above that (>= 3x the slowest observed) yet recover inside a caller's patience for silence.
+    assert 12 <= vmh.RESPONSE_TIMEOUT_SECONDS <= 20
+
+
+async def test_stuck_response_triggers_marker_retry(fast_watchdog, caplog):
+    caplog.set_level("WARNING", logger=vmh.logger.name)
+    handler = await start_handler(events=[speech_started(), created("r1")])
+    await eventually(lambda: handler.conn.response.create.await_count == 1)
+    handler.conn.response.cancel.assert_awaited_once_with(response_id="r1")
+    create_item = handler.conn.conversation.item.create
+    create_item.assert_awaited_once()
+    item = create_item.await_args.kwargs["item"]
+    assert isinstance(item, UserMessageItem)
+    assert item.as_dict()["content"] == [{"type": "input_text", "text": vmh.FAILED_RESPONSE_MARKER}]
+    handler.conn.response.create.assert_awaited_once_with()  # plain retry: no instructions, no overrides
+    assert handler.unrecoverable == 0
+    messages = [r.getMessage() for r in caplog.records]
+    assert any("response_stuck id=r1" in m and "attempt=1" in m for m in messages)
+    assert not any("response_failed" in m for m in messages)  # distinguishable from a real failure
+    assert any("response_retry attempt=1 marker=caller_audio" in m for m in messages)
+    await handler.cleanup()
+
+
+async def test_response_done_in_time_cancels_the_timer(fast_watchdog):
+    handler = await start_handler(events=[created("r1")])
+    await eventually(lambda: handler._watchdog_task is not None)
+    timer = handler._watchdog_task
+    handler.conn.queue.put_nowait(response_done("completed", "r1"))
+    await eventually(lambda: handler.conversation_id == "conv-1")
+    await settle()
+    assert timer.cancelled()  # genuinely cancelled, not merely ignored
+    assert handler._watchdog_task is None and not handler._recovery_tasks
+    handler.conn.response.cancel.assert_not_awaited()
+    handler.conn.response.create.assert_not_awaited()
+    handler.conn.conversation.item.create.assert_not_awaited()
+    assert handler._consecutive_failed_responses == 0
+    await handler.cleanup()
+
+
+async def test_audio_progress_keeps_a_long_response_alive(monkeypatch):
+    # A response that is still streaming is not stuck: progress events for it push the deadline out.
+    monkeypatch.setattr(vmh, "RESPONSE_TIMEOUT_SECONDS", 0.2)
+    handler = await start_handler(events=[created("r1")])
+    for _ in range(12):  # ~0.6 s of streaming, three times the timeout
+        await asyncio.sleep(0.05)
+        handler.conn.queue.put_nowait(audio_delta("r1"))
+    handler.conn.queue.put_nowait(response_done("completed", "r1"))
+    await eventually(lambda: handler.conversation_id == "conv-1")
+    handler.conn.response.create.assert_not_awaited()
+    handler.conn.response.cancel.assert_not_awaited()
+    await handler.cleanup()
+
+
+async def test_progress_for_another_response_does_not_keep_the_watched_one_alive(fast_watchdog):
+    handler = await start_handler(events=[created("r1")])
+    for _ in range(4):
+        await asyncio.sleep(FAST_TIMEOUT / 2)
+        handler.conn.queue.put_nowait(audio_delta("other"))
+    await eventually(lambda: handler.conn.response.create.await_count == 1)
+    await handler.cleanup()
+
+
+async def test_two_stuck_responses_end_the_call_without_a_second_retry(fast_watchdog, caplog):
+    caplog.set_level("WARNING", logger=vmh.logger.name)
+    handler = await start_handler(events=[speech_started(), created("r1")])
+    await eventually(lambda: handler.conn.response.create.await_count == 1)
+    handler.conn.queue.put_nowait(created("r2"))  # the retry's response also never resolves
+    await eventually(lambda: handler.unrecoverable == 1)
+    await settle()
+    handler.conn.response.create.assert_awaited_once()  # bounded: exactly one retry
+    handler.conn.response.cancel.assert_awaited_once_with(response_id="r1")  # none on the final attempt
+    assert handler.unrecoverable == 1
+    assert any("response_stuck id=r2" in r.getMessage() and "attempt=2" in r.getMessage() for r in caplog.records)
+    await handler.cleanup()
+
+
+async def test_retry_that_never_starts_a_response_still_ends_the_call(fast_watchdog):
+    # If Voice Live ignores the retry's response.create() entirely (no response.created ever), the
+    # retry itself is watched, so the caller still gets a clean hangup instead of silence.
+    handler = await start_handler(events=[speech_started(), created("r1")])
+    await eventually(lambda: handler.unrecoverable == 1)
+    handler.conn.response.create.assert_awaited_once()
+    assert handler._consecutive_failed_responses == 2
+    await handler.cleanup()
+
+
+async def test_stuck_then_failed_share_one_bounded_counter(fast_watchdog):
+    handler = await start_handler(events=[speech_started(), created("r1")])
+    await eventually(lambda: handler.conn.response.create.await_count == 1)
+    handler.conn.queue.put_nowait(created("r2"))
+    handler.conn.queue.put_nowait(failed("r2"))
+    await eventually(lambda: handler.unrecoverable == 1)
+    await settle()
+    handler.conn.response.create.assert_awaited_once()
+    assert handler.unrecoverable == 1
+    await handler.cleanup()
+
+
+async def test_failed_then_stuck_share_one_bounded_counter(fast_watchdog):
+    handler = await start_handler(events=[speech_started(), failed("r1"), created("r2")])
+    await eventually(lambda: handler.unrecoverable == 1)
+    await settle()
+    handler.conn.response.create.assert_awaited_once()  # the FAILED path's single retry only
+    handler.conn.response.cancel.assert_not_awaited()
+    await handler.cleanup()
+
+
+async def test_completed_after_a_recovered_timeout_resets_the_counter(fast_watchdog):
+    handler = await start_handler(events=[speech_started(), created("r1")])
+    await eventually(lambda: handler.conn.response.create.await_count == 1)
+    handler.conn.queue.put_nowait(created("r2"))
+    handler.conn.queue.put_nowait(response_done("completed", "r2"))
+    await eventually(lambda: handler._consecutive_failed_responses == 0)
+    handler.conn.queue.put_nowait(created("r3"))  # a later, unrelated stuck response gets its own retry
+    await eventually(lambda: handler.conn.response.create.await_count == 2)
+    assert handler.unrecoverable == 0
+    await handler.cleanup()
+
+
+async def test_done_that_beats_an_already_expired_timer_wins(monkeypatch):
+    # Race, done side: the timer has expired but the receiver handles response.done before the
+    # timer task runs. The done wins: the timer is cancelled and no retry happens.
+    monkeypatch.setattr(vmh, "RESPONSE_TIMEOUT_SECONDS", 0)
+    handler = await start_handler(events=[created("r1"), response_done("completed", "r1")])
+    await eventually(lambda: handler.conversation_id == "conv-1")
+    await settle()
+    handler.conn.response.create.assert_not_awaited()
+    handler.conn.response.cancel.assert_not_awaited()
+    assert not all_watchdog_tasks(handler)
+    await handler.cleanup()
+
+
+async def test_late_done_after_timeout_is_ignored(fast_watchdog, caplog):
+    # Race, timer side: once the timer has claimed the response, a late response.done for it is
+    # logged and skipped: no second retry, and a late "completed" does not reset the counter.
+    caplog.set_level("WARNING", logger=vmh.logger.name)
+    handler = await start_handler(events=[speech_started(), created("r1")])
+    gate = asyncio.Event()
+
+    async def slow_cancel(**kwargs):
+        await gate.wait()
+
+    handler.conn.response.cancel.side_effect = slow_cancel
+    await eventually(lambda: handler.conn.response.cancel.await_count == 1)  # recovery in flight
+    handler.conn.queue.put_nowait(response_done("completed", "r1"))
+    await eventually(lambda: handler.conversation_id == "conv-1")
+    assert handler._consecutive_failed_responses == 1  # the late completion did not reset it
+    gate.set()
+    await eventually(lambda: handler.conn.response.create.await_count == 1)
+    handler.conn.queue.put_nowait(created("r2"))  # the retry starts normally
+    handler.conn.queue.put_nowait(response_done("failed", "r1"))  # a late failure is skipped too
+
+    def late_logs():
+        return [r for r in caplog.records if "response_done_after_timeout id=r1" in r.getMessage()]
+
+    await eventually(lambda: len(late_logs()) == 2)
+    handler.conn.response.create.assert_awaited_once()  # no second retry from the late events
+    assert handler._consecutive_failed_responses == 1
+    assert handler.unrecoverable == 0
+    handler.conn.queue.put_nowait(response_done("completed", "r2"))
+    await eventually(lambda: handler._consecutive_failed_responses == 0)
+    await settle()
+    handler.conn.response.create.assert_awaited_once()
+    assert not all_watchdog_tasks(handler)
+    await handler.cleanup()
+
+
+async def test_new_response_replaces_the_previous_timer(fast_watchdog):
+    handler = await start_handler(events=[created("r1")])
+    await eventually(lambda: handler._watchdog_task is not None)
+    first = handler._watchdog_task
+    handler.conn.queue.put_nowait(created("r2"))
+    await eventually(lambda: handler._watchdog_task is not first)
+    await eventually(first.done)
+    assert first.cancelled()
+    handler.conn.queue.put_nowait(response_done("completed", "r2"))
+    await eventually(lambda: handler.conversation_id == "conv-1")
+    await settle()
+    handler.conn.response.create.assert_not_awaited()  # exactly one timer was live at any time
+    await handler.cleanup()
+
+
+@pytest.mark.parametrize("events, route, expected", [
+    ([created("r1")], ROUTE, "call_connected"),
+    ([speech_started(), created("r1")], ROUTE, "caller_audio"),
+    ([transcription_completed(), created("r1")], ROUTE, "caller_audio"),
+    ([created("r1")], None, "none"),
+])
+async def test_stuck_retry_uses_the_same_marker_choice_as_failed(fast_watchdog, caplog, events, route, expected):
+    caplog.set_level("WARNING", logger=vmh.logger.name)
+    handler = await start_handler(route=route, events=events)
+    await eventually(lambda: handler.conn.response.create.await_count == 1)
+    retries = [r.getMessage() for r in caplog.records if "response_retry " in r.getMessage()]
+    assert len(retries) == 1 and f"marker={expected}" in retries[0]
+    create_item = handler.conn.conversation.item.create
+    if expected == "caller_audio":
+        assert isinstance(create_item.await_args.kwargs["item"], UserMessageItem)
+    elif expected == "call_connected":
+        assert_call_connected_item(create_item.await_args.kwargs["item"])
+    else:
+        create_item.assert_not_awaited()
+    handler.conn.response.create.assert_awaited_once_with()
+    await handler.cleanup()
+
+
+async def test_stuck_retry_adds_item_before_response_create(fast_watchdog):
+    order = []
+    handler = await start_handler(events=[created("r1")])
+    handler.conn.response.cancel.side_effect = lambda **kw: order.append("cancel")
+    handler.conn.conversation.item.create.side_effect = lambda **kw: order.append("item")
+    handler.conn.response.create.side_effect = lambda **kw: order.append("response")
+    await eventually(lambda: "response" in order)
+    assert order == ["cancel", "item", "response"]
+    await handler.cleanup()
+
+
+async def test_cancel_error_does_not_block_the_retry(fast_watchdog):
+    handler = await start_handler(events=[speech_started(), created("r1")])
+    handler.conn.response.cancel.side_effect = RuntimeError("no active response")
+    await eventually(lambda: handler.conn.response.create.await_count == 1)
+    assert handler.unrecoverable == 0
+    await handler.cleanup()
+
+
+async def test_stuck_retry_send_error_ends_call_and_leaves_no_timer(fast_watchdog):
+    handler = await start_handler(events=[speech_started(), created("r1")])
+    handler.conn.response.create.side_effect = RuntimeError("socket closed")
+    await eventually(lambda: handler.unrecoverable == 1)
+    await eventually(lambda: not all_watchdog_tasks(handler))
+    await settle()
+    assert handler.unrecoverable == 1  # the retry's own watch was disarmed, nothing fires later
+    await handler.cleanup()
+
+
+async def test_cleanup_cancels_a_pending_timer(monkeypatch):
+    monkeypatch.setattr(vmh, "RESPONSE_TIMEOUT_SECONDS", 3600)
+    handler = await start_handler(events=[created("r1")])
+    await eventually(lambda: handler._watchdog_task is not None)
+    timer = handler._watchdog_task
+    await handler.cleanup()
+    assert timer.done() and timer.cancelled()
+    assert handler._watchdog_task is None and not handler._recovery_tasks
+
+
+async def test_cleanup_cancels_an_in_flight_recovery(fast_watchdog):
+    handler = await start_handler(events=[speech_started(), created("r1")])
+    gate = asyncio.Event()
+
+    async def slow_cancel(**kwargs):
+        await gate.wait()
+
+    handler.conn.response.cancel.side_effect = slow_cancel
+    await eventually(lambda: handler.conn.response.cancel.await_count == 1)
+    (recovery,) = handler._recovery_tasks
+    await handler.cleanup()
+    assert recovery.done() and recovery.cancelled()
+    assert handler._watchdog_task is None and not handler._recovery_tasks
+
+
+async def test_cleanup_during_retry_send_leaves_no_pending_retry_timer(fast_watchdog):
+    # The recovery arms the retry's own timer before response.create(); cleanup landing while that
+    # send is in flight must cancel both the recovery and that timer.
+    handler = await start_handler(events=[speech_started(), created("r1")])
+    gate = asyncio.Event()
+
+    async def slow_create(**kwargs):
+        await gate.wait()
+
+    handler.conn.response.create.side_effect = slow_create
+    await eventually(lambda: handler.conn.response.create.await_count == 1)
+    timer = handler._watchdog_task
+    assert timer is not None  # the pending-retry timer
+    (recovery,) = handler._recovery_tasks
+    await handler.cleanup()
+    assert timer.cancelled() and recovery.cancelled()
+    assert not all_watchdog_tasks(handler)
+    await settle()
+    assert handler.unrecoverable == 0
+
+
+async def test_force_close_cancels_a_pending_timer(monkeypatch):
+    monkeypatch.setattr(vmh, "RESPONSE_TIMEOUT_SECONDS", 3600)
+    handler = await start_handler(events=[created("r1")])
+    await eventually(lambda: handler._watchdog_task is not None)
+    timer = handler._watchdog_task
+    handler.force_close()
+    await eventually(timer.done)
+    assert timer.cancelled()
+    assert handler._watchdog_task is None
+    await handler.cleanup()
+
+
+async def test_voicelive_drop_disarms_the_timer(fast_watchdog):
+    handler = await start_handler(events=[created("r1")])
+    await eventually(lambda: handler._watchdog_task is not None)
+    timer = handler._watchdog_task
+    handler.conn.queue.put_nowait(None)  # Voice Live ends the stream
+    await eventually(lambda: handler.ended == 1)
+    await eventually(timer.done)
+    await settle()
+    assert timer.cancelled()
+    handler.conn.response.create.assert_not_awaited()
+    await handler.cleanup()
