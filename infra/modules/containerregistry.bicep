@@ -3,8 +3,9 @@ param uniqueSuffix string
 param identityName string
 param tags object = {}
 
-// Admin user off: the Container App pulls with AcrPull on its managed identity (below), and
-// azd's remote build (ACR Tasks) runs under the deploying principal's ARM token, never admin creds.
+// Admin user off: the Container App pulls with AcrPull on its managed identity (below). azd's
+// remote build uploads and schedules via ARM with the deploying principal (azd 1.34.2 source);
+// first live proof is U15's deploy. If it fails there, set this back to true (M6 plan U14c).
 param adminUserEnabled bool = false
 param dataEndpointEnabled bool = false
 param encryption object = {
