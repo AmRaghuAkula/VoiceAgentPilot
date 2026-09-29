@@ -314,3 +314,22 @@ U14a's `cso` review (round 2, PR #33) passed conditionally on this status commit
 - Defaulting `ACS_CALLBACK_JWT_AUDIENCE` (Q-043) would change deployed behavior from D-036's already-decided "must be set, not optional" instruction into an actual enforced default — a real behavior change requiring its own sign-off, not a drive-by default inside an unrelated unit.
 
 **Source:** U14a's `cso` review, round 2, PR #33. Partner decision under D-030 (architecture-tradeoff/D-002-tension delegation) to record and defer rather than block.
+
+### D-041 · 2026-09-28 · Supersedes D-001: Twilio, not ACS/Option B, is the permanent phone number provider for testing and production
+
+The founder has purchased a real Twilio number (already recorded in the UT01a/UT01b audit trail, `+1 226-741-3885`) and has now decided **Twilio replaces ACS as the phone number provider permanently** — not just for the Friday 2026-10-02 demo (D-037's original framing). This directly supersedes D-001 ("A separate pay-as-you-go Azure subscription... holds ACS and the test number"), which is retired for the number-provider question specifically.
+
+**What this does NOT change:** M6's cloud-deploy work is not retired. The Container App, Key Vault, managed identity, and the Voice Live/Foundry connection all still need to move off the founder's laptop (Q-040's exact risk) regardless of which telephony provider delivers the call. What changes is *how a call reaches the deployed bridge* — Twilio's HTTPS webhook to `/twilio/ws`, not ACS's Event Grid → Call Automation path.
+
+**What this makes moot, to be closed/retired rather than left "blocked":**
+- **Q-002** (buy the ACS test number) — moot. No ACS number will ever be purchased for this pilot. To be marked ANSWERED/CLOSED, not OPEN.
+- **U16** (Event Grid number-based advanced filter) — moot, since it filters ACS Event Grid deliveries by an ACS phone number that will not exist. To be retired, the same way U-CFG was retired under D-031.
+
+**What needs rework, not retirement — a real M6 plan revision, not an inline patch:**
+- **U15's VoIP-only smoke test** (Q-011's design) validates the deployed pipeline via ACS Event Grid → Container App → ACS answer → `PlayCompleted`. That no longer proves what M6 actually needs proven if ACS never carries a production call. The smoke test should become a real Twilio call against the deployed Container App instead.
+- **U14a's ACS-specific wiring** (system-assigned identity on `hireastra-voice-pilot-acs`, the Cognitive Services User TTS role assignment for that identity, PR #33, merged as `8f4d495`) configured ACS to answer and speak on calls that will now never arrive via ACS in production. **This is not reverted by this decision** — reverting already-merged, reviewed infra work to chase a same-day pivot is not free, and the ACS resource may still be worth keeping cheaply idle or repurposed later. But it should be named honestly: that specific piece of U14a's scope no longer serves this pilot's call path. Whether to actually decommission it is a separate, lower-priority cleanup question, not blocking anything.
+- **U14b, U14c** (identity/circular-dependency fix, Key Vault media token + sizing) were written assuming ACS carries production calls. The underlying Container App identity/Key Vault needs likely still apply regardless of provider (the Container App still needs to pull its image, read secrets, and authenticate to Voice Live no matter how the call arrives) — but each must be re-verified against a Twilio-first M6 plan before being built, not assumed unchanged. **U14b's build was stopped mid-implementation the moment this decision was made** (no branch survived, no commits, nothing pushed to Azure) rather than let it finish against the stale ACS-only plan.
+
+**Why a full plan revision, not an inline patch:** this repo's own history (M6 plan's 4 revisions, the Twilio pilot plan's 3 revisions) shows that skipping a design-review pass on a real scope change is exactly how a deploy-breaking gap gets discovered mid-build instead of before it — U14b's own abandoned build is a live example of building against a plan whose central assumption had just changed. Per CLAUDE.md §0, revising a design spec runs on Opus, unconditionally; the M6 plan will be revised the same way before U14c/U15/U16 are touched again.
+
+**Source:** founder, direct instruction, 2026-09-28: "we took the phone number from Twilio no need for ACS phone number anymore," confirmed as a permanent (not demo-only) decision when asked directly.
