@@ -49,6 +49,39 @@
     },
     "debugMode": {
       "value": "${DEBUG_MODE=false}"
+    },
+    "existingResourceGroupName": {
+      "value": "${EXISTING_RESOURCE_GROUP_NAME}"
+    },
+    "existingAcsName": {
+      "value": "${EXISTING_ACS_NAME}"
+    },
+    "acsDataLocation": {
+      "value": "${ACS_DATA_LOCATION=United States}"
+    },
+    "existingAiServicesName": {
+      "value": "${EXISTING_AI_SERVICES_NAME}"
+    },
+    "existingAiServicesSubscriptionId": {
+      "value": "${EXISTING_AI_SERVICES_SUBSCRIPTION_ID}"
+    },
+    "existingAiServicesResourceGroup": {
+      "value": "${EXISTING_AI_SERVICES_RESOURCE_GROUP}"
+    },
+    "agentRoutingJsonBase64": {
+      "value": "${AGENT_ROUTING_JSON_B64}"
+    },
+    "maxCallSeconds": {
+      "value": "${MAX_CALL_SECONDS}"
+    },
+    "fallbackMessage": {
+      "value": "${FALLBACK_MESSAGE}"
+    },
+    "ambientPreset": {
+      "value": "${AMBIENT_PRESET}"
+    },
+    "acsCallbackJwtAudience": {
+      "value": "${ACS_CALLBACK_JWT_AUDIENCE}"
     }
   }
 }

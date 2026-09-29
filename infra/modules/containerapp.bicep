@@ -24,6 +24,18 @@ param appInsightsConnectionString string = ''
 @description('The name of the container image')
 param imageName string = ''
 param debugMode bool = false
+// Bridge settings (server/app/bridge_config.py). Each is added to the container's env only when
+// non-empty, so an unset value falls back to the app's own default (or fails its own startup
+// check) rather than being passed as an empty string.
+@description('AI Services endpoint ACS uses for its own text-to-speech (ACS_COGNITIVE_SERVICES_ENDPOINT).')
+param acsCognitiveServicesEndpoint string = ''
+@description('AGENT_ROUTING_JSON: E.164 number -> {project, agent, version}. Set via azd env, never committed.')
+param agentRoutingJson string = ''
+param maxCallSeconds string = ''
+param fallbackMessage string = ''
+param ambientPreset string = ''
+@description('ACS_CALLBACK_JWT_AUDIENCE: turns on the ACS callback JWT check. Confirmed at deploy time (Q-005).')
+param acsCallbackJwtAudience string = ''
 @description('Enable zone redundancy for the Container App Environment')
 param zoneRedundant bool = true
 
@@ -31,6 +43,16 @@ param zoneRedundant bool = true
 var sanitizedEnvName = toLower(replace(replace(replace(environmentName, ' ', '-'), '--', '-'), '_', '-'))
 var containerAppName = take('ca-${sanitizedEnvName}-${uniqueSuffix}', 32)
 var containerEnvName = take('cae-${sanitizedEnvName}-${uniqueSuffix}', 32)
+
+var optionalBridgeSettings = [
+  { name: 'ACS_COGNITIVE_SERVICES_ENDPOINT', value: acsCognitiveServicesEndpoint }
+  { name: 'AGENT_ROUTING_JSON', value: agentRoutingJson }
+  { name: 'MAX_CALL_SECONDS', value: maxCallSeconds }
+  { name: 'FALLBACK_MESSAGE', value: fallbackMessage }
+  { name: 'AMBIENT_PRESET', value: ambientPreset }
+  { name: 'ACS_CALLBACK_JWT_AUDIENCE', value: acsCallbackJwtAudience }
+]
+var bridgeEnv = filter(optionalBridgeSettings, setting => !empty(setting.value))
 
 resource logAnalyticsWorkspace 'Microsoft.OperationalInsights/workspaces@2022-10-01' existing = { name: logAnalyticsWorkspaceName }
 
@@ -150,6 +172,11 @@ resource containerApp 'Microsoft.App/containerApps@2024-10-02-preview' = {
               value: aiServicesEndpoint
             }
             {
+              // Spec name (D-003); bridge_config.py prefers it over AZURE_VOICE_LIVE_ENDPOINT.
+              name: 'VOICE_LIVE_ENDPOINT'
+              value: aiServicesEndpoint
+            }
+            {
               name: 'AZURE_USER_ASSIGNED_IDENTITY_CLIENT_ID'
               value: identityClientId
             }
@@ -161,7 +188,7 @@ resource containerApp 'Microsoft.App/containerApps@2024-10-02-preview' = {
               name: 'DEBUG_MODE'
               value: string(debugMode)
             }
-          ], !empty(acsConnectionStringSecretUri) ? [
+          ], bridgeEnv, !empty(acsConnectionStringSecretUri) ? [
             {
               name: 'ACS_CONNECTION_STRING'
               secretRef: 'acs-connection-string'
@@ -221,9 +248,11 @@ resource containerApp 'Microsoft.App/containerApps@2024-10-02-preview' = {
         }
       ]
       // TODO add memory/cpu scaling
+      // Fixed at one replica (spec §6: min 1, max 1). Call state is in-process, so a second
+      // replica would split a call's callbacks/media across instances.
       scale: {
         minReplicas: 1
-        maxReplicas: 10
+        maxReplicas: 1
         rules: [
           {
             name: 'http-scaler'
