@@ -162,12 +162,21 @@ class VoiceLiveMediaHandler:
                 "credential": self._credential,
                 "agent_name": self.route.agent,
                 "project_name": self.route.project,
-                "agent_version": self.route.version,
             }
-            logger.info(
-                "[VoiceLive] Agent mode project=%s agent=%s version=%s %s",
-                self.route.project, self.route.agent, self.route.version, self.log_context,
-            )
+            if self.route.is_unpinned:
+                # D-049: omit agent_version entirely -- azure-ai-voicelive 1.3.0 then sends no
+                # agent-version query param and Voice Live resolves the latest saved version.
+                # Never pass the literal "latest" through to the service.
+                logger.info(
+                    "[VoiceLive] Agent mode project=%s agent=%s version=latest (unpinned, D-049) %s",
+                    self.route.project, self.route.agent, self.log_context,
+                )
+            else:
+                connect_kwargs["agent_version"] = self.route.version
+                logger.info(
+                    "[VoiceLive] Agent mode project=%s agent=%s version=%s %s",
+                    self.route.project, self.route.agent, self.route.version, self.log_context,
+                )
         else:
             if self.client_id:
                 self._credential = ManagedIdentityCredential(client_id=self.client_id)

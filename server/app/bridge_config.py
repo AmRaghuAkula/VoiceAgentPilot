@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 
 from app.log_mask import mask_number
-from app.routing import AgentRoute, is_valid_e164, normalize_number
+from app.routing import LATEST_AGENT_VERSION, AgentRoute, is_valid_e164, normalize_number
 
 DEFAULT_FALLBACK_MESSAGE = "Sorry, we're having trouble right now. Please call back in a few minutes."
 DEFAULT_GOODBYE_MESSAGE = "We've reached the time limit for this call. Thank you for calling, goodbye."
@@ -88,11 +88,18 @@ def parse_routing(raw: str) -> dict[str, AgentRoute]:
             if not isinstance(value, str) or not value.strip():
                 raise BridgeConfigError(f"AGENT_ROUTING_JSON entry for {label} needs a non-empty '{field}'")
         version = entry.get("version")
-        if not isinstance(version, str) or not _VERSION.match(version.strip()):
+        # D-049: "latest" (exact string, no case-folding or stripping) opts into unpinned mode.
+        # A missing "version" key is still an error -- unpinned mode is never implied.
+        if version == LATEST_AGENT_VERSION:
+            pass
+        elif isinstance(version, str) and _VERSION.match(version.strip()):
+            version = version.strip()
+        else:
             raise BridgeConfigError(
-                f"AGENT_ROUTING_JSON entry for {label} must pin 'version' as a string of digits"
+                f"AGENT_ROUTING_JSON entry for {label} must set 'version' to a string of digits "
+                f"(pinned) or exactly \"{LATEST_AGENT_VERSION}\" (unpinned, D-049)"
             )
-        routes[number] = AgentRoute(entry["project"].strip(), entry["agent"].strip(), version.strip())
+        routes[number] = AgentRoute(entry["project"].strip(), entry["agent"].strip(), version)
     return routes
 
 

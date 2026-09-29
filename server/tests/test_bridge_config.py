@@ -64,7 +64,11 @@ def test_dropped_digit_nanp_key_rejected_end_to_end():
 @pytest.mark.parametrize(
     "version",
     [
-        '"latest"', '"Latest"', '" latest "', '""', "10", "null",
+        # D-049 (U-LATESTVER): only the exact string "latest" is the unpinned sentinel; any
+        # case/whitespace variant or near-miss is still rejected as strictly as before.
+        '"Latest"', '"LATEST"', '" latest "', '"latest "', '" latest"', '"latest\\n"', '"latest\\t"',
+        '"latest2"', '"latest-1"', '"lates"', '"*"',
+        '""', '" "', "10", "null", "true", '["latest"]', '{"v": "latest"}',
         '"0"', '"007"', '"00"',
         '"١٢"',  # Arabic-Indic digits
         '"１０"',  # fullwidth 10
@@ -73,6 +77,45 @@ def test_dropped_digit_nanp_key_rejected_end_to_end():
 def test_unpinned_versions_rejected(version):
     with pytest.raises(BridgeConfigError, match="version"):
         parse_routing('{"+14165551234": {"project": "p", "agent": "a", "version": %s}}' % version)
+
+
+def test_latest_sentinel_accepted_as_unpinned():
+    # D-049 (U-LATESTVER): founder-directed override of D-004 — "version": "latest" (exact,
+    # lowercase, no surrounding whitespace) selects unpinned "latest" resolution.
+    routes = parse_routing('{"+14165551234": {"project": "p", "agent": "a", "version": "latest"}}')
+    route = routes["+14165551234"]
+    assert route == AgentRoute("p", "a", "latest")
+    assert route.is_unpinned is True
+
+
+def test_pinned_version_still_pinned():
+    routes = parse_routing('{"+14165551234": {"project": "p", "agent": "a", "version": "24"}}')
+    assert routes["+14165551234"].version == "24"
+    assert routes["+14165551234"].is_unpinned is False
+
+
+def test_missing_version_key_still_rejected():
+    # Omitting "version" must NOT silently mean "latest": a typo'd or forgotten key would
+    # otherwise switch a number to unpinned mode with no signal. Unpinned is opt-in only.
+    with pytest.raises(BridgeConfigError, match="version"):
+        parse_routing('{"+14165551234": {"project": "p", "agent": "a"}}')
+    with pytest.raises(BridgeConfigError, match="version"):
+        parse_routing('{"+14165551234": {"project": "p", "agent": "a", "verison": "latest"}}')
+
+
+def test_rejected_version_error_names_both_accepted_forms():
+    with pytest.raises(BridgeConfigError, match="latest") as exc:
+        parse_routing('{"+14165551234": {"project": "p", "agent": "a", "version": "LATEST"}}')
+    assert "digits" in str(exc.value)
+
+
+def test_mixed_pinned_and_latest_routes():
+    routes = parse_routing(
+        '{"+14165551234": {"project": "p", "agent": "a", "version": "latest"},'
+        ' "+14165551235": {"project": "p", "agent": "b", "version": "7"}}'
+    )
+    assert routes["+14165551234"].is_unpinned is True
+    assert routes["+14165551235"].version == "7"
 
 
 def test_version_is_stripped():
