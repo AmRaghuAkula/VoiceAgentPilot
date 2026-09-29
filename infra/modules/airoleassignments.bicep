@@ -4,8 +4,11 @@
 // roleassignments.bicep (Key Vault, same resource group as the app) because a module has a
 // single deployment scope.
 //
-// Least privilege (D-032): only Foundry User for the app identity. The accelerator's default
-// extra grants on the AI account (Cognitive Services OpenAI User, Reader) are not carried over.
+// Role trim (D-032): only Foundry User for the app identity; the accelerator's default extra
+// grants on the AI account (Cognitive Services OpenAI User, Reader) are not carried over. Note:
+// Foundry User at account scope is NOT least-privilege - it includes listkeys and
+// projects/connections/listsecrets. Narrowing it (project scope or a custom role) is tracked as
+// an open question for the partner, to be verified at the U15 smoke test.
 
 @description('Name of the existing AI Services account in this module\'s resource group.')
 param aiServicesName string
