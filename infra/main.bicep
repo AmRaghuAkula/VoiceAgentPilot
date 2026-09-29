@@ -112,10 +112,12 @@ resource newRg 'Microsoft.Resources/resourceGroups@2024-11-01' = if (!useExistin
   tags: tags
 }
 
-// Every module deploys into resourceGroup(rgName) with an explicit dependsOn on newRg, which orders
-// creation when the group is new (a no-op when newRg's condition is false). Do not add an `existing`
-// resource-group symbol with dependsOn: [newRg]: it compiles to the same resource ID as newRg, and
-// ARM's sequencer rejects it as a self-dependency (Q-058).
+// Every module scoped to resourceGroup(rgName) carries an explicit dependsOn on newRg, which orders
+// creation when the group is new (a no-op when newRg's condition is false). aiRoleAssignments is
+// scoped to the AI account's resource group instead and is ordered through its appIdentity and
+// aiServices references. Do not add an `existing` resource-group symbol with dependsOn: [newRg]: it
+// compiles to the same resource ID as newRg, and ARM's sequencer rejects it as a self-dependency
+// (Q-058).
 
 var useExistingAiServices = !empty(existingAiServicesName)
 // Only honor the subscription override when an existing account is actually named; otherwise the
