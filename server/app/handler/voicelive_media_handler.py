@@ -75,6 +75,14 @@ _TOOL_CALL_EVENTS = frozenset({
     ServerEventType.RESPONSE_FILE_SEARCH_CALL_SEARCHING.value,
     ServerEventType.RESPONSE_FILE_SEARCH_CALL_IN_PROGRESS.value,
 })
+# A tool call ends with one of these; the ordinary RESPONSE_TIMEOUT_SECONDS applies again after it.
+_TOOL_CALL_END_EVENTS = frozenset({
+    ServerEventType.RESPONSE_MCP_CALL_COMPLETED.value,
+    ServerEventType.RESPONSE_MCP_CALL_FAILED.value,
+    ServerEventType.RESPONSE_WEB_SEARCH_CALL_COMPLETED.value,
+    ServerEventType.RESPONSE_FILE_SEARCH_CALL_COMPLETED.value,
+    ServerEventType.RESPONSE_OUTPUT_ITEM_DONE.value,
+})
 # After cancelling a stuck response, wait at most this long for Voice Live's response.done for it
 # before sending the retry, so the retry is not rejected because the old response still looks active.
 CANCEL_ACK_TIMEOUT_SECONDS = 2.0
@@ -131,6 +139,7 @@ class VoiceLiveMediaHandler:
         self._watchdog_task: Optional[asyncio.Task] = None
         self._watched_response_id = None
         self._watchdog_deadline = 0.0
+        self._tool_call_open = False  # the watched response reported a tool call not yet ended
         self._recovery_tasks: set = set()  # timers that fired and are running the recovery
         self._timed_out_response_ids = deque(maxlen=8)  # late events for these are ignored
         self._cancel_ack = None  # (response_id, asyncio.Event) while waiting for a cancel to land
@@ -297,13 +306,14 @@ class VoiceLiveMediaHandler:
                     case ServerEventType.RESPONSE_AUDIO_DELTA:
                         delta = event.delta
                         # D-050: a response the watchdog gave up on must not talk over its retry.
-                        if delta and getattr(event, "response_id", None) not in self._timed_out_response_ids:
+                        if delta and not self._is_timed_out(event):
                             await self.on_audio_delta(delta)
 
                     case ServerEventType.RESPONSE_AUDIO_TRANSCRIPT_DONE:
                         transcript = event.transcript
                         logger.debug("[VoiceLive] AI: %s", transcript)
-                        await self.on_transcript_done(transcript)
+                        if not self._is_timed_out(event):  # the caller never heard it (D-050)
+                            await self.on_transcript_done(transcript)
 
                     case ServerEventType.RESPONSE_CREATED:
                         response_id = getattr(getattr(event, "response", None), "id", None)
@@ -338,6 +348,10 @@ class VoiceLiveMediaHandler:
 
                     case ServerEventType.ERROR:
                         logger.error("[VoiceLive] Error: %s", event.error)
+                        if self._watched_response_id is _PENDING_RETRY:
+                            # D-050: the timed-out response's retry was rejected (e.g. the stuck
+                            # response still looks active). Don't wait out another full timeout.
+                            self._on_retry_rejected()
 
                     case _:
                         logger.debug("[VoiceLive] Event: %s", event_type)
@@ -414,17 +428,18 @@ class VoiceLiveMediaHandler:
         watch_retry (D-050 timeout path only): arm the watchdog for the retry before sending it, so a
         retry that Voice Live never starts is also caught and ends the call instead of leaving silence.
         It is armed before response.create() so the retry's own response.created always replaces it.
-        If Voice Live starts a new response on its own while this recovery is awaiting (it is then
-        being watched), the retry is skipped: that response is already answering the caller, and a
-        second response.create() would only collide with it.
+        The timeout path's retry is also skipped if, while it was awaiting, Voice Live started a new
+        response on its own (it is then being watched: it is already answering the caller, and a
+        second response.create() would only collide with it), or the failure count moved (a
+        response completed, or the FAILED path already handled a later failure).
         """
         if attempt < MAX_CONSECUTIVE_FAILED_RESPONSES:
             try:
-                if watch_retry and self._response_started_during_recovery(attempt):
+                if watch_retry and self._retry_superseded(attempt):
                     return
                 marker = await self._add_recovery_marker()
                 if watch_retry:
-                    if self._response_started_during_recovery(attempt):
+                    if self._retry_superseded(attempt):
                         return
                     self._arm_response_watchdog(_PENDING_RETRY)
                 await self.conn.response.create()
@@ -433,8 +448,8 @@ class VoiceLiveMediaHandler:
                 )
                 return
             except Exception:
-                if watch_retry:
-                    self._disarm_response_watchdog(_PENDING_RETRY)
+                if watch_retry and self._watched_response_id is _PENDING_RETRY:
+                    self._cancel_response_watchdog()
                 logger.exception("[VoiceLive] response_retry_failed attempt=%d %s", attempt, self.log_context)
 
         logger.error("[VoiceLive] response_unrecoverable attempts=%d ending call %s", attempt, self.log_context)
@@ -443,12 +458,15 @@ class VoiceLiveMediaHandler:
         except Exception:
             logger.exception("[VoiceLive] on_response_unrecoverable hook raised %s", self.log_context)
 
-    def _response_started_during_recovery(self, attempt: int) -> bool:
-        if self._watchdog_task is None:
+    def _retry_superseded(self, attempt: int) -> bool:
+        if self._watchdog_task is not None:
+            reason = "new_response_started"
+        elif self._consecutive_failed_responses != attempt:
+            reason = "failure_count_changed"
+        else:
             return False
         logger.warning(
-            "[VoiceLive] response_retry_skipped attempt=%d reason=new_response_started %s",
-            attempt, self.log_context,
+            "[VoiceLive] response_retry_skipped attempt=%d reason=%s %s", attempt, reason, self.log_context,
         )
         return True
 
@@ -472,28 +490,39 @@ class VoiceLiveMediaHandler:
         """
         self._cancel_response_watchdog()
         self._watched_response_id = response_id
+        self._tool_call_open = False
         self._watchdog_deadline = asyncio.get_running_loop().time() + RESPONSE_TIMEOUT_SECONDS
         task = asyncio.create_task(self._response_watchdog(response_id))
         task.add_done_callback(self._on_watchdog_task_done)
         self._watchdog_task = task
 
     def _disarm_response_watchdog(self, response_id) -> None:
-        """A response resolved: stop its timer (or the pending-retry timer, which it satisfies)."""
-        if self._watchdog_task is None:
+        """The watched response resolved: stop its timer. Only an exact id match counts; the
+        pending-retry timer is satisfied only by the retry's own response.created (which re-arms)."""
+        if self._watchdog_task is None or response_id is None:
             return
-        if self._watched_response_id is _PENDING_RETRY or self._watched_response_id == response_id:
+        if self._watched_response_id == response_id:
             self._cancel_response_watchdog()
 
     def _cancel_response_watchdog(self) -> None:
         task, self._watchdog_task = self._watchdog_task, None
         self._watched_response_id = None
+        self._tool_call_open = False
         if task is not None and not task.done():
             task.cancel()
 
+    def _is_timed_out(self, event) -> bool:
+        response_id = getattr(event, "response_id", None)
+        return response_id is not None and response_id in self._timed_out_response_ids
+
     def _note_response_progress(self, event_type, event) -> None:
-        """Any response.* event for the watched response shows it is alive: push the deadline out."""
-        if self._watchdog_task is None:
-            return
+        """Any response.* event for the watched response shows it is alive: push the deadline out.
+
+        A tool-call event stretches the deadline to TOOL_CALL_TIMEOUT_SECONDS, and it stays stretched
+        (ordinary events, e.g. interim filler audio, can only extend it) until the tool call ends.
+        """
+        if self._watchdog_task is None or self._watched_response_id is _PENDING_RETRY:
+            return  # nothing to credit, or the retry has not started: progress belongs to the old one
         name = getattr(event_type, "value", event_type)
         if not isinstance(name, str) or not name.startswith("response."):
             return
@@ -505,8 +534,15 @@ class VoiceLiveMediaHandler:
         watched = self._watched_response_id
         if response_id is not None and watched is not None and response_id != watched:
             return
-        timeout = TOOL_CALL_TIMEOUT_SECONDS if name in _TOOL_CALL_EVENTS else RESPONSE_TIMEOUT_SECONDS
-        self._watchdog_deadline = asyncio.get_running_loop().time() + timeout
+        now = asyncio.get_running_loop().time()
+        if name in _TOOL_CALL_EVENTS:
+            self._tool_call_open = True
+            self._watchdog_deadline = now + TOOL_CALL_TIMEOUT_SECONDS
+        elif self._tool_call_open and name not in _TOOL_CALL_END_EVENTS:
+            self._watchdog_deadline = max(self._watchdog_deadline, now + RESPONSE_TIMEOUT_SECONDS)
+        else:
+            self._tool_call_open = False
+            self._watchdog_deadline = now + RESPONSE_TIMEOUT_SECONDS
 
     async def _response_watchdog(self, response_id) -> None:
         loop = asyncio.get_running_loop()
@@ -520,10 +556,21 @@ class VoiceLiveMediaHandler:
         # Claim the response for the timer (no await until the claim is recorded).
         self._watchdog_task = None
         self._watched_response_id = None
-        if response_id is not _PENDING_RETRY:
+        self._tool_call_open = False
+        if response_id is not None and response_id is not _PENDING_RETRY:
             self._timed_out_response_ids.append(response_id)
         self._recovery_tasks.add(me)
         await self._on_response_stuck(response_id)
+
+    def _on_retry_rejected(self) -> None:
+        """Voice Live answered the timed-out response's retry with an error instead of starting it:
+        claim the pending-retry watch now and run the same recovery the timer would (next attempt,
+        which ends the call once MAX_CONSECUTIVE_FAILED_RESPONSES is reached)."""
+        self._cancel_response_watchdog()
+        logger.warning("[VoiceLive] response_retry_rejected %s", self.log_context)
+        task = asyncio.create_task(self._on_response_stuck(_PENDING_RETRY))
+        self._recovery_tasks.add(task)
+        task.add_done_callback(self._on_watchdog_task_done)
 
     def _on_watchdog_task_done(self, task: asyncio.Task) -> None:
         self._recovery_tasks.discard(task)
