@@ -296,8 +296,8 @@ class VoiceLiveMediaHandler:
         response.create(), no instruction overrides) or, on a repeat failure, end the call through
         on_response_unrecoverable() (the subclass's request_end() path, D-005). If the caller has
         not spoken yet (the connect-time greeting failed), the caller-audio marker would be false;
-        in agent mode the retry instead adds the neutral call-connected item (Q-063 / D-048), since
-        a bare response.create() on a contentless conversation fails identically.
+        in agent mode the retry instead re-adds the neutral call-connected item (Q-063 / D-048),
+        defensively, so the retry never depends on the connect-time item having been accepted.
         """
         status = getattr(response, "status", None)
         if status == ResponseStatus.COMPLETED:

@@ -450,6 +450,20 @@ async def test_agent_mode_connect_adds_call_connected_item_before_greeting(fake_
     await handler.cleanup()
 
 
+async def test_agent_mode_connect_item_error_propagates_without_greeting(fake_sdk):
+    # The provider wrappers catch a connect_voicelive() failure and end the call (fallback + hangup).
+    conn = FakeConn()
+    conn.conversation.item.create.side_effect = RuntimeError("socket closed")
+    fake_sdk["_conn"] = conn
+    handler = vmh.VoiceLiveMediaHandler(handler_config(), route=ROUTE)
+    with pytest.raises(RuntimeError):
+        await handler.connect_voicelive()
+    conn.response.create.assert_not_awaited()
+    assert handler._voicelive_connected is False
+    assert handler._receiver_task is None
+    await handler.cleanup()
+
+
 async def test_model_mode_connect_adds_no_item(fake_sdk):
     handler = vmh.VoiceLiveMediaHandler(handler_config(AZURE_USER_ASSIGNED_IDENTITY_CLIENT_ID=""))
     await handler.connect_voicelive()
