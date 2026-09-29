@@ -204,7 +204,7 @@ def test_force_close_closes_underlying_response():
 # Q-036 / D-038: a failed Voice Live response must never leave the caller in silence
 # ----------------------------------------------------------------------
 
-from azure.ai.voicelive.models import ServerEventResponseDone, UserMessageItem
+from azure.ai.voicelive.models import ServerEventResponseDone, SystemMessageItem, UserMessageItem
 
 # The exact failure shape seen on the live call (Q-036), parsed by the real SDK model.
 _FAILED_ERROR = {
@@ -348,24 +348,133 @@ def transcription_completed(text=""):
                            transcript=text)
 
 
-async def test_greeting_failure_before_any_caller_turn_retries_without_marker():
-    # The connect-time greeting can fail before the caller has said anything: the
-    # "caller audio was not understood" marker would be false, so retry plainly.
+def assert_call_connected_item(item):
+    assert isinstance(item, SystemMessageItem)
+    assert item.as_dict() == {
+        "type": "message",
+        "role": "system",
+        "content": [{"type": "input_text", "text": vmh.CALL_CONNECTED_MARKER}],
+    }
+
+
+async def test_greeting_failure_before_any_caller_turn_retries_with_call_connected_item():
+    # Q-063 / D-048: the connect-time greeting can fail before the caller has said anything.
+    # The "caller audio was not understood" marker would be false, and a bare retry fails
+    # identically (agent mode needs an input item), so the neutral call-connected item is added.
     handler = await run_events([failed()])  # no speech/transcription events first
-    handler.conn.conversation.item.create.assert_not_awaited()
-    handler.conn.response.create.assert_awaited_once_with()
+    create_item = handler.conn.conversation.item.create
+    create_item.assert_awaited_once()
+    assert_call_connected_item(create_item.await_args.kwargs["item"])
+    handler.conn.response.create.assert_awaited_once_with()  # plain retry: no instructions, no overrides
     assert handler.unrecoverable == 0
+
+
+@pytest.mark.parametrize("events, route, expected", [
+    ([failed()], ROUTE, "marker=call_connected"),
+    ([speech_started(), failed()], ROUTE, "marker=caller_audio"),
+    ([failed()], None, "marker=none"),
+])
+async def test_retry_log_names_the_item_added(caplog, events, route, expected):
+    caplog.set_level("WARNING", logger=vmh.logger.name)
+    handler = UnrecoverableRecorder(handler_config(), route=route)
+    handler.conn = FakeConn(events=events, block=False)
+    await handler._receiver_loop()
+    retries = [r.getMessage() for r in caplog.records if "response_retry " in r.getMessage()]
+    assert len(retries) == 1 and expected in retries[0]
+
+
+async def test_greeting_retry_adds_item_before_response_create():
+    order = []
+    conn = FakeConn(events=[failed()], block=False)
+    conn.conversation.item.create.side_effect = lambda **kw: order.append("item")
+    conn.response.create.side_effect = lambda **kw: order.append("response")
+    await run_events(None, conn=conn)
+    assert order == ["item", "response"]
 
 
 async def test_greeting_failure_twice_still_ends_call():
     handler = await run_events([failed("r1"), failed("r2")])
-    handler.conn.conversation.item.create.assert_not_awaited()
-    handler.conn.response.create.assert_awaited_once()
+    handler.conn.conversation.item.create.assert_awaited_once()  # the single retry's item only
+    handler.conn.response.create.assert_awaited_once()  # bounded: exactly one retry
+    assert handler.unrecoverable == 1
+
+
+async def test_greeting_retry_item_error_ends_call_instead_of_silence():
+    conn = FakeConn(events=[failed()], block=False)
+    conn.conversation.item.create.side_effect = RuntimeError("socket closed")
+    handler = await run_events(None, conn=conn)
+    conn.response.create.assert_not_awaited()
     assert handler.unrecoverable == 1
 
 
 @pytest.mark.parametrize("caller_event", [speech_started, transcription_completed])
 async def test_failure_after_caller_turn_injects_marker(caller_event):
+    # D-038 unchanged: once the caller has spoken, the retry uses the caller-audio marker.
     handler = await run_events([caller_event(), failed()])
-    handler.conn.conversation.item.create.assert_awaited_once()
+    create_item = handler.conn.conversation.item.create
+    create_item.assert_awaited_once()
+    item = create_item.await_args.kwargs["item"]
+    assert isinstance(item, UserMessageItem)
+    assert item.as_dict()["content"] == [{"type": "input_text", "text": vmh.FAILED_RESPONSE_MARKER}]
     handler.conn.response.create.assert_awaited_once_with()
+
+
+async def test_model_mode_greeting_retry_unchanged():
+    # No route (the upstream model-mode web client): the retry stays a plain response.create().
+    handler = UnrecoverableRecorder(handler_config())
+    handler.conn = FakeConn(events=[failed()], block=False)
+    await handler._receiver_loop()
+    handler.conn.conversation.item.create.assert_not_awaited()
+    handler.conn.response.create.assert_awaited_once_with()
+    assert handler.unrecoverable == 0
+
+
+# ----------------------------------------------------------------------
+# Q-063 / D-048: the connect-time greeting needs one input item in agent mode
+# ----------------------------------------------------------------------
+
+
+async def test_agent_mode_connect_adds_call_connected_item_before_greeting(fake_sdk):
+    order = []
+    conn = FakeConn()
+    conn.session.update.side_effect = lambda **kw: order.append("session")
+    conn.conversation.item.create.side_effect = lambda **kw: order.append("item")
+    conn.response.create.side_effect = lambda **kw: order.append("response")
+    fake_sdk["_conn"] = conn
+    handler = vmh.VoiceLiveMediaHandler(handler_config(), route=ROUTE)
+    await handler.connect_voicelive()
+    assert order == ["session", "item", "response"]
+    conn.conversation.item.create.assert_awaited_once()
+    assert_call_connected_item(conn.conversation.item.create.await_args.kwargs["item"])
+    conn.response.create.assert_awaited_once_with()  # no instructions, no overrides (D-004)
+    await handler.cleanup()
+
+
+async def test_agent_mode_connect_item_error_propagates_without_greeting(fake_sdk):
+    # The provider wrappers catch a connect_voicelive() failure and end the call (fallback + hangup).
+    conn = FakeConn()
+    conn.conversation.item.create.side_effect = RuntimeError("socket closed")
+    fake_sdk["_conn"] = conn
+    handler = vmh.VoiceLiveMediaHandler(handler_config(), route=ROUTE)
+    with pytest.raises(RuntimeError):
+        await handler.connect_voicelive()
+    conn.response.create.assert_not_awaited()
+    assert handler._voicelive_connected is False
+    assert handler._receiver_task is None
+    await handler.cleanup()
+
+
+async def test_model_mode_connect_adds_no_item(fake_sdk):
+    handler = vmh.VoiceLiveMediaHandler(handler_config(AZURE_USER_ASSIGNED_IDENTITY_CLIENT_ID=""))
+    await handler.connect_voicelive()
+    fake_sdk["_conn"].conversation.item.create.assert_not_awaited()
+    fake_sdk["_conn"].response.create.assert_awaited_once_with()
+    await handler.cleanup()
+
+
+def test_call_connected_marker_is_neutral_not_a_scripted_line():
+    # D-048: a factual statement of what happened; the agent authors the greeting (D-004).
+    marker = vmh.CALL_CONNECTED_MARKER
+    assert marker == "[call connected]"
+    for word in ("say", "greet", "welcome", "hello", "introduce", "respond", "you"):
+        assert word not in marker.lower()

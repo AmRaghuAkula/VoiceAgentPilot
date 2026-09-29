@@ -29,6 +29,7 @@ from azure.ai.voicelive.models import (
     RequestSession,
     ResponseStatus,
     ServerEventType,
+    SystemMessageItem,
     UserMessageItem,
 )
 
@@ -45,6 +46,10 @@ DEFAULT_CHUNK_SIZE = 4800  # 24000 samples/sec * 0.1 sec * 2 bytes
 # Q-036 / D-038: on a failed response the bridge adds this neutral, factual marker as a conversation
 # item and retries once. It is not a scripted line: the agent still authors what is said (D-004).
 FAILED_RESPONSE_MARKER = "[caller audio was not understood]"
+# Q-063 / D-048: agent mode rejects a response.create() on an empty conversation, so before the
+# connect-time greeting the bridge adds this neutral, factual system item. It states what happened,
+# not what to say: the agent's own instructions still author the greeting (D-004).
+CALL_CONNECTED_MARKER = "[call connected]"
 # Consecutive failed responses tolerated before the call is ended (one retry, then end).
 MAX_CONSECUTIVE_FAILED_RESPONSES = 2
 
@@ -184,10 +189,19 @@ class VoiceLiveMediaHandler:
         logger.info("[VoiceLive] SDK connected in %.2fs (total %.2fs)", t2 - t1, t2 - t0)
 
         await self.conn.session.update(session=self._session_config())
+        if self.route is not None:
+            await self._add_call_connected_item()
+            logger.info("[VoiceLive] greeting_input item=call_connected %s", self.log_context)
         await self.conn.response.create()
 
         self._voicelive_connected = True
         self._receiver_task = asyncio.create_task(self._receiver_loop())
+
+    async def _add_call_connected_item(self) -> None:
+        """Q-063 / D-048: give agent mode the one input item it needs before an opening response."""
+        await self.conn.conversation.item.create(
+            item=SystemMessageItem(content=[InputTextContentPart(text=CALL_CONNECTED_MARKER)])
+        )
 
     async def send_audio(self, audio_b64: str):
         """Send PCM 24kHz 16-bit mono audio (base64) to Voice Live."""
@@ -281,8 +295,9 @@ class VoiceLiveMediaHandler:
         no action. failed -> WARNING log, then either one retry (neutral marker item + plain
         response.create(), no instruction overrides) or, on a repeat failure, end the call through
         on_response_unrecoverable() (the subclass's request_end() path, D-005). If the caller has
-        not spoken yet (the connect-time greeting failed), the marker would be false, so the retry
-        is a plain response.create() only.
+        not spoken yet (the connect-time greeting failed), the caller-audio marker would be false;
+        in agent mode the retry instead re-adds the neutral call-connected item (Q-063 / D-048),
+        defensively, so the retry never depends on the connect-time item having been accepted.
         """
         status = getattr(response, "status", None)
         if status == ResponseStatus.COMPLETED:
@@ -305,11 +320,16 @@ class VoiceLiveMediaHandler:
 
         if attempt < MAX_CONSECUTIVE_FAILED_RESPONSES:
             try:
-                marker = self._caller_turn_seen
-                if marker:
+                if self._caller_turn_seen:
+                    marker = "caller_audio"
                     await self.conn.conversation.item.create(
                         item=UserMessageItem(content=[InputTextContentPart(text=FAILED_RESPONSE_MARKER)])
                     )
+                elif self.route is not None:
+                    marker = "call_connected"
+                    await self._add_call_connected_item()
+                else:
+                    marker = "none"
                 await self.conn.response.create()
                 logger.warning(
                     "[VoiceLive] response_retry attempt=%d marker=%s %s", attempt, marker, self.log_context,
