@@ -333,3 +333,66 @@ The founder has purchased a real Twilio number (already recorded in the UT01a/UT
 **Why a full plan revision, not an inline patch:** this repo's own history (M6 plan's 4 revisions, the Twilio pilot plan's 3 revisions) shows that skipping a design-review pass on a real scope change is exactly how a deploy-breaking gap gets discovered mid-build instead of before it — U14b's own abandoned build is a live example of building against a plan whose central assumption had just changed. Per CLAUDE.md §0, revising a design spec runs on Opus, unconditionally; the M6 plan will be revised the same way before U14c/U15/U16 are touched again.
 
 **Source:** founder, direct instruction, 2026-09-28: "we took the phone number from Twilio no need for ACS phone number anymore," confirmed as a permanent (not demo-only) decision when asked directly.
+
+### D-042 · 2026-09-28 · M6 plan revised for the Twilio call path (rev 5 / 5.1, answers Q-044); U15 split into U15 + U15b; standing deploy rules adopted — partner decision under D-030
+
+**What changed.** The M6 plan (`docs/superpowers/plans/2026-09-27-m6-deploy-plan.md`) was revised from rev 4 (ACS) to rev 5.1 (Twilio). It deploys the already-merged Twilio call path (UT01a/UT01b: `POST /voice` → `/twilio/ws` → Voice Live agent mode) to the Container App, and designs no new call-handling logic.
+
+Every claim was re-derived by reading `main` @ `0608658`. Rev 5 had an Opus design review (NEEDS-FIXES: 2 blocking, 8 should-fix, 9 nits); all findings were applied as rev 5.1. A focused re-review then confirmed both blocking fixes against the real `.azure/` state on disk. Its 4 remaining text fixes were applied, with no further round needed.
+
+**Decisions recorded (partner, under D-030: architecture tradeoffs and sequencing):**
+
+1. **U14b is un-paused and re-scoped, not retired.**
+   - The requirement stands whatever the telephony provider: the Container App still pulls from ACR, resolves a Key Vault secret reference when a revision is created, and authenticates to Voice Live.
+   - D-031's identity shape is already what `main` provisions.
+   - U14b's remaining scope:
+     - delete the stale ACS azd environments;
+     - narrow the Container App identity's Key Vault role from **Secrets Officer** (`b86a8fe4-…`, an upstream mislabel U14a's `cso` review found live) to **Secrets User**;
+     - confirm D-031's shape, plus the absence of every ACS resource, in a Twilio-mode `azd provision --preview` (dummy token, throwaway environment).
+   - The first-deploy (C1) proof moves into U15, whose real provision and deploy is itself a genuine first deploy. This avoids a billed scratch stack, and a Key Vault name held by purge protection for up to 90 days.
+   - Branch renamed to `feat/tb-m6-u14b-identity-least-privilege`.
+2. **U14c is re-scoped.**
+   - `MEDIA_WS_TOKEN` is dropped: it is ACS-only, and the Twilio WS token is keyed on `TWILIO_AUTH_TOKEN`.
+   - The Foundry User GUID check is already done (D-039).
+   - Added: a `server/.dockerignore` exclusion of `.env`. Today a remote build would upload the local `.env`, which holds the Twilio auth token and a Voice Live key, as part of the ACR build context.
+   - Container and ACR sizing stays the founder's cost call. The partner recommends 1.0 vCPU / 2 GiB and ACR Basic.
+3. **U15 is split into U15 and U15b.**
+   - **U15**: deploy and pre-cutover verification. It never touches the real Twilio number, and merges on that alone.
+   - **U15b**: real-number cutover and live smoke test, timed by the founder (Q-045 → D-043). Before cutting over, U15b records the number's full voice config. Rollback reads a *fresh* tunnel URL, because quick-tunnel URLs change on every restart.
+   - M6 closes only when both have merged. U15's prerequisites are UT01a/UT01b, not U10–U13.
+4. **Q-005 and Q-043 are not applicable while `TELEPHONY_PROVIDER=twilio`.** `server.py` registers only the detected provider's routes, so no `/acs/*` route exists (U15 verifies this with a 404 probe). D-036 stands unchanged as the rule for any future ACS deploy. Q-011 is superseded by U15b's live Twilio test, and Q-013 is moot along with U16.
+5. **U14a's ACS Bicep is kept dormant, not reverted.** It is gated off under `twilio`, and per PR #33's stated read-only verification it appears never to have been applied live. Reverting it would cost a full unit for no runtime effect.
+6. **Standing deploy rules** (they apply to every azd command against this deployment):
+   - Every azd command carries `-e <env>`.
+   - The first check in every unit is `azd env get-value TELEPHONY_PROVIDER -e <env>` printing `twilio`. ACS never runs alongside Twilio: `TELEPHONY_PROVIDER=acs` would full-PUT the real ACS resource, and ACS wins provider detection.
+   - **`azd provision` is always immediately followed by `azd deploy`**, in the same maintenance window, never during live-call hours, and never left mid-sequence, with a `/health` check afterwards. `main.bicep:278` hardcodes the hello-world placeholder image, so a provision on its own replaces the live bridge (root-cause fix tracked as Q-047).
+   - Never run `azd down` on an environment that adopts existing resource groups (Q-042).
+   - Never deploy during a live call.
+   - Rotate the Twilio auth token with `az keyvault secret set` plus a revision restart, never with provision.
+   - Leave `TWILIO_ACCOUNT_SID` unset in the azd environment. Otherwise the Twilio postdeploy hook silently repoints the production number.
+7. **Superseded by D-041, recorded here for the call path:**
+   - TELEPHONY_BRIDGE_SPEC.md §6's ACS-specific rows: Event Grid, the Key Vault contents, and "system-assigned identity" (already superseded by D-031).
+   - §8's "test number" wording.
+   - **D-029's "the Event Grid subscription … is created now"** instruction. The rest of D-029 (M6 unblocked ahead of a number) still holds.
+
+**Tradeoffs accepted:**
+- The U14b-to-U15 move means the C1 first-deploy proof happens against the real resource group, not a scratch one. This is mitigated by the preview hard gate and by U15's stop rule: any failure that needs a Bicep fix goes to a new unit, never a mid-flight fix.
+- Dropping `MEDIA_WS_TOKEN` means it must return if ACS is ever reactivated.
+
+**Source:** partner, under D-030, on Opus (CLAUDE.md §0). Answers Q-044. See the plan's "What changed in rev 5 / rev 5.1" sections for the full finding list (C1–C11 status, T1–T12).
+
+### D-043 · 2026-09-28 · Q-045 answered by the founder: option (b) — Friday's demo stays on the laptop path; real-number cutover (U15b) deferred past the demo; staging-number option deferred
+
+**Decision:**
+- The Friday 2026-10-02 demo runs on the existing laptop/tunnel path, whatever U15's cloud-deploy checks show.
+- The real Twilio number's cutover to the Container App (U15b) happens **after the demo, on the founder's own timeline, with no deadline**.
+- The staging-number option (Q-045 (d): a second Twilio number for a zero-exposure smoke test) is **deferred to a later stage**. It is not decided now and not rejected. No staging number is bought or configured in M6.
+
+**Consequences:**
+- U15 (deploy and pre-cutover verification, never touching the real number) proceeds whenever it is ready.
+- U15b starts only when the founder chooses to cut over, and runs the full smoke test on the real number.
+- No part of M6 races the demo.
+
+**Why:** the founder's call on risk acceptance. The known-working path is kept for a customer-facing demo, rather than taking on a first-ever cloud deploy's unknowns just beforehand (T5 Host-header fidelity through ingress, T6 WebSocket duration). The partner had recommended (d), otherwise (c).
+
+**Source:** founder, direct answer relayed by the orchestrating session, 2026-09-28.

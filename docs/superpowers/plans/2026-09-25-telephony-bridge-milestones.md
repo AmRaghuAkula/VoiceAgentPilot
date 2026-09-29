@@ -1,6 +1,6 @@
 # Telephony Bridge — Milestones
 
-Last updated: 2026-09-25 · Plan: [2026-09-25-telephony-bridge-step3.md](2026-09-25-telephony-bridge-step3.md) · Spec: [../specs/2026-09-25-telephony-bridge-design.md](../specs/2026-09-25-telephony-bridge-design.md) · **Live status: [../../STATUS.md](../../STATUS.md)**
+Last updated: 2026-09-28 (M6 re-planned for Twilio, D-042/D-043) · Plan: [2026-09-25-telephony-bridge-step3.md](2026-09-25-telephony-bridge-step3.md) · Spec: [../specs/2026-09-25-telephony-bridge-design.md](../specs/2026-09-25-telephony-bridge-design.md) · **Live status: [../../STATUS.md](../../STATUS.md)**
 
 **End state of the plan:** the Step 3 bridge code is merged into `main`. That means Microsoft's accelerator is imported, and all 10 spec modifications are built and unit-tested without needing Azure. Deploy (Step 4) and the live acceptance tests come after, and are listed below as M6–M8 so the full path to the pilot is visible.
 
@@ -31,12 +31,13 @@ Last updated: 2026-09-25 · Plan: [2026-09-25-telephony-bridge-step3.md](2026-09
 | U12 | Task 10 — callback JWT and ACS routes | M4 | `feat/tb-t10-acs-routes` | 17 |
 | U13 | Task 11 — docs and config sample | M5 | `feat/tb-t11-docs` | 0 (runs the full ~151-test suite + 2 grep checks) |
 | U14a | M6 — existing AI resource (cross-subscription), ACS text-to-speech wiring, Container App scale fix | M6 | `feat/tb-m6-u14a-existing-ai-resource` | n/a (infra: `az bicep build` + `azd provision --preview`, see [M6 plan](2026-09-27-m6-deploy-plan.md) — Q-012/Q-014/Q-016/Q-017 all answered, clear to start) |
-| U14b | M6 — fix the circular-dependency problem (C1); the Container App keeps the accelerator's user-assigned identity for everything, including Voice Live/Foundry User, per D-031 — not resequenced to system-assigned; **Opus**, per D-014 | M6 | `feat/tb-m6-u14b-system-identity` | n/a (infra: `azd provision --preview` against a clean environment) |
-| U14c | M6 — Key Vault media token, container right-sizing, Foundry User role GUID verification | M6 | `feat/tb-m6-u14c-secrets-and-sizing` | n/a (infra) |
+| U14b | M6 — Container App identity: reconfirm D-031 for Twilio, narrow Key Vault to Secrets User; first deletes stale ACS azd envs (plan rev 5.1, D-042); **Opus** | M6 | `feat/tb-m6-u14b-identity-least-privilege` | n/a (infra: `az role definition list` + Twilio-mode `azd provision --preview -e`, see [M6 plan](2026-09-27-m6-deploy-plan.md)) |
+| U14c | M6 — secrets hygiene (`server/.dockerignore` excludes `.env`) + container/ACR sizing (founder's cost call); `MEDIA_WS_TOKEN` dropped (ACS-only) | M6 | `feat/tb-m6-u14c-secrets-and-sizing` | n/a (infra) |
 | U14d | M6 — RESOLVED 2026-09-27, folded into U14a | M6 | — | n/a |
 | ~~U-CFG~~ | RETIRED 2026-09-27 (D-031) — `config_validator.py`'s existing check already passes under D-031's chosen identity design; no hook needed | M6 | — | n/a |
-| U15 | M6 — `azd up`, verify, VoIP-only smoke test (requires U10–U13 also merged, not infra alone) | M6 | `feat/tb-m6-u15-deploy` | n/a (infra: `az`/`azd` verification commands + live smoke test) |
-| U16 | M6 — Event Grid number-based advanced filter (BLOCKED on Q-002) | M6 | not yet cut | n/a |
+| U15 | M6 — fresh azd env, provision→deploy, pre-cutover verification (never touches the real Twilio number); prerequisites UT01a/UT01b, not U10–U13 | M6 | `feat/tb-m6-u15-deploy` | n/a (infra: `az`/`azd` verification + HTTP probes) |
+| U15b | M6 — real-number cutover + live Twilio smoke test (after Friday's demo, founder's timeline — Q-045 (b), D-043) | M6 | `feat/tb-m6-u15b-cutover` | n/a (live calls: UT02 criteria + long call + masking) |
+| ~~U16~~ | RETIRED 2026-09-28 (D-041) — ACS Event Grid number filter; no ACS number, no Event Grid on the Twilio path | M6 | — | n/a |
 
 **Test readiness today:** all ~151 original unit tests are **written out in full in the plan**, but as of U08's merge, 200 exist and pass in the repo (the plan's estimates have grown at every reviewed unit so far — see STATUS.md §1). U09 is new, added 2026-09-27 (see below), not in the original ~151 count. The 9 live acceptance tests (spec §8) can't run until M6.
 
@@ -154,27 +155,31 @@ Once U13 merges, `main` is the complete Step 3 bridge.
 
 ### M6 — Deploy to Azure (Step 4)
 
-**Unblocked ahead of the ACS phone number (D-029, 2026-09-27).** Q-003 (region: East US 2), Q-005 (verify JWT at deploy time) and Q-006 (`az login`/`azd auth login`) are all answered — see [STATUS.md](../../STATUS.md) §3. Q-002 (the ACS number itself) remains open but no longer blocks M6; it blocks only M7 (live acceptance tests). **Q-004's system-assigned answer is now superseded for the Container App specifically by D-031 (Q-015, 2026-09-27):** the Container App keeps the accelerator's user-assigned identity for everything, including Voice Live/Foundry User, per D-031's own reasoning — this was a deliberate choice, not a forced consequence of the circular-dependency fix. See the plan doc and D-031.
+**Re-planned for Twilio (2026-09-28, D-041/D-042/D-043).** Twilio, not ACS, is the permanent phone number provider (D-041). M6 deploys the already-merged Twilio call path (UT01a/UT01b: `POST /voice` → `/twilio/ws` → Voice Live agent mode) to the Container App — it is still the priority, because it removes Q-040's laptop/tunnel single point of failure. D-031's identity shape (one user-assigned identity for registry pull, Key Vault, and Voice Live/Foundry User) is unchanged. Q-045 is answered (b): Friday's 2026-10-02 demo stays on the laptop path, and the real-number cutover (U15b) happens after the demo on the founder's timeline; the staging-number option is deferred.
 
-**Full implementation plan (rev 4, after Q-014/Q-015/Q-017 were answered):** [2026-09-27-m6-deploy-plan.md](2026-09-27-m6-deploy-plan.md) — units U14a–c, U15, U16 (U14d resolved/folded into U14a; **U-CFG retired**, see D-031), definition of done, verification steps, and the corrected Q-011 (VoIP-only validation) analysis all live there rather than being duplicated here.
+**Full implementation plan (rev 5.1):** [2026-09-27-m6-deploy-plan.md](2026-09-27-m6-deploy-plan.md) — units, standing deploy rules, verification steps, and DoD live there rather than being duplicated here. Rev 4's ACS-era text is preserved in git at `0608658`.
+
+**Standing deploy rules (D-042):** `-e <env>` on every azd command; first check `azd env get-value TELEPHONY_PROVIDER -e <env>` prints `twilio`; `azd provision` always immediately followed by `azd deploy` (provision resets the app to a hello-world placeholder); never `azd down`; never deploy during a live call.
 
 **Units and branches (see the plan doc for full detail):**
 
 | Unit | What | Branch | Status |
 | --- | --- | --- | --- |
-| U14a | Existing AI resource (cross-subscription), ACS text-to-speech wiring, Container App scale fix | `feat/tb-m6-u14a-existing-ai-resource` | QUEUED (Q-012/Q-014/Q-016/Q-017 all answered — clear to start once the founder gives "go") |
-| U14b | Fix the circular-dependency problem (C1); Container App keeps the user-assigned identity for everything per D-031, not resequenced to system-assigned; **Opus**, per D-014 | `feat/tb-m6-u14b-system-identity` | QUEUED (Q-015 answered; prerequisite is U14a merged) |
-| U14c | Key Vault media token, container right-sizing, Foundry User role GUID verification | `feat/tb-m6-u14c-secrets-and-sizing` | QUEUED |
+| U14a | Existing AI resource (cross-subscription), Container App scale fix; its ACS-specific Bicep is dormant under `TELEPHONY_PROVIDER=twilio` | `feat/tb-m6-u14a-existing-ai-resource` | CLOSED (#33) |
+| U14b | Delete stale ACS azd envs; Key Vault Secrets Officer → Secrets User; Twilio-mode preview confirms D-031 shape and no ACS resources; **Opus** | `feat/tb-m6-u14b-identity-least-privilege` | NEXT |
+| U14c | `.dockerignore` excludes `.env`; container/ACR sizing (founder's cost call) | `feat/tb-m6-u14c-secrets-and-sizing` | QUEUED |
 | U14d | RESOLVED 2026-09-27, folded into U14a | — | RETIRED |
-| ~~U-CFG~~ | RETIRED 2026-09-27 (D-031) — `config_validator.py`'s existing check already passes under D-031's chosen identity design | — | RETIRED |
-| U15 | `azd up`, verify infra, run the VoIP-only smoke test (Q-011) — requires U10–U13 merged too, not infra alone | `feat/tb-m6-u15-deploy` | QUEUED |
-| U16 | Event Grid number-based advanced filter (BLOCKED on Q-002) | not yet cut | BLOCKED |
+| ~~U-CFG~~ | RETIRED 2026-09-27 (D-031) | — | RETIRED |
+| U15 | Fresh env, preview hard gate, provision→deploy (C1 first-deploy proof), pre-cutover verification incl. `/acs/incomingcall` → 404; never touches the real number | `feat/tb-m6-u15-deploy` | QUEUED |
+| U15b | Real-number cutover (full voice-config record, fresh-tunnel rollback) + live Twilio smoke test (UT02 criteria, long call, called/caller masking, Twilio Debugger); after Friday's demo per Q-045 (b) | `feat/tb-m6-u15b-cutover` | QUEUED |
+| ~~U16~~ | RETIRED 2026-09-28 (D-041) | — | RETIRED |
 
-**Definition of done:** see the plan doc's "Definition of done and test/verification coverage" section — it restores the spec's full 7-bullet DoD (the ACS-to-AI-resource text-to-speech link was found to be a real missing gap, not just a doc omission — see the plan's C3 finding) and adds several new items the first draft missed (the `config_validator.py` fix, the web-client-off check, a `PlayCompleted`-specific smoke-test pass criterion).
+**Definition of done:** see the plan doc's "Definition of done and verification coverage" section. M6 closes when **both U15 and U15b** have merged. Removed from the ACS-era DoD: the Event Grid subscription, the ACS text-to-speech link, the callback JWT check (Q-005/Q-043 not applicable — no ACS routes registered), and the VoIP-only smoke test (Q-011 superseded).
+
 
 ### M7 — Live acceptance tests (spec §8)
 
-**Definition of done:** you call the test number, and Cowork pulls the trace and logs for each test.
+**Definition of done:** you call the Twilio number (D-041), and Cowork pulls the trace and logs for each test.
 
 1. Alex greets within 3 s.
 2. A 2-minute conversation completes and its transcript shows in Foundry under v10.
@@ -184,6 +189,8 @@ Once U13 merges, `main` is the complete Step 3 bridge.
 6. After hang-up, the Voice Live session closes within 5 s.
 7. A wrong version triggers the fallback.
 8. A 60 s cap ends the call with the goodbye.
+
+**Re-scope needed before M7 (M6 plan T10):** tests 7 and 8 assume ACS's spoken fallback/goodbye; on the Twilio path a connect failure or the call cap ends the call silently by design (only a route miss speaks, via `<Say>`).
 9. Latency is measured against the ~5.9 s baseline.
 
 **Readiness:** the bridge logs needed for tests 6–8 are built into M3/M4.
