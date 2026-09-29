@@ -396,3 +396,21 @@ Every claim was re-derived by reading `main` @ `0608658`. Rev 5 had an Opus desi
 **Why:** the founder's call on risk acceptance. The known-working path is kept for a customer-facing demo, rather than taking on a first-ever cloud deploy's unknowns just beforehand (T5 Host-header fidelity through ingress, T6 WebSocket duration). The partner had recommended (d), otherwise (c).
 
 **Source:** founder, direct answer relayed by the orchestrating session, 2026-09-28.
+
+### D-044 · 2026-09-29 · Q-042 answered by the founder: `CanNotDelete` resource locks applied to `rg-hireastra-voice-pilot` and `rg-hireastra`
+
+Before dispatching U15 (the first unit that runs a real `azd provision`/`azd deploy` against live Azure), Q-042's open question was put to the founder in plain terms, since the plan text explicitly gates U15's first real provision on it: should Azure itself be made to structurally refuse deletion of `rg-hireastra-voice-pilot` and `rg-hireastra` — the two resource groups this deploy adopts as `existing` and reaches into cross-subscription — beyond the standing "never run `azd down` on this environment" policy rule already adopted in D-042?
+
+**Decision: apply the locks.** The founder chose the hard technical safeguard over relying on the written rule alone.
+
+**Applied directly, live, with the founder's explicit go-ahead:**
+- Confirmed neither resource group had a pre-existing lock (`az lock list`, empty result on both, checked before applying anything).
+- `az lock create --lock-type CanNotDelete --name protect-voice-pilot-rg --resource-group rg-hireastra-voice-pilot --subscription 13b3dbed-e03a-4d01-8b88-ac5c80fc749e`
+- `az lock create --lock-type CanNotDelete --name protect-hireastra-rg --resource-group rg-hireastra --subscription 82632bb8-e34b-41be-a7c7-a134f16c1c9c`
+- Verified active immediately after with `az lock list` on both — both show `CanNotDelete`.
+
+**What this does and doesn't do:** `CanNotDelete` blocks deletion of the resource group and everything inside it — via `azd down`, the Azure portal, `az group delete`, or any other path — until someone explicitly removes the lock first. It does **not** block create or update operations, so U15's own `azd provision`/`azd deploy` against these resource groups are unaffected.
+
+**Why this is recorded as a decision, not just a status update:** this is a real, live, consequential action taken directly against the founder's Azure subscription during this session — not a repo/code change reviewed through the normal PR pipeline. Per this session's standing discipline for actions with real-world consequences (transparent communication, explicit confirmation before acting), the partner explained the tradeoff in plain terms first, got the founder's explicit "yes, apply the rule," then executed it directly via `az` CLI and verified the result before proceeding.
+
+**Source:** founder, direct answer, 2026-09-29, given after the partner explained the decision in plain terms per the founder's own request.
