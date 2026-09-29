@@ -241,9 +241,12 @@ resource containerApp 'Microsoft.App/containerApps@2024-10-02-preview' = {
               secretRef: 'bandwidth-client-secret'
             }
           ] : [])
+          // Cost-driven cut from 2.0 vCPU / 4.0 GiB to 1.0 / 2.0 (a valid Consumption pairing), per
+          // M6 plan U14c / C11. Kept above 0.5 because the Twilio path's per-frame mu-law<->PCM and
+          // 8k<->24k resampling runs in Python and is unprofiled: if calls sound choppy, check CPU first.
           resources: {
-            cpu: json('2.0')
-            memory: '4.0Gi'
+            cpu: json('1.0')
+            memory: '2.0Gi'
           }
         }
       ]
