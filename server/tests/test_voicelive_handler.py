@@ -89,6 +89,36 @@ async def test_agent_mode_connects_with_pinned_route(fake_sdk):
     await handler.cleanup()
 
 
+async def test_agent_mode_unpinned_route_omits_agent_version(fake_sdk):
+    # D-049 (U-LATESTVER): unpinned mode must omit agent_version entirely (the SDK then sends
+    # no agent-version query param and Voice Live resolves the latest version) — never pass
+    # the literal string "latest" through to the service.
+    handler = vmh.VoiceLiveMediaHandler(handler_config(), route=AgentRoute("proj", "agent-a", "latest"))
+    await handler.connect_voicelive()
+    assert "agent_version" not in fake_sdk
+    assert fake_sdk["agent_name"] == "agent-a"
+    assert fake_sdk["project_name"] == "proj"
+    assert "model" not in fake_sdk
+    assert "latest" not in [v for k, v in fake_sdk.items() if k != "_conn"]
+    await handler.cleanup()
+
+
+async def test_agent_mode_pinned_route_passes_exact_version_string(fake_sdk):
+    handler = vmh.VoiceLiveMediaHandler(handler_config(), route=AgentRoute("proj", "agent-a", "24"))
+    await handler.connect_voicelive()
+    assert fake_sdk["agent_version"] == "24"
+    assert isinstance(fake_sdk["agent_version"], str)
+    await handler.cleanup()
+
+
+async def test_agent_mode_unpinned_route_logs_latest_mode(fake_sdk, caplog):
+    caplog.set_level("INFO", logger=vmh.logger.name)
+    handler = vmh.VoiceLiveMediaHandler(handler_config(), route=AgentRoute("proj", "agent-a", "latest"))
+    await handler.connect_voicelive()
+    assert any("version=latest" in r.getMessage() and "unpinned" in r.getMessage() for r in caplog.records)
+    await handler.cleanup()
+
+
 async def test_agent_mode_session_update_has_no_behavior_fields(fake_sdk):
     handler = vmh.VoiceLiveMediaHandler(handler_config(), route=ROUTE)
     await handler.connect_voicelive()

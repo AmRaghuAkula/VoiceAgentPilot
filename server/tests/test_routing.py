@@ -1,6 +1,7 @@
 import pytest
 
 from app.routing import (
+    LATEST_AGENT_VERSION,
     AgentRoute,
     called_number_from_event,
     caller_number_from_event,
@@ -110,3 +111,44 @@ def test_event_extraction_non_dict_payload_does_not_raise():
 
 def test_event_extraction_non_string_phone_value_is_ignored():
     assert called_number_from_event({"to": {"phoneNumber": {"value": 14165551234}, "rawId": "4:+14165551234"}}) == "4:+14165551234"
+
+
+# --- U-LATESTVER (D-049): AgentRoute version validation ---------------------------------
+
+
+@pytest.mark.parametrize("version", ["1", "10", "24", "123456"])
+def test_agent_route_accepts_pinned_digit_versions(version):
+    route = AgentRoute("proj", "agent-a", version)
+    assert route.version == version
+    assert route.is_unpinned is False
+
+
+def test_agent_route_accepts_exact_latest_sentinel():
+    route = AgentRoute("proj", "agent-a", LATEST_AGENT_VERSION)
+    assert LATEST_AGENT_VERSION == "latest"
+    assert route.version == "latest"
+    assert route.is_unpinned is True
+
+
+@pytest.mark.parametrize(
+    "version",
+    [
+        "", " ", "0", "00", "007", "-1", "1.0", "10 ", " 10", "1e3",
+        "Latest", "LATEST", "latest ", " latest", "latest\n", "latest2", "latest-1",
+        "latestt", "lates", "*", "null", "None",
+        "١٢",  # Arabic-Indic digits
+        "１０",  # fullwidth 10
+        "ｌａｔｅｓｔ",  # fullwidth "latest"
+    ],
+)
+def test_agent_route_rejects_malformed_versions(version):
+    with pytest.raises(ValueError, match="version"):
+        AgentRoute("proj", "agent-a", version)
+
+
+@pytest.mark.parametrize("version", [None, 10, 0, True, b"latest", ["latest"]])
+def test_agent_route_rejects_non_string_versions(version):
+    # None in particular must never be read as "unpinned": that mode is only ever the
+    # explicit sentinel string, so an accidentally-missing value still fails loudly.
+    with pytest.raises(ValueError, match="version"):
+        AgentRoute("proj", "agent-a", version)  # type: ignore[arg-type]
