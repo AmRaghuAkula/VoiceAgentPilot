@@ -514,7 +514,11 @@ def test_call_connected_marker_is_neutral_not_a_scripted_line():
 # Q-070 / D-050: a response.created that never resolves must not leave the caller in silence
 # ----------------------------------------------------------------------
 
-from azure.ai.voicelive.models import ServerEventResponseAudioDelta, ServerEventResponseCreated
+from azure.ai.voicelive.models import (
+    ServerEventResponseAudioDelta,
+    ServerEventResponseCreated,
+    ServerEventResponseMcpCallInProgress,
+)
 
 FAST_TIMEOUT = 0.05
 
@@ -548,6 +552,23 @@ class QueueConn(FakeConn):
 @pytest.fixture
 def fast_watchdog(monkeypatch):
     monkeypatch.setattr(vmh, "RESPONSE_TIMEOUT_SECONDS", FAST_TIMEOUT)
+    monkeypatch.setattr(vmh, "CANCEL_ACK_TIMEOUT_SECONDS", FAST_TIMEOUT)
+
+
+def no_more_timeouts(monkeypatch):
+    """From here on, newly armed timers never fire during the test (keeps timing tests deterministic)."""
+    monkeypatch.setattr(vmh, "RESPONSE_TIMEOUT_SECONDS", 3600)
+
+
+def gated(mock):
+    """Make an AsyncMock block until the returned event is set (a recovery held mid-flight)."""
+    gate = asyncio.Event()
+
+    async def wait(**kwargs):
+        await gate.wait()
+
+    mock.side_effect = wait
+    return gate
 
 
 async def eventually(predicate, timeout=2.0):
@@ -604,13 +625,14 @@ async def test_stuck_response_triggers_marker_retry(fast_watchdog, caplog):
     await handler.cleanup()
 
 
-async def test_response_done_in_time_cancels_the_timer(fast_watchdog):
+async def test_response_done_in_time_cancels_the_timer(monkeypatch):
+    no_more_timeouts(monkeypatch)
     handler = await start_handler(events=[created("r1")])
     await eventually(lambda: handler._watchdog_task is not None)
     timer = handler._watchdog_task
     handler.conn.queue.put_nowait(response_done("completed", "r1"))
     await eventually(lambda: handler.conversation_id == "conv-1")
-    await settle()
+    await eventually(timer.done)
     assert timer.cancelled()  # genuinely cancelled, not merely ignored
     assert handler._watchdog_task is None and not handler._recovery_tasks
     handler.conn.response.cancel.assert_not_awaited()
@@ -622,10 +644,10 @@ async def test_response_done_in_time_cancels_the_timer(fast_watchdog):
 
 async def test_audio_progress_keeps_a_long_response_alive(monkeypatch):
     # A response that is still streaming is not stuck: progress events for it push the deadline out.
-    monkeypatch.setattr(vmh, "RESPONSE_TIMEOUT_SECONDS", 0.2)
+    monkeypatch.setattr(vmh, "RESPONSE_TIMEOUT_SECONDS", 0.3)
     handler = await start_handler(events=[created("r1")])
-    for _ in range(12):  # ~0.6 s of streaming, three times the timeout
-        await asyncio.sleep(0.05)
+    for _ in range(30):  # ~0.9 s of streaming, three times the timeout, a delta every 30 ms
+        await asyncio.sleep(0.03)
         handler.conn.queue.put_nowait(audio_delta("r1"))
     handler.conn.queue.put_nowait(response_done("completed", "r1"))
     await eventually(lambda: handler.conversation_id == "conv-1")
@@ -713,18 +735,14 @@ async def test_done_that_beats_an_already_expired_timer_wins(monkeypatch):
     await handler.cleanup()
 
 
-async def test_late_done_after_timeout_is_ignored(fast_watchdog, caplog):
+async def test_late_done_after_timeout_is_ignored(fast_watchdog, monkeypatch, caplog):
     # Race, timer side: once the timer has claimed the response, a late response.done for it is
     # logged and skipped: no second retry, and a late "completed" does not reset the counter.
     caplog.set_level("WARNING", logger=vmh.logger.name)
     handler = await start_handler(events=[speech_started(), created("r1")])
-    gate = asyncio.Event()
-
-    async def slow_cancel(**kwargs):
-        await gate.wait()
-
-    handler.conn.response.cancel.side_effect = slow_cancel
+    gate = gated(handler.conn.response.cancel)
     await eventually(lambda: handler.conn.response.cancel.await_count == 1)  # recovery in flight
+    no_more_timeouts(monkeypatch)
     handler.conn.queue.put_nowait(response_done("completed", "r1"))
     await eventually(lambda: handler.conversation_id == "conv-1")
     assert handler._consecutive_failed_responses == 1  # the late completion did not reset it
@@ -748,7 +766,8 @@ async def test_late_done_after_timeout_is_ignored(fast_watchdog, caplog):
     await handler.cleanup()
 
 
-async def test_new_response_replaces_the_previous_timer(fast_watchdog):
+async def test_new_response_replaces_the_previous_timer(monkeypatch):
+    no_more_timeouts(monkeypatch)
     handler = await start_handler(events=[created("r1")])
     await eventually(lambda: handler._watchdog_task is not None)
     first = handler._watchdog_task
@@ -756,10 +775,13 @@ async def test_new_response_replaces_the_previous_timer(fast_watchdog):
     await eventually(lambda: handler._watchdog_task is not first)
     await eventually(first.done)
     assert first.cancelled()
+    assert handler._watched_response_id == "r2"
+    second = handler._watchdog_task
     handler.conn.queue.put_nowait(response_done("completed", "r2"))
     await eventually(lambda: handler.conversation_id == "conv-1")
-    await settle()
-    handler.conn.response.create.assert_not_awaited()  # exactly one timer was live at any time
+    await eventually(second.done)
+    assert second.cancelled() and handler._watchdog_task is None  # exactly one timer at any time
+    handler.conn.response.create.assert_not_awaited()
     await handler.cleanup()
 
 
@@ -827,12 +849,7 @@ async def test_cleanup_cancels_a_pending_timer(monkeypatch):
 
 async def test_cleanup_cancels_an_in_flight_recovery(fast_watchdog):
     handler = await start_handler(events=[speech_started(), created("r1")])
-    gate = asyncio.Event()
-
-    async def slow_cancel(**kwargs):
-        await gate.wait()
-
-    handler.conn.response.cancel.side_effect = slow_cancel
+    gated(handler.conn.response.cancel)
     await eventually(lambda: handler.conn.response.cancel.await_count == 1)
     (recovery,) = handler._recovery_tasks
     await handler.cleanup()
@@ -840,16 +857,15 @@ async def test_cleanup_cancels_an_in_flight_recovery(fast_watchdog):
     assert handler._watchdog_task is None and not handler._recovery_tasks
 
 
-async def test_cleanup_during_retry_send_leaves_no_pending_retry_timer(fast_watchdog):
+async def test_cleanup_during_retry_send_leaves_no_pending_retry_timer(fast_watchdog, monkeypatch):
     # The recovery arms the retry's own timer before response.create(); cleanup landing while that
     # send is in flight must cancel both the recovery and that timer.
     handler = await start_handler(events=[speech_started(), created("r1")])
-    gate = asyncio.Event()
-
-    async def slow_create(**kwargs):
-        await gate.wait()
-
-    handler.conn.response.create.side_effect = slow_create
+    cancel_gate = gated(handler.conn.response.cancel)
+    gated(handler.conn.response.create)
+    await eventually(lambda: handler.conn.response.cancel.await_count == 1)
+    no_more_timeouts(monkeypatch)  # the pending-retry timer must not fire before cleanup
+    cancel_gate.set()
     await eventually(lambda: handler.conn.response.create.await_count == 1)
     timer = handler._watchdog_task
     assert timer is not None  # the pending-retry timer
@@ -883,4 +899,115 @@ async def test_voicelive_drop_disarms_the_timer(fast_watchdog):
     await settle()
     assert timer.cancelled()
     handler.conn.response.create.assert_not_awaited()
+    await handler.cleanup()
+
+
+def mcp_call_in_progress():
+    # Real SDK shape: this event carries no response_id.
+    return ServerEventResponseMcpCallInProgress({"type": "response.mcp_call.in_progress",
+                                                 "item_id": "i1", "output_index": 0})
+
+
+async def test_cancel_confirmation_releases_the_retry_without_waiting(fast_watchdog, monkeypatch, caplog):
+    caplog.set_level("INFO", logger=vmh.logger.name)
+    monkeypatch.setattr(vmh, "CANCEL_ACK_TIMEOUT_SECONDS", 3600)
+    handler = await start_handler(events=[speech_started(), created("r1")])
+    await eventually(lambda: handler.conn.response.cancel.await_count == 1)
+    no_more_timeouts(monkeypatch)
+    await settle()
+    handler.conn.response.create.assert_not_awaited()  # still waiting for the cancel to land
+    handler.conn.queue.put_nowait(response_done("cancelled", "r1", {"type": "cancelled", "reason": "client_cancelled"}))
+    await eventually(lambda: handler.conn.response.create.await_count == 1)
+    assert handler._cancel_ack is None
+    assert not any("response_stuck_cancel_unconfirmed" in r.getMessage() for r in caplog.records)
+    await handler.cleanup()
+
+
+async def test_unconfirmed_cancel_still_retries(fast_watchdog, caplog):
+    caplog.set_level("INFO", logger=vmh.logger.name)
+    handler = await start_handler(events=[speech_started(), created("r1")])
+    await eventually(lambda: handler.conn.response.create.await_count == 1)
+    assert any("response_stuck_cancel_unconfirmed id=r1" in r.getMessage() for r in caplog.records)
+    assert handler._cancel_ack is None
+    await handler.cleanup()
+
+
+async def test_retry_skipped_when_a_new_response_starts_during_recovery(fast_watchdog, monkeypatch, caplog):
+    # If Voice Live starts answering on its own while the recovery is in flight, the retry would
+    # only collide with it: no marker, no response.create(), and the new response is the one watched.
+    caplog.set_level("WARNING", logger=vmh.logger.name)
+    handler = await start_handler(events=[speech_started(), created("r1")])
+    gate = gated(handler.conn.response.cancel)
+    await eventually(lambda: handler.conn.response.cancel.await_count == 1)
+    no_more_timeouts(monkeypatch)
+    handler.conn.queue.put_nowait(created("r2"))
+    await eventually(lambda: handler._watched_response_id == "r2")
+    watch = handler._watchdog_task
+    gate.set()
+    await eventually(lambda: not handler._recovery_tasks)
+    handler.conn.conversation.item.create.assert_not_awaited()
+    handler.conn.response.create.assert_not_awaited()
+    assert handler._watchdog_task is watch and not watch.done()  # r2's timer untouched
+    assert any("response_retry_skipped attempt=1" in r.getMessage() for r in caplog.records)
+    handler.conn.queue.put_nowait(response_done("completed", "r2"))
+    await eventually(lambda: handler._consecutive_failed_responses == 0)
+    await handler.cleanup()
+
+
+async def test_retry_skipped_when_a_new_response_starts_while_adding_the_marker(fast_watchdog, monkeypatch):
+    handler = await start_handler(events=[speech_started(), created("r1")])
+    gate = gated(handler.conn.conversation.item.create)
+    await eventually(lambda: handler.conn.conversation.item.create.await_count == 1)
+    no_more_timeouts(monkeypatch)
+    handler.conn.queue.put_nowait(created("r2"))
+    await eventually(lambda: handler._watched_response_id == "r2")
+    gate.set()
+    await eventually(lambda: not handler._recovery_tasks)
+    handler.conn.response.create.assert_not_awaited()
+    assert handler._watched_response_id == "r2"  # not replaced by a pending-retry timer
+    await handler.cleanup()
+
+
+async def test_late_audio_from_a_timed_out_response_is_dropped(fast_watchdog, monkeypatch):
+    handler = await start_handler(events=[speech_started(), created("r1")])
+    await eventually(lambda: handler.conn.response.create.await_count == 1)
+    no_more_timeouts(monkeypatch)
+    handler.on_audio_delta = AsyncMock()
+    handler.conn.queue.put_nowait(created("r2"))
+    handler.conn.queue.put_nowait(audio_delta("r1"))  # the stalled response wakes up
+    handler.conn.queue.put_nowait(audio_delta("r2"))  # the retry's answer
+    await eventually(lambda: handler.on_audio_delta.await_count == 1)
+    await asyncio.sleep(0.02)
+    handler.on_audio_delta.assert_awaited_once()  # only r2's audio reached the caller
+    await handler.cleanup()
+
+
+async def test_tool_call_in_progress_stretches_the_deadline_once(monkeypatch):
+    monkeypatch.setattr(vmh, "RESPONSE_TIMEOUT_SECONDS", 0.1)
+    monkeypatch.setattr(vmh, "CANCEL_ACK_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr(vmh, "TOOL_CALL_TIMEOUT_SECONDS", 3600)
+    handler = await start_handler(events=[created("r1"), mcp_call_in_progress()])
+    await asyncio.sleep(0.5)  # five ordinary timeouts: a tool call is running, so no recovery
+    handler.conn.response.create.assert_not_awaited()
+    handler.conn.queue.put_nowait(audio_delta("r1"))  # the tool finished; ordinary deadline again
+    await eventually(lambda: handler.conn.response.create.await_count == 1)  # r1 then stalls
+    await handler.cleanup()
+
+
+def test_tool_call_events_are_real_sdk_event_types():
+    names = {e.value for e in vmh.ServerEventType}
+    assert vmh._TOOL_CALL_EVENTS <= names
+    assert vmh.TOOL_CALL_TIMEOUT_SECONDS > vmh.RESPONSE_TIMEOUT_SECONDS
+
+
+async def test_voicelive_drop_during_recovery_cancels_it(fast_watchdog):
+    handler = await start_handler(events=[speech_started(), created("r1")])
+    gated(handler.conn.response.cancel)
+    await eventually(lambda: handler.conn.response.cancel.await_count == 1)
+    (recovery,) = handler._recovery_tasks
+    handler.conn.queue.put_nowait(None)  # Voice Live ends the stream mid-recovery
+    await eventually(recovery.done)
+    assert recovery.cancelled()
+    handler.conn.response.create.assert_not_awaited()  # nothing sent on the dead connection
+    assert not all_watchdog_tasks(handler)
     await handler.cleanup()
