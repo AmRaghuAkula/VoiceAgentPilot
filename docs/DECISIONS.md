@@ -289,3 +289,28 @@ The founder committed to a live demo call with a real real-estate agent on Frida
 **Why:** the founder asked for visibility into what's about to run and its provenance before it starts, a closing receipt after, and to be able to tell which agent said what when multiple are dispatched concurrently (which already happens routinely — reviews run as parallel Opus subagents per D-013, and this session alone had several builder/review agents in flight together).
 
 **Source:** founder, direct instruction, 2026-09-27, given as a standing instruction effective immediately, explicitly asked to be "read as part of start up orientation" — recorded in CLAUDE.md §0.5, read early in every session alongside D-034's model-routing rule.
+
+### D-039 · 2026-09-28 · Corrects D-032: Foundry User at account scope is not least-privilege; the GUID `5e0bd9bd-7b93-4f28-af87-19fc36ad61bd` is Cognitive Services OpenAI User, not "Cognitive Services User"
+
+U14a's `cso` security review (round 1, PR #33) checked D-032's least-privilege claim against the live role definition and found it factually wrong on the point that mattered: Foundry User (`53ca6127-db72-4b80-b1b0-d745d6d5456d`), the one role D-032 kept after trimming "Cognitive Services User" and Reader, itself includes `listkeys`, `projects/connections/listsecrets` and `Microsoft.CognitiveServices/*` data actions at whatever scope it's assigned — confirmed live via `az role definition list`, not assumed from the name. Assigning it at the AI *account* scope (as U14a's Bicep does, matching D-032's own instruction) grants the bridge's identity account-wide key/secret read on `hireastra-resource`, a resource that is shared and hosts the founder's other Foundry work — not the narrow, single-connection access D-032's "Decision: trim to Foundry User only" section implied.
+
+D-032's role-naming is also wrong: it labels GUID `5e0bd9bd-7b93-4f28-af87-19fc36ad61bd` "Cognitive Services User." Live lookup confirms that GUID is actually **Cognitive Services OpenAI User**. (D-032's own quoted TELEPHONY_BRIDGE_SPEC.md §6 reference to Foundry User's GUID, `53ca6127-...`, was independently reconfirmed correct by this same live lookup — only the other GUID's label was wrong.)
+
+**This does not reopen or reverse D-032's actual decision** (trim away plain Cognitive Services User and Reader) — that trim is still correct and still stands: neither of those two removed roles is exercised by any code path found. What's corrected is D-032's *reasoning* that the remaining Foundry User grant is itself narrow. It is not — it is the same account-wide, key-reading breadth as what was trimmed away, just under a different role name.
+
+**Not fixed in U14a's diff.** Narrowing this (a project-scoped assignment instead of account scope, or a custom role) would change the authorization model U14a was built against, which is the partner's call under D-030, not a code fix to make silently inside a review-fix commit. See Q-041 for the follow-up.
+
+**Source:** U14a's `cso` review, round 1 finding #1 and round 2's conditional-pass item (a), PR #33. Partner decision to record as a correcting entry rather than editing D-032 (append-only log, per this file's own header rule).
+
+### D-040 · 2026-09-28 · U14a's `cso`-conditional PASS is accepted; three follow-up risks recorded as Q-041/Q-042/Q-043 rather than blocking the merge
+
+U14a's `cso` review (round 2, PR #33) passed conditionally on this status commit recording four items. Item (a) is D-039 above. The remaining three are recorded as open questions rather than fixed in U14a's own diff, because each would change either the authorization model, the deploy tooling's destructive-command surface, or a deployed-environment default — all decisions that belong at the founder/partner level (D-030), not inside a review-fix commit on an infra unit already built and twice-reviewed against a specific, agreed scope.
+
+**Accepted for merge on that basis:** U14a's actual Bicep changes (pointing at the existing AI/ACS resources, ACS system-assigned identity + TTS role, Container App scale fix) are unaffected by any of the three deferred items — none of them is a bug in what U14a built; each is a pre-existing or inherent characteristic of the identity/tooling design U14a correctly implemented per D-031/D-032. Blocking the merge would not fix any of them faster; they need founder-level decisions U14a's builder correctly declined to make unilaterally.
+
+**Why not fixed now:**
+- Narrowing Foundry User's scope (Q-041) needs a decision on custom-role vs. project-scope, verified against U15's live smoke test — doing it blind inside U14a risks breaking the Voice Live connection U14a was built to preserve.
+- Resource-group deletion locks (Q-042) are an operational safeguard on `azd down`, not a bug in U14a's provisioning logic, and touching `azd down`'s behavior is explicitly out of U14a's scope (U14b owns environment-teardown concerns per the M6 plan's unit split).
+- Defaulting `ACS_CALLBACK_JWT_AUDIENCE` (Q-043) would change deployed behavior from D-036's already-decided "must be set, not optional" instruction into an actual enforced default — a real behavior change requiring its own sign-off, not a drive-by default inside an unrelated unit.
+
+**Source:** U14a's `cso` review, round 2, PR #33. Partner decision under D-030 (architecture-tradeoff/D-002-tension delegation) to record and defer rather than block.
