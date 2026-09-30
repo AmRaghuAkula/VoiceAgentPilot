@@ -591,7 +591,7 @@ TELEPHONY_BRIDGE_SPEC.md §7 ("Do not build") lists two items the calendar track
 
 **Source:** spec rev 3.1 §6.1/§7.4 (review rounds 2 and 3), accepted by the founder (D-051). It was a partner design decision under D-030.
 
-### D-056 · 2026-09-29 · Calendar plan structure: unit cut, milestones C0–C5, and plan-time reconciliations P1–P17
+### D-056 · 2026-09-29 · Calendar plan structure: unit cut, milestones C0–C5, and plan-time reconciliations P1–P18
 
 **Unit cut.** The spec's proposed UC00–UC12 (§14) keep their numbers. Three are split for reviewability, as the spec itself anticipated for UC04 and UC08:
 - UC02 → UC02a (package, bindings, contract document, provider port, fake provider, conformance harness, guards G1–G3) + UC02b (HTTP dispatcher + in-code JWT auth, a focused security surface for `cso`).
@@ -617,7 +617,8 @@ The sequence is strictly serial: UC01 → UC02a → UC02b → UC03 → UC04a →
 - **P14:** step 3's replay window reaches at least the token's end, so lowering `max_days_ahead` can't hide a booking from its own retry. This keeps the spec's "replay never depends on config" rule.
 - **P15:** fictional fixture numbers are `+1 NPA 555 01xx`. The spec's §5.3 example is malformed. Phone parsing uses `is_possible_number`.
 - **P16:** the slot grid steps in elapsed time from the window's UTC start, and drops `fold=1` candidates in the repeated fall-back hour, so no two slots share one spoken time. DST boundaries are resolved as the plan's UC03 states, with exact expected outputs.
-- **P17:** binding validation also rejects a binding whose largest duration plus buffer could never fit the 8 s booking budget. Without this, the config would load and then fail every booking at runtime.
+- **P17:** binding validation also rejects a binding whose largest duration plus buffer could never fit the 8 s booking budget. Without this, the config would load and then fail every booking at runtime. At the initial constants, with a 3 s reserve, the cap is 50 minutes of duration plus buffer.
+- **P18** (added in plan rev 1.4, during the UC00 PR's own code review): service keys are loaded **per request**, never at startup. `KeySet` is a frozen snapshot of the three key byte strings, used by the pure token and HMAC functions. `KeyRing` is an async Protocol, `load(deadline) -> KeySet`, called exactly once per request by `check_availability` and `book()`. `KeyVaultKeyRing` (UC07) implements it over the 5-minute-cached Key Vault source; `FakeKeyRing` (UC03) implements it for tests. This is what spec F4 needs (a Key Vault outage returns `calendar_unavailable` / `secret_store_unreachable` per request, not a dead host) and what §8.3 step 10 needs (a rotated key is picked up within the TTL without a restart). It replaces the plan's earlier fixed value object, which could satisfy neither.
 
 **Source:** partner decision (planning and sequencing are the partner's job; the tradeoffs fall under D-030), made in UC00.
 
@@ -628,6 +629,6 @@ The sequence is strictly serial: UC01 → UC02a → UC02b → UC03 → UC04a →
 - UC01's app-role ordering;
 - D-052 marked PROPOSED.
 
-A focused re-check of rev 1.1 returned READY WITH FIXES, with no blocking findings; its four follow-ups (R1–R4) and four nits are applied in rev 1.2. Full disposition is in the plan's §8.
+A focused re-check of rev 1.1 returned READY WITH FIXES, with no blocking findings; its four follow-ups (R1–R4) and four nits are applied in rev 1.2. The UC00 PR's own Opus code review then ran two rounds, both NEEDS-FIXES. Round 1's fixes produced rev 1.3. Round 2 found that rev 1.3's `KeyRing` fix contradicted UC03's definition, which led to P18 as written above, plus UC01/UC02a corrections, all in rev 1.4. Full disposition is in the plan's §8.
 
 **Numbering note (UC00):** D-050 is the U-RESPWATCHDOG decision (Q-070), merged first. Both entries now sit in number order, D-050 before D-051. The same parallel work had already used Q-071 (a whole-repo security-audit backlog item), so UC00's new questions are **Q-072** and **Q-073**.

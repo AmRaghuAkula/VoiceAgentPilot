@@ -26,7 +26,7 @@ Last updated: 2026-09-29 (rev 1.1, written in UC00; aligned with plan rev 1.1 af
 | UC04c | Recovery, verification, uncertain-create path | C1 | `feat/cal-uc04c-recovery` | Code | — | ~40 |
 | UC05 | Azure identity and data plane | C2 | `feat/cal-uc05-azure-platform` | IaC + ops | Q-067 | n/a (verification commands) |
 | UC06 | Azure Blob claim store | C2 | `feat/cal-uc06-blob-claim-store` | Code | — | ~30 (+ live) |
-| UC07 | Google credential source and consent tool | C3 | `feat/cal-uc07-google-credentials` | Code | Q-065 | ~35 |
+| UC07 | Google credential source, Key Vault `KeyRing` and consent tool | C3 | `feat/cal-uc07-google-credentials` | Code | Q-065 | ~40 |
 | UC08a | Google project, consent screen, OAuth client, test-calendar consent | C3 | none (branchless) | Ops | Q-064, Q-066 | 0 (evidence only) |
 | UC08b | Google adapter and live Google checks | C3 | `feat/cal-uc08b-google-adapter` | Code + live checks | — | ~40 (+ ~10 live) |
 | UC09 | Function deploy | C4 | `feat/cal-uc09-function-deploy` | IaC + deploy | (Q-067 always-ready, decided on UC09's measurement) | ~10 |
@@ -34,7 +34,7 @@ Last updated: 2026-09-29 (rev 1.1, written in UC00; aligned with plan rev 1.1 af
 | UC11 | Production-agent attach | C5 | none (branchless) | Ops (founder-gated) | Q-068 | 0 |
 | UC12 | Live voice rehearsal (T6, acceptance gate) | C5 | none (branchless) | Verification | — | 0 (T6 evidence) |
 
-**Test readiness today:** 0 calendar tests exist (no code yet). The plan names every test case per unit; the estimates above total **~450 automated tests** plus ~10 opt-in live Google checks and the opt-in live Blob conformance run. Past units in this repo have always grown past their estimates during review; STATUS.md tracks actuals.
+**Test readiness today:** 0 calendar tests exist (no code yet). The plan names every test case per unit; the estimates above total **~455 automated tests** plus ~10 opt-in live Google checks and the opt-in live Blob conformance run. Past units in this repo have always grown past their estimates during review; STATUS.md tracks actuals.
 
 ---
 
@@ -94,7 +94,7 @@ Last updated: 2026-09-29 (rev 1.1, written in UC00; aligned with plan rev 1.1 af
 - `GoogleCalendarProvider` passes the provider conformance suite (mocked), including the freeBusy `errors` case and the 409-on-ID flow.
 - Live checks on a throwaway test calendar confirm the scopes are sufficient (or the recorded fallback), the free/busy semantics (the fake is aligned with them), and that created events are visible to `find_bookings` far inside 120 s.
 
-**Test coverage (~75 + ~10 live):** Key Vault source, OAuth exchange, credential caching and single-flight, consent tool (loopback, PKCE, state, scopes, no-leak); adapter operation mapping, status mapping, conformance, G4 with Google.
+**Test coverage (~80 + ~10 live):** Key Vault source, the Key Vault-backed `KeyRing` (plan P18), OAuth exchange, credential caching and single-flight, consent tool (loopback, PKCE, state, scopes, no-leak); adapter operation mapping, status mapping, conformance, G4 with Google.
 
 ## C4 — Deployed and verified on a test agent (UC09, UC10)
 
@@ -104,7 +104,7 @@ Last updated: 2026-09-29 (rev 1.1, written in UC00; aligned with plan rev 1.1 af
 - Cold-start and warm latency are measured; the always-ready decision is put to the founder under Q-067.
 - The real host calendar is consented; the demo binding uses Q-069's values; the tool is attached to a **test** agent; T1–T5 pass with evidence.
 
-**Test coverage (~10):** the Functions adapter and the requirements/lockfile sync check; the rest is live evidence (probes, T1–T5).
+**Test coverage (~10):** the Functions adapter, the requirements/lockfile sync check, and wiring (no service key read at startup, plan P18); the rest is live evidence (probes, T1–T5).
 
 ## C5 — Production and acceptance (UC11, UC12)
 
