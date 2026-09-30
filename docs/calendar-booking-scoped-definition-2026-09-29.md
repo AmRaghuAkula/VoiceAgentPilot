@@ -21,7 +21,7 @@
 - Azure Function (HTTP-triggered) — separate from the telephony bridge's Container App / laptop process entirely.
 - Google Calendar API called from the Function.
 - Key Vault holds the OAuth refresh token; Function's managed identity has Key Vault Secrets User role — no credentials ever reach the Foundry agent or its instructions.
-- Foundry agent (`re-intake-pilot-agent`) gets two new tools wired via OpenAPI/function route pointing at this Function's endpoints.
+- Foundry agent (the pilot's production agent) gets two new tools wired via OpenAPI/function route pointing at this Function's endpoints.
 
 ### 2. Auth — step by step
 
@@ -49,7 +49,7 @@
 
 ### 5. Foundry wiring
 
-- Expose both tools on `re-intake-pilot-agent` via OpenAPI schema pointing at the Function's routes.
+- Expose both tools on the production agent via OpenAPI schema pointing at the Function's routes.
 - Tool descriptions must explicitly restate the honesty constraint inline (e.g. "Only call this with a slot previously returned by check_availability. Never invent a time. If this tool errors, tell the caller honestly that you'll have someone call them back — do not claim a booking succeeded.") — this is belt-and-suspenders on top of the agent instructions already covering fallback behavior.
 - Confirm which Foundry agent version this gets attached to and whether it requires a new pinned version (per the existing "never latest" discipline already established for the telephony bridge) — do not let this slip through unpinned.
 
