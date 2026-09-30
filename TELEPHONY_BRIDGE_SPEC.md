@@ -70,6 +70,8 @@ The rule for Claude Code: no real-estate words, agent names or phone numbers in 
 | Routing config (JSON) | Called number → Foundry project, agent name, pinned agent version | Yes — one entry per client number |
 | Agent behaviour (Foundry portal) | Instructions, voice, speech settings, guardrails | Yes — lives in Foundry, never in the bridge |
 
+> **Twilio path (D-041, D-058, corrected 2026-09-29):** the fallback message above is spoken only on a route miss, via TwiML `<Say>`. On the Twilio path as built (UT01b), every in-call end (Voice Live connect failure or drop, failed responses, idle, the call cap) closes the media stream silently. That was a pilot-scope choice (Twilio pilot plan rev 2, finding B2), not a Twilio limitation. See D-058.
+
 The pilot routing config has one entry. Going multi-client later means adding entries, not code.
 
 ## 5. Step 3 — Build the bridge (instructions for Claude Code)
@@ -83,8 +85,8 @@ The pilot routing config has one entry. Going multi-client later means adding en
 3. **Do not override agent behaviour in `session.update`.** No instructions, no voice, no VAD settings from the bridge. Foundry is the single source of truth. Only exception: if acceptance test 4 shows the portal's Interim Response setting (2500 ms threshold, LLM-generated) is not carried through agent metadata, set `interim_response` explicitly in `session.update` from config, and note it in the README.
 4. **Add number-based routing.** Read the called number (`to`) from the IncomingCall event and look it up in `AGENT_ROUTING_JSON`. No match: answer, play the fallback message, hang up, log it. One entry for the pilot.
 5. **Secure the media WebSocket.** Put a random token (from Key Vault) in the media streaming transport URL and reject `/acs/ws` connections without it. Handle the Event Grid subscription validation handshake on `/acs/incomingcall`.
-6. **Cap call length.** End the call after `MAX_CALL_SECONDS` (pilot: 600) with a short spoken goodbye. Guards cost against the kind of 6-minute runaway conversation we saw in testing.
-7. **Fallback on failure.** If Voice Live fails to connect or drops mid-call, play `FALLBACK_MESSAGE` via ACS text-to-speech and hang up cleanly. Never leave the caller in silence.
+6. **Cap call length.** End the call after `MAX_CALL_SECONDS` (pilot: 600) with a short spoken goodbye. Guards cost against the kind of 6-minute runaway conversation we saw in testing. *(ACS path only. On the Twilio path, now the permanent provider (D-041), the cap ends the call silently: see D-058, corrected 2026-09-29.)*
+7. **Fallback on failure.** If Voice Live fails to connect or drops mid-call, play `FALLBACK_MESSAGE` via ACS text-to-speech and hang up cleanly. Never leave the caller in silence. *(ACS path only. On the Twilio path the bridge hangs up promptly but silently, which still meets "never leave the caller in silence", because the call ends instead of hanging open. See D-058, corrected 2026-09-29.)*
 8. **Close cleanly on hang-up.** On `CallDisconnected`, close the Voice Live session within 5 seconds so we aren't billed for dead sessions.
 9. **Logging.** Keep the accelerator's per-call `cid`; also log the Voice Live conversation ID so a phone call can be matched to its Foundry trace. Mask caller numbers to the last 4 digits in all logs (Canadian privacy expectations under PIPEDA).
 10. **Ambient audio off:** `AMBIENT_PRESET=none`.
@@ -144,8 +146,18 @@ Raghu calls the test number from his mobile; Cowork pulls the matching Foundry t
 - [ ] 4. **Filler timing:** no "let me check" filler on fast replies (confirms the 2500 ms Interim Response setting reached the phone line; if not, apply modification 3's exception)
 - [ ] 5. **Speech accuracy on a phone line:** repeat the "buying" / "bye" script and a 10-digit phone number; Alex confirms the ambiguous word and reads the number back correctly
 - [ ] 6. **Hang-up:** after Raghu hangs up, the bridge logs show the Voice Live session closed within 5 seconds
-- [ ] 7. **Failure path (D-058, Twilio path):** with a deliberately wrong agent version in config, the call ends cleanly with no spoken fallback message — a silent hangup is the correct, by-design behavior on the Twilio path (unlike the original ACS-era assumption this test was written against), confirmed via bridge logs (`response_unrecoverable`/`call_ended`) rather than by listening for speech
-- [ ] 8. **Call cap (D-058, Twilio path):** with `MAX_CALL_SECONDS` temporarily set to 60, the call ends silently at one minute with no spoken goodbye — confirmed via bridge logs, not by listening for speech
+- [ ] 7. **Failure path (D-058, Twilio path):** temporarily set the route's `version` in `AGENT_ROUTING_JSON` to a pinned digit string that does not exist on the agent (e.g. `"9999"`). The deployed route runs D-049's unpinned `"latest"` mode, and a non-digit value fails bridge startup instead, so it doesn't test this path. Place a call. **Pass** requires all of the following:
+  - The call ends with no spoken fallback (the Twilio path closes silently by design; see D-058).
+  - The bridge logs `call_ended reason=voicelive_connect_failed` within `VOICE_LIVE_CONNECT_TIMEOUT_SECONDS` + 5 s of the call's `Incoming Twilio Media Stream WebSocket connection` log line. That is 13 s at the default of 8 s (`server/app/bridge_config.py`); confirm the deployed value first. This is the expected reason: a wrong version should be rejected during the Voice Live connect.
+  - Only if the service accepts the connection and fails afterwards, `call_ended reason=voicelive_dropped` or `call_ended reason=response_failed` also passes, within 45 s of that same line. The 45 s is the connect timeout (8 s) + `RESPONSE_TIMEOUT_SECONDS` (15 s) + `CANCEL_ACK_TIMEOUT_SECONDS` (2 s) + a watched retry (15 s), plus a 5 s margin (`server/app/handler/voicelive_media_handler.py`).
+  - Record which reason actually fired: it is the first live evidence of how Voice Live rejects a bad agent version.
+  - **`reason=idle` or `reason=call_cap` fails this test**, and so does no `call_ended` line at all, or the caller hanging up first. Any of these means the bridge never detected the failure and the caller sat in silence.
+  - Restore the real routing value afterwards.
+- [ ] 8. **Call cap (D-058, Twilio path):** temporarily set `MAX_CALL_SECONDS` to `60` and keep talking past one minute. **Pass** requires all of the following:
+  - The bridge logs `Call expired (max duration)`, then `call_ended reason=call_cap`, 60–65 s after the call's `Incoming Twilio Media Stream WebSocket connection` log line (the cap is measured from when the bridge registers the call).
+  - The call then ends with no spoken goodbye (silent by design on the Twilio path; see D-058).
+  - Any other `call_ended reason=` first (for example `idle` or `response_failed`) fails this test.
+  - Restore `MAX_CALL_SECONDS` afterwards.
 - [ ] 9. **Latency baseline:** record average per-turn response time from Traces and compare with the ~5.9 s browser baseline from Stage 0
 
 The pilot passes when 1–8 pass. Test 9 is a measurement, not pass/fail.

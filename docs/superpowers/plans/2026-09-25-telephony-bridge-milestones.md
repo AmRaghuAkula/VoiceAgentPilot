@@ -187,11 +187,11 @@ Once U13 merges, `main` is the complete Step 3 bridge.
 4. There's no filler on fast replies.
 5. "buy" vs "bye" and a 10-digit number come through correctly.
 6. After hang-up, the Voice Live session closes within 5 s.
-7. A wrong version triggers the fallback.
-8. A 60 s cap ends the call with the goodbye.
-
-**Re-scope needed before M7 (M6 plan T10):** tests 7 and 8 assume ACS's spoken fallback/goodbye; on the Twilio path a connect failure or the call cap ends the call silently by design (only a route miss speaks, via `<Say>`).
+7. A deliberately wrong pinned agent version ends the call silently (Twilio path, D-058): `call_ended reason=voicelive_connect_failed` within the Voice Live connect timeout + 5 s, or, only if the service accepts the connection first, `voicelive_dropped`/`response_failed` within 45 s. `idle` or `call_cap` fails the test.
+8. A 60 s cap ends the call silently (Twilio path, D-058): `call_ended reason=call_cap` 60–65 s after the media stream connects.
 9. Latency is measured against the ~5.9 s baseline.
+
+**Re-scope done (D-058, 2026-09-29):** tests 7 and 8 originally expected ACS's spoken fallback/goodbye. On the Twilio path as built (UT01b; Twilio pilot plan rev 2, finding B2), every in-call end closes the media stream silently, as a pilot-scope choice; only a route miss speaks, via `<Say>`. TELEPHONY_BRIDGE_SPEC.md §8 now holds the exact pass criteria.
 
 **Readiness:** the bridge logs needed for tests 6–8 are built into M3/M4.
 
