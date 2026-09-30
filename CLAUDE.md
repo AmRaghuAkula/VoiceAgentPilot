@@ -92,7 +92,7 @@ When a single Claude session plays both roles, it still follows both sets of rul
 
 **Status updates ride inside the unit's own PR (D-017).** Before the PR merges, the partner commits the STATUS.md and DECISIONS.md updates to the unit's branch, so `main` is always accurate the moment it merges.
 
-**The only exception is a status-only PR (D-018; extended for branchless units above, D-053).** It's used when status must change and no unit branch is in flight, for example a founder answer to a Q-NNN, or a partner-only planning session. The branch is `docs/status-YYYY-MM-DD`, it follows the same one-branch rule, and it is opened, merged and deleted in the same session. It needs no review, because it has no code and no design content.
+**The only exception is a status-only PR (D-018; extended for branchless units above, D-053).** It's used when status must change and no unit branch is in flight, for example a founder answer to a Q-NNN, or a partner-only planning session. The branch is `docs/status-YYYY-MM-DD`, it follows the same one-branch rule, and it is opened, merged and deleted in the same session. A plain status-only PR needs no review, because it has no code and no design content. The exception is a status PR that adds a D-NNN or revises a plan or spec: it gets the Opus docs review (see the branchless-units rule above, D-053).
 
 ---
 
