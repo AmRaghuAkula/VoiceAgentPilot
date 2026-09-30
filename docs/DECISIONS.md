@@ -697,3 +697,47 @@ This keeps the tests' underlying intent: a bad config or a timeout must not leav
 - it claimed Twilio has no way to speak before hanging up.
 
 It also found the rewritten tests under-specified (no time bound, no exact end reasons). This text replaces that version in full. Because D-058 had never reached `main`, it was rewritten in place rather than superseded by a new entry.
+
+### D-059 · 2026-09-30 · **DRAFT** · UC01 feasibility result: both tool transports run server-side in Voice Live agent mode; principal claim, publish, timeout and refusal findings (calendar plan UC01 Step 7, fields a–e)
+
+> **DRAFT.** Written by the builder from UC01's evidence (STATUS.md §2, "UC01 evidence (DRAFT)", rows E1–E14). Field (a) is **not decided** here: the partner decides it. This entry is finalized before the status PR merges, and it gets the Opus docs review (D-013, D-053).
+
+**Go/no-go:** **GO.** Both OpenAPI and MCP tools attached to a `prompt`-kind Foundry agent execute server-side inside a Voice Live agent-mode session opened through the bridge's own `VoiceLiveMediaHandler` (E2, E3). Spec §3.1's no-go branch does not apply.
+
+**(a) Primary transport: OPEN, partner decision.** The evidence for each option:
+
+| | OpenAPI attached directly (plan as written) | MCP (attached directly; `/mcp` facade per the plan's "Go (MCP only)" branch) |
+| --- | --- | --- |
+| Works through today's bridge unchanged | Yes (E2) | Yes, **only with** the tool's approval set to "Always auto-approve all tools" (`require_approval: never`). Otherwise the caller hears silence (E4) |
+| Principal presented | Foundry **resource**'s system-assigned managed identity: every project and agent on the resource (E6) | Foundry **project**'s managed identity (E6) |
+| Isolation implied (spec §4.2) | Resource-wide. Separating two businesses needs separate Foundry **resources** or option D | Project-wide. Separate **projects** suffice |
+| Bridge watchdog allowance for tool time | 15 s, with the model's own time inside it, because OpenAPI emits no progress events (E12) | 45 s once `mcp_call.in_progress` arrives (E12) |
+| Non-2xx behavior | Fails the whole turn (`agent_tool_user_error`); the model never sees the body (E10) | Not tested with an error response. MCP returns errors inside a successful JSON-RPC result, so this is expected to differ — **unverified** |
+| Plan impact | None | Plan's "Go (MCP only)" revision: an MCP facade over the same core, G3 extended to MCP. A per-agent operator step to set auto-approve |
+| Note | OpenAPI *inside a toolbox* presents the project identity (E5, E6), but toolboxes are offered only on voice-kind agents, which don't work through Voice Live (E1) | — |
+
+Both options share one consequence for the contract (spec §5): **business outcomes must not travel as HTTP 4xx/5xx** if the model is to speak them. On OpenAPI a non-2xx fails the turn (E10). The partner should confirm spec §5's status-code use against this before UC02b.
+
+**(b) Principal claim for `CALENDAR_AUTH_PRINCIPAL_CLAIM`: `oid`** (the plan's default). `oid` and `appid` are present on every Foundry token; `azp` and `idtyp` are **absent** (v1 tokens, E7), so `azp` must not be configured. The allowlist entry is the `oid` of whichever managed identity (a) implies.
+
+**(c) Does publishing change the principal?** Not exercised (partner decision, 2026-09-30).
+- In this portal, "publish" means a channel publish (Teams & Microsoft 365 Copilot). `agent_endpoint.publish_approval_status` stays `not_published` otherwise.
+- Every agent already has its own Entra `agentIdentity` and `agentIdentityBlueprint` from creation. No tool call used it while unpublished (E8).
+- **UC11's checklist:** do not channel-publish the production agent without re-running this check. If a channel publish is ever needed, re-verify the principal the echo sees before relying on the allowlist.
+- **Separate D-049 finding (E9):** the portal's Active-version selector does **not** hold a saved draft back from the bridge's unpinned calls. Unpinned connects always run the latest *saved* version. Any saved edit, including an unfinished one, goes live on the next call. Pinning `agent_version` in the routing is the only way to hold a draft back.
+
+**(d) Foundry tool timeout and budget.** Foundry's own tool timeout is **over 20 s** (not reached, E11). That is ≥ 12 s, so the plan's rule keeps the **8 s** request deadline.
+- The tighter limit in practice is the bridge's D-050 watchdog (E12). For OpenAPI tools, the model's time plus the tool's time must stay under 15 s per response. The 8 s budget plus the observed 1–4 s of model time fits.
+- If (a) is OpenAPI, the partner should decide whether this needs a bridge change (for example, treating OpenAPI tool calls like MCP calls in the watchdog). That would be a separate bridge unit, not part of this track.
+
+**(e) Refusal test.**
+- Identity type: a throwaway **service principal** using the **client-credentials** flow (scope `api://<echo app>/.default`).
+- Before `appRoleAssignmentRequired=true`: token issued, no `roles`.
+- After: refused with **`AADSTS501051`** (`invalid_grant`, HTTP 400). Same principal, secret and scope, so the refusal is the assignment rule (E14).
+- **Caveat for UC09/UC05 (E13):** Foundry caches managed-identity tokens for up to 24 h. After an assignment is added, or removed, the `roles` claim and Entra's refusal only take effect when Foundry next fetches a token. In-session, the assigned principals' tool calls kept succeeding on pre-assignment tokens, and `roles: ["Calendar.Invoke"]` could not be observed. The in-code allowlist (spec §9.1) is therefore the control that takes effect immediately. The Entra assignment is a second layer with up to a 24 h lag.
+
+**Other findings for the plan or spec (partner to route):**
+- Test and production agents for this track must be `prompt`-kind: a voice-kind agent produces empty responses through Voice Live agent mode (E1).
+- MCP tools need `require_approval: never` for the bridge path (E4).
+
+**Source:** UC01 verification, 2026-09-30, builder on Opus. The founder did the Foundry portal steps; the partner decided not to exercise the channel publish.
