@@ -642,3 +642,58 @@ A focused re-check of rev 1.1 returned READY WITH FIXES, with no blocking findin
 **Source:** founder, direct confirmation, 2026-09-29, after the partner explained both lifts in plain terms per the founder's request. Tracked as **Q-072**, now answered.
 
 **Numbering note (UC00):** D-050 is the U-RESPWATCHDOG decision (Q-070), merged first. Both entries now sit in number order, D-050 before D-051. The same parallel work had already used Q-071 (a whole-repo security-audit backlog item), so UC00's new questions are **Q-072** and **Q-073**.
+
+### D-058 · 2026-09-29 · Rescopes TELEPHONY_BRIDGE_SPEC.md §8 acceptance tests 7 and 8 for the Twilio path, which closes the call silently in both cases — unblocks M7's test definitions
+
+**Background:** M7 (live acceptance tests) has carried a standing note since the M6/Twilio re-plan that tests 7 and 8 "assume ACS behavior" and need re-scoping first (M6 deploy plan, T10). The spec text confirms it. Test 7 said "the caller hears the fallback message and the call ends cleanly", and test 8 said "the call ends with a goodbye at one minute". Both were written for the ACS path (before D-041), where `CallSession.request_end()` plays the message through ACS Call Automation and then hangs up. §5 modifications 6 and 7 and the §4 reuse-boundary table carry the same ACS-era assumption.
+
+**Where the Twilio path's silent close actually comes from.** It was a deliberate pilot-scope simplification made in the Twilio pilot plan (`docs/superpowers/plans/2026-09-27-twilio-pilot-plan.md`), **revision 2, design-review finding B2**, and built in **UT01b**:
+- The plan's rev 2 changelog (B2) records that rev 1 had wrongly claimed Twilio has no call-control REST API. It does: the Calls resource. It then resolves the real question, what happens to the fallback/goodbye message on each end reason, "by not trying to speak a message on every close type for the pilot (silent close via WS close, matching Twilio's `<Connect>` 'no further verbs' behavior)".
+- UT01b's file list specifies that `TwilioCallSession.request_end(reason, message)` accepts `message` "but not spoken for this pilot (matches B2's silent-close decision)". It keeps the parameter "for interface parity with a possible future `<Say>`-based close".
+- The code matches, read on the current checkout: `server/app/providers/twilio/call_session.py`, `request_end()` (lines 41-56). Its docstring says "`message` is accepted for interface parity with ACS's CallSession but is not spoken: this pilot closes the Twilio call silently". The body records the reason, logs `call_ended reason=<reason>`, stops agent audio and schedules the media-socket close. It never reads `message`.
+- It is **not** a D-004 ruling, and D-038 and D-048 did not decide it. The earlier text of this entry got that wrong (see the revision note below).
+
+**What D-038 and D-048 do establish, and what they don't.** Both are about the **agent's own Voice Live conversation**:
+- D-038 rejected its option D, a literal scripted fallback line delivered through `additional_instructions`.
+- D-048 rejected a bridge-authored scripted greeting (`pre_generated_assistant_message` or an `additional_instructions` override).
+- Both rejections rest on D-004: the bridge must not author what the *agent* says. That is a related but distinct concern from whether the bridge plays its own operational message, by provider TTS or TwiML, outside the agent conversation after the agent is gone. The ACS path does exactly that, from config (`FALLBACK_MESSAGE`, the goodbye message), and neither decision touched it.
+- D-038's option C (end the call cleanly through `request_end()` after repeated failed responses) is why the `response_failed` end reason exists. Whether that end is spoken depends on the provider's `request_end()`, not on D-038.
+- Neither decision is founder-approved. Both Source lines say "partner decision under D-030's delegation". The earlier text of this entry called them "already-founder-approved", which was wrong.
+
+**Twilio can speak before hanging up. The pilot just doesn't.** The earlier text of this entry also claimed the Twilio path has no "speak then hang up" mechanism. That is false, and the repo already said so:
+- Twilio's Calls resource can redirect a live call to new TwiML, and the pilot plan corrected rev 1's claim that it couldn't (B2).
+- The bridge's own route-miss path already speaks, in `server/app/providers/twilio/__init__.py` (`twilio_voice`, the `route is None` branch): it returns TwiML built with `VoiceResponse().say(bridge.fallback_message)` then `.hangup()`, before any media stream opens.
+
+What is true is narrower: the Twilio path **as built in UT01b** closes the media stream without speaking on every in-call end reason, as a deliberate pilot-scope choice. A spoken close is technically possible (for example, a Calls-API redirect to `<Say>` + `<Hangup>` TwiML) and was deliberately not built. If a spoken fallback or goodbye is wanted later, it is **new build work** (its own unit, reviewed and tested), not a D-004 question, because it would be an operational message from config, not agent speech.
+
+**Decision:** rewrite tests 7 and 8 in TELEPHONY_BRIDGE_SPEC.md §8 to test what the Twilio bridge as built actually does: a clean, silent hangup, verified from the bridge's own `call_ended reason=<reason>` log line, with a concrete time bound and an exact list of accepted reasons.
+- **Test 7:** the accepted reasons are `voicelive_connect_failed` (the expected one), `voicelive_dropped` and `response_failed`, each with a stated time bound. `idle` and `call_cap` explicitly do not pass.
+- **Test 8:** the accepted reason is `call_cap`, logged about 60 s after the media stream connects.
+- Add D-058 pointers at §5 modifications 6-7 and the §4 table, so the older ACS-era text no longer silently contradicts §8.
+
+This keeps the tests' underlying intent: a bad config or a timeout must not leave the caller in indefinite silence, and the bridge, not the caller, must end the call promptly. The only thing dropped is "and speaks a message first", which the Twilio path as built never does.
+
+**Why test 7 accepts three reasons, not one.** Everything below was verified in code on the current checkout.
+- A wrong agent version is a config error. It is sent to Voice Live as the `agent-version` query parameter on the WebSocket URL (`azure/ai/voicelive/aio/_patch.py`, around line 835).
+- The handshake runs inside the SDK's `__aenter__`, where any failure is raised as `ConnectionError` (lines 763-791).
+- The bridge awaits it inside `asyncio.wait_for(..., voice_live_connect_timeout)` (`server/app/providers/twilio/media_handler.py`, `connect_voicelive()`, around line 59). That timeout is `VOICE_LIVE_CONNECT_TIMEOUT_SECONDS`, default 8.0 s (`server/app/bridge_config.py` line 205, capped at `MAX_CONNECT_TIMEOUT_CEILING` = 60).
+- So a handshake-time rejection, or a connect that runs past that timeout, ends the call as `voicelive_connect_failed`. That is the expected path, and the one the step 3 plan's own unit-test fixture models (`RuntimeError("bad agent version")` → `voicelive_connect_failed`). That fixture is an ACS-handler test, but the Twilio handler uses the same end reason for the same path.
+- **Nothing on this checkout proves that Voice Live rejects a nonexistent agent version at the handshake.** That is service behavior, not yet observed live. If the service instead accepts the socket and then errors, the bridge's other two deliberate detection paths end the call: `voicelive_dropped` (the service closes the connection, via `on_voicelive_ended()`) or `response_failed` (the opening response fails or stalls, via D-038/D-050's bounded retry and then `on_response_unrecoverable()`).
+- All three mean the bridge noticed the failure and ended the call. `idle` or `call_cap` would mean it didn't, and that the call ended by coincidence, so they fail the test.
+- The reason that actually fires is recorded in the M7 audit row as the first live evidence of how Voice Live rejects a bad agent version.
+
+**Why this is a partner decision:** it corrects stale test definitions against how the bridge is actually built (the Twilio pilot plan's B2 and UT01b, under D-041's Twilio choice). It adds no behavior and reopens no decision, so it falls under the partner's planning authority (D-030), the same class of correction as D-045. The founder gave the go-ahead to make the change.
+
+**Effect:**
+- M7's test definitions are no longer blocked on this gap.
+- M7 still can't start until M6 closes. U15b's smoke test is still open, and its remaining items (including the caller-number masking check and the Twilio Debugger check) need to be verified, not assumed done.
+- Test 7 needs a nonexistent **pinned digit-string** version (for example `"9999"`) set temporarily in `AGENT_ROUTING_JSON`. The deployed route runs D-049's unpinned `"latest"` mode, and a non-digit value is rejected at startup by `AgentRoute`'s validation (`server/app/routing.py`), which would test startup validation, not the call failure path.
+
+**Source:** partner proposal, founder go-ahead, 2026-09-29 ("yes, make that change, so M7 is unblocked"), after the partner identified the exact test text and explained the mismatch.
+
+**Revision note (2026-09-29, before merge, PR #49):** an Opus review of this PR confirmed the conclusion (tests 7 and 8 should not expect speech on the Twilio path) but found the first version of this entry's reasoning factually wrong in three places:
+- it credited the silent close to D-038/D-048 instead of the Twilio pilot plan's B2 and UT01b;
+- it called D-038/D-048 founder-approved, though both are partner decisions under D-030;
+- it claimed Twilio has no way to speak before hanging up.
+
+It also found the rewritten tests under-specified (no time bound, no exact end reasons). This text replaces that version in full. Because D-058 had never reached `main`, it was rewritten in place rather than superseded by a new entry.
