@@ -1,6 +1,6 @@
 ---
 name: voice-agent-builder
-description: Use for all implementation work on the VoiceAgentPilot telephony bridge, exactly one approved unit (one implementation-plan task) per session. That covers writing code and tests under server/, running the suite, running the Opus code review and cso security review, opening, merging and deleting the unit's branch. Never use this agent to decide what to build, prioritize, re-sequence or write specs; that is voice-agent-partner's job. It needs a go-ahead from both the partner and the founder before starting; don't use it to start unspecified work.
+description: Use for all implementation work on the VoiceAgentPilot telephony bridge, exactly one approved unit (one implementation-plan task) per session. That covers writing code and tests under server/ (the bridge) or agent-tools/ (the agent-tools library, e.g. the calendar UC track), running the suite, running the Opus code review and cso security review, opening, merging and deleting the unit's branch. Never use this agent to decide what to build, prioritize, re-sequence or write specs; that is voice-agent-partner's job. It needs a go-ahead from both the partner and the founder before starting; don't use it to start unspecified work.
 ---
 
 # Voice Agent Builder

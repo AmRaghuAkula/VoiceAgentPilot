@@ -509,3 +509,136 @@ D-043 (Q-045, answered 2026-09-28) set U15b's real-number cutover to happen afte
 **Source:** three independently-confirmed live-call reproductions (2026-09-29, this session), founder's direct caller-side confirmation of the symptom on all three, and the partner's own trace of the raw DEBUG event stream for two of the three calls, cross-referencing exact response IDs and their absence from any later log line. Tracked as **Q-070**. Partner decision under D-030's delegation, the same authority D-038/D-048 already used.
 
 **Amendment (2026-09-29, same day, before merge):** this decision's text above says the timeout path reuses D-038/D-048's existing markers verbatim. That changed during implementation. The founder was shown that reusing `FAILED_RESPONSE_MARKER` ("[caller audio was not understood]") for a stuck-response retry is factually wrong — the caller's audio *was* understood; the agent's own response stalled — and risks the agent apologizing to the caller for a misunderstanding that didn't happen. The founder chose to add a distinct, accurate marker for this case rather than ship the inaccurate reuse. The builder implemented it as a user-role item (matching D-038's existing marker item, not a system-role item) with the text `"[the previous response was interrupted]"` (the builder adjusted the founder's suggested first-person "my" wording, since a user-role item reads as the caller's own words — "my previous response" would misattribute the interruption to the caller). The D-038 FAILED-path retry is completely unchanged: it still uses `FAILED_RESPONSE_MARKER`. Two wording alternatives raised by the final code-review round (sending it as a system-role item like `CALL_CONNECTED_MARKER`, or using "did not complete" instead of "was interrupted" to avoid any reading of the caller interrupting) were not applied — left as a future wording refinement, not blocking.
+
+### D-051 · 2026-09-29 · Founder accepts the calendar-booking design spec (rev 3.1)
+
+The founder reviewed and accepted `docs/superpowers/specs/2026-09-29-calendar-booking-design.md` at rev 3.1 ("spec approved") — the agent-agnostic, provider-agnostic calendar tool design built per the founder's own two-round instruction (decouple from the bridge and from any one calendar provider; build a reusable component across an agent library, not tied to one agent). The spec went through a real adversarial review cycle before this acceptance: round 1 (rev 1) NOT READY; round 2 (rev 2), two independent Opus reviewers, both NOT READY, finding a genuine race-condition flaw in the original booking-conflict resolution rule; round 3 (rev 3, the atomic-claim-store redesign) READY WITH FIXES with no blocking findings, all applied in rev 3.1. Full review history is in the spec's own §17.
+
+**What this authorizes:** UC00 — writing the real implementation plan and milestone doc from the accepted spec, plus the governance changes UC00 itself identifies (extending CLAUDE.md's banned-word/test-suite rules to the new `agent-tools/calendar/` directory, scoping the "don't touch infra/don't run azd" rule to the bridge only). UC00 gets its own Opus design review before any code is written, per this project's standing discipline (D-013).
+
+**What this does not yet authorize:** any actual code, any Azure resource creation, or any change to the production Foundry agent. Six open questions (Q-064 through Q-069, reserved in STATUS.md §3) still need founder answers at the points the plan calls for them — reusing vs. creating a Google Cloud project, OAuth client type, which Google account/calendar, Azure subscription/spend, when the production agent may safely be changed (given D-049's unpinned-version risk), and the demo's specific booking parameters.
+
+**Source:** founder, direct message, 2026-09-29 ("spec approved").
+
+### D-052 · 2026-09-29 · PROPOSED (pending the founder's explicit confirmation, Q-072): narrow lifts of TELEPHONY_BRIDGE_SPEC.md §7 for the calendar tool service only
+
+**Status: PROPOSED.** This entry takes effect when the founder confirms it (Q-072). Until then, no UC unit that wires a tool or stores caller data may start; UC01 is the first such unit and is gated on Q-072.
+
+TELEPHONY_BRIDGE_SPEC.md §7 ("Do not build") lists two items the calendar track must do. They are lifted **for the calendar tool service's scope only** (spec §15.3); every other §7 item stands, and nothing here applies to the bridge (`server/`).
+
+1. **"Calendar or booking tools, or any OpenAPI tool wiring (separate spec)."** The accepted calendar spec (D-051) is that separate spec. OpenAPI (or MCP, per UC01) tool wiring is allowed for `agent-tools/` tools attached to Foundry agents. The bridge still wires no tools.
+2. **"Storing transcripts or caller data anywhere outside Foundry traces and logs."** A booking stores the caller-supplied contact data in the host's own calendar account at the calendar provider:
+   - **The data set:** the contact's name, phone number (E.164, unmasked, because the host needs it to call back), email if the binding requires it, the appointment type, and free-text notes **only** if a binding sets `accept_notes: true` (off by default, off in the demo binding).
+   - **Where:** only in the host's own calendar event (title and description), plus HMAC-derived tags with no raw PII in the event's private metadata and in the claim store (spec §7.4).
+   - **Who is responsible afterwards:** the calendar owner (the host), for retention and deletion under their own obligations (PIPEDA note).
+   - **Not stored:** no transcripts, no audio, no caller ID beyond what the caller says; nothing is logged beyond spec §10's redacted line.
+
+**Why:** the founder's handoff requires exactly this ("a real test booking appears … with correct … caller details"), and the spec that states these lifts verbatim (§15.3) was accepted by the founder as a whole.
+
+**Source:** proposed by the partner in UC00, carrying out spec rev 3.1 §15.3, which the founder accepted as a whole (D-051). §15.3 calls for "a founder-sourced decision at UC00", and the founder's acceptance message did not restate these lifts, so this entry is **not** treated as founder-sourced until the founder answers Q-072. When confirmed, the confirmation is recorded in Q-072's row and this entry's status changes by a new superseding entry, per this log's append-only rule.
+
+### D-053 · 2026-09-29 · The calendar tool service lives in `agent-tools/calendar/` in this repo; governance scope extended to it; branchless verification units sanctioned
+
+**Decision (spec §15.2, recommended there "to be recorded at UC00"):** the calendar tool service is a new, self-contained top-level directory in this repo, `agent-tools/calendar/`, and not a separate repo or a package inside `server/`. It has its own `pyproject.toml`, lockfile, tests, `infra/` and `azure.yaml`, never imports from `server/`, and `server/` never imports from it. It can be extracted later with `git subtree split` once a consumer outside this repo exists (D-010's "extract a shared template then" precedent). Future agent tools become siblings under `agent-tools/`.
+
+**Governance changes made in UC00 (CLAUDE.md):**
+- §1 and §11: `agent-tools/` is described and added to the file map.
+- §3: STATUS.md §1b holds the UC track's units; both tracks share the one-branch rule. **Branchless verification/ops units** are sanctioned: UC01, UC08a, UC10, UC11 and UC12, like UT02 before them.
+  - They cut no code branch. Their `docs/status-YYYY-MM-DD` branch is cut **first**, and carries the throwaway-resource list before anything is created. **This extends D-018:** a status-only branch may be used while such a unit is in flight, not only when no unit is.
+  - Throwaway code lives only in the session scratchpad. Throwaway Azure resources need the founder's go (Q-067) and are deleted and verified deleted in the same session.
+  - Evidence is redacted: personal data and identifier values stay out of this public repo.
+  - A status PR that adds a D-NNN or revises a plan or spec gets the Opus docs review (D-013); a plain status PR still needs none.
+  - A needed code fix becomes its own branch unit.
+- §4: the leftover-branch table gains a row for an interrupted branchless unit's status branch: resume it, verifying or finishing the teardown first.
+- §4: a bootstrap line for `agent-tools/calendar/`.
+- §5 step 5 and §9: "the whole suite" means both the bridge and calendar suites, on every code unit.
+- §5 step 6: the review scope for `agent-tools/` is `main...HEAD`.
+- §7 and §9: the ban on real-estate words, agent names, person names and real phone numbers covers everything under `agent-tools/`, tests included. The single exemption is the G2 denylist, which holds sensitive names only as hashes.
+- §10: the "don't touch infra/azd" rule is scoped to the **bridge's** root `infra/`, `hooks/` and `azure.yaml`. Its old condition, "until M6 is unblocked", is reworded to "outside an approved M6-style unit that says to", because M6 is now under way with its own standing rules (D-042). The calendar's own azd project follows D-042's rules by analogy, with a `cal-<env>` naming rule and an `AGENT_TOOL=calendar` guard. No calendar unit runs azd against the bridge.
+- The builder and partner agent definitions (`.claude/agents/`) name `agent-tools/` alongside `server/`.
+
+**Why:** reusing this repo's proven governance (partner/builder, one unit per PR, Opus review and `cso`, STATUS.md/DECISIONS.md, the daily email) as-is beats duplicating it in a second repo for a single consumer. The directory doesn't exist upstream, so `git merge upstream/main` stays clean (D-002). The cost, UC units serializing with bridge units under the one-branch rule, is accepted because the date gate is withdrawn (spec §0). The branchless-unit rule resolves a real tension with D-011/D-012 for work that produces evidence rather than code. It keeps throwaway code out of the repo and out of any branch, instead of inventing a branch nobody merges.
+
+**Source:** partner decision under D-030 (an architecture tradeoff plus standing-rule tensions with D-011/D-012), carrying out spec §15.2 as accepted by the founder (D-051).
+
+### D-054 · 2026-09-29 · Binding resolution: the binding ID is in the tool's URL path, callers authenticate with Entra, authorization is a per-binding principal allowlist (spec §4.2, option E)
+
+**Recorded, not re-decided.** The accepted spec (D-051) settled this. The entry exists so the decision is findable on its own.
+- The binding ID sits in the path of each agent's copy of the OpenAPI document (`servers.url`), which the model never sees or edits.
+- Caller authentication is an Entra token from Foundry's managed-identity tool auth, validated **in code**: signature, `iss`, `aud`, `tid`, `exp`/`nbf`, and the app role.
+- Authorization is the binding's `allowed_principals` allowlist on a configurable claim (`oid` by default). A second layer is an Entra app role with assignment required.
+- Unknown and forbidden bindings both return an identical 403.
+- One deployment serves every binding.
+
+**Rejected** (reasons in spec §4.2):
+- (A) The model choosing the binding: a prompt-injection path to another calendar.
+- (B) One deployment per calendar: infrastructure per agent.
+- (C) The binding derived from the token alone: which principal the token carries is unverified.
+- (D) Per-binding API keys: kept as a fallback only.
+
+**Open until UC01:** which claim identifies the caller, its granularity (resource, project or agent), and whether publishing changes it. UC01 records these in a new D-NNN, and `CALENDAR_AUTH_PRINCIPAL_CLAIM` is set from it.
+
+**Source:** spec rev 3.1 §4.2, accepted by the founder (D-051). The option analysis is a partner decision under D-030.
+
+### D-055 · 2026-09-29 · Booking exclusivity comes from the service's own atomic claim store, not from calendar-side ordering (spec §6.1, §7.4)
+
+**Recorded, not re-decided** (accepted with the spec, D-051).
+- **How it works:** a booking claims every fixed 5-minute UTC cell its range covers, including its own stamped one-sided buffer, per physical calendar (`calendar_key` from the adapter's canonical calendar identity). Claims use create-if-absent writes in Azure Blob Storage (`If-None-Match: *`), with compare-and-swap for every later write.
+- **Stale claims** are judged on storage-server time only, and recovered per cell by `attempt_id`.
+- **Replay resolution** runs before any time- or config-dependent check.
+- **Why:** calendar vendors offer no portable atomic "create only if free". Rev 2's calendar-ordering rule `R` was broken by two independent Opus reviews (chain truncation, visibility, cross-binding races, retry during create). With the claim store, "a new vendor = a new adapter only" holds without conditions.
+- **Residual risks** (the sub-second manual-edit window, the 120 s visibility assumption verified live in UC08b, an instance dying between create and finalize) are stated in spec §7.4, not hidden.
+
+**Source:** spec rev 3.1 §6.1/§7.4 (review rounds 2 and 3), accepted by the founder (D-051). It was a partner design decision under D-030.
+
+### D-056 · 2026-09-29 · Calendar plan structure: unit cut, milestones C0–C5, and plan-time reconciliations P1–P18
+
+**Unit cut.** The spec's proposed UC00–UC12 (§14) keep their numbers. Three are split for reviewability, as the spec itself anticipated for UC04 and UC08:
+- UC02 → UC02a (package, bindings, contract document, provider port, fake provider, conformance harness, guards G1–G3) + UC02b (HTTP dispatcher + in-code JWT auth, a focused security surface for `cso`).
+- UC04 → UC04a (identity HMACs, contact normalization, the claim-store interface, fake and conformance) + UC04b (the booking algorithm with a **strictly conservative interim**: foreign held cells always block, and an uncertain create returns `booking_unconfirmed`, so it can refuse a free slot but never double-book) + UC04c (recovery, verification, the full uncertain-create path). Nothing deploys before UC09, so the interim is never live.
+- UC08 → UC08a (Google project, consent screen, client and test-calendar consent; branchless ops) + UC08b (adapter code + live checks; a code unit, so a scope fallback lands in the same PR).
+
+The sequence is strictly serial: UC01 → UC02a → UC02b → UC03 → UC04a → UC04b → UC04c → UC05 → UC06 → UC07 → UC08a → UC08b → UC09 → UC10 → UC11 → UC12. Milestones follow spec §15.4: C0 (UC01), C1 (UC02a–UC04c), C2 (UC05–UC06), C3 (UC07–UC08b), C4 (UC09–UC10), C5 (UC11–UC12).
+
+**Plan-time reconciliations** (full table in the plan's §2). None changes a spec decision:
+- **P1:** a flat package `calendar_tools/`. `calendar` would shadow the stdlib module, and Functions imports from the app root.
+- **P2:** the provider port types live in `core/ports.py`, re-exported by `providers/base.py`. The spec's §6.2 location contradicted its own G1 rule.
+- **P3:** an additive `SecretStoreUnavailable` core exception, so `secret_store_unreachable` is distinguishable.
+- **P4:** a framework-free HTTP dispatcher plus a one-route anonymous Function adapter. Function keys would travel in query strings (the D-006 principle), and auth is in code anyway.
+- **P5:** Key Vault is read over REST with `httpx`, like the Blob store.
+- **P6:** G2 matches phone numbers by regex, and the denylist stores sensitive names as SHA-256 hashes, because this repo is public.
+- **P7:** UC01 uses a scratchpad harness around the bridge's own `VoiceLiveMediaHandler` with an agent route, not the web debug client. Verified on `main`: `server.py`'s `web_ws()` builds the handler with no route, so it cannot run agent mode. This corrects spec §14's UC01 wording without touching `server/`.
+- **P8:** the unit splits above.
+- **P9:** an injected clock and nonce source.
+- **P10:** bindings pass through azd as base64 (`CALENDAR_BINDINGS_JSON_B64`), mirroring the bridge.
+- **P11:** calendar azd environments are named `cal-<env>` and guarded by `AGENT_TOOL=calendar`.
+- **P12:** the "new principal" 403 alert is simplified to "any 403 in 15 minutes".
+- **P13:** slot-token verification checks the binding hash **before** the MAC. Under spec §7.2's order, `wrong_binding` could never be returned, because the MAC covers the path's binding.
+- **P14:** step 3's replay window reaches at least the token's end, so lowering `max_days_ahead` can't hide a booking from its own retry. This keeps the spec's "replay never depends on config" rule.
+- **P15:** fictional fixture numbers are `+1 NPA 555 01xx`. The spec's §5.3 example is malformed. Phone parsing uses `is_possible_number`.
+- **P16:** the slot grid steps in elapsed time from the window's UTC start, and drops `fold=1` candidates in the repeated fall-back hour, so no two slots share one spoken time. DST boundaries are resolved as the plan's UC03 states, with exact expected outputs.
+- **P17:** binding validation also rejects a binding whose largest duration plus buffer could never fit the 8 s booking budget. Without this, the config would load and then fail every booking at runtime. At the initial constants, with a 3 s reserve, the cap is 50 minutes of duration plus buffer.
+- **P18** (added in plan rev 1.4, during the UC00 PR's own code review): service keys are loaded **per request**, never at startup. `KeySet` is a frozen snapshot of the three key byte strings, used by the pure token and HMAC functions. `KeyRing` is an async Protocol, `load(deadline) -> KeySet`, called exactly once per request by `check_availability` and `book()`. `KeyVaultKeyRing` (UC07) implements it over the 5-minute-cached Key Vault source; `FakeKeyRing` (UC03) implements it for tests. This is what spec F4 needs (a Key Vault outage returns `calendar_unavailable` / `secret_store_unreachable` per request, not a dead host) and what §8.3 step 10 needs (a rotated key is picked up within the TTL without a restart). It replaces the plan's earlier fixed value object, which could satisfy neither.
+
+**Source:** partner decision (planning and sequencing are the partner's job; the tradeoffs fall under D-030), made in UC00.
+
+**Review:** an independent Opus design review of plan rev 1 returned NOT READY: 5 blocking findings, 19 should-fix and 17 nits, all fixable in text. Everything is applied in rev 1.1 except one nit about D-051's citation. The blocking fixes:
+- the Q-071 numbering clash;
+- P13;
+- the claim store's missing calendar dimension (`CellKey`);
+- UC01's app-role ordering;
+- D-052 marked PROPOSED.
+
+A focused re-check of rev 1.1 returned READY WITH FIXES, with no blocking findings; its four follow-ups (R1–R4) and four nits are applied in rev 1.2. The UC00 PR's own Opus code review then ran two rounds, both NEEDS-FIXES. Round 1's fixes produced rev 1.3. Round 2 found that rev 1.3's `KeyRing` fix contradicted UC03's definition, which led to P18 as written above, plus UC01/UC02a corrections, all in rev 1.4. Full disposition is in the plan's §8.
+
+### D-057 · 2026-09-29 · Founder confirms D-052: the two narrow §7 lifts for the calendar tool service take effect
+
+**D-052 moves from PROPOSED to confirmed.** The founder asked for a plain-terms explanation of what each lift means in practice — not just the spec-section framing — before deciding. The explanation given: (1) the tool-wiring lift means the agent can actually check and book real calendar slots, instead of only promising a callback; nothing changes about what the caller experiences beyond that. (2) the data-storage lift means the caller's name and phone number end up written into a real calendar event, the same as if the founder had typed them in by hand after a call — no separate database, no marketing list — and the founder (as calendar owner) becomes responsible for that data the same way as any other calendar entry.
+
+**Founder confirmed both**, on the reasoning that there is no way to get the calendar feature originally requested without this — the two lifts are exactly what "the agent can check and book a real appointment" requires. Both narrow scopes recorded in D-052 stand exactly as written there (see D-052 for the precise data set, storage location and responsibility split); this entry records only the confirmation, not a change to the lift's content.
+
+**Effect:** UC01 (the first unit that would wire an OpenAPI/MCP tool and is gated on this) is unblocked on this specific question. UC01's other gate, Q-067 (throwaway-resource approval), is unaffected and still needs its own founder answer before UC01 can be dispatched.
+
+**Source:** founder, direct confirmation, 2026-09-29, after the partner explained both lifts in plain terms per the founder's request. Tracked as **Q-072**, now answered.
+
+**Numbering note (UC00):** D-050 is the U-RESPWATCHDOG decision (Q-070), merged first. Both entries now sit in number order, D-050 before D-051. The same parallel work had already used Q-071 (a whole-repo security-audit backlog item), so UC00's new questions are **Q-072** and **Q-073**.
