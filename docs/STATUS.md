@@ -67,7 +67,7 @@ The agent-agnostic calendar tool service in `agent-tools/calendar/` (D-051, D-05
 
 | Unit | Plan task | Milestone | Status | Branch | PR | Tests (pass/planned) | Opus review | cso |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| UC01 | Feasibility and token-claims check (OpenAPI + MCP in a Voice Live agent-mode session; principal claim before/after publish). **Needs Q-072** (D-052 confirmed) **and Q-067** (throwaway resources) | C0 | QUEUED | none (branchless) | — | n/a (evidence) | — | — |
+| UC01 | Feasibility and token-claims check (OpenAPI + MCP in a Voice Live agent-mode session; principal claim before/after publish). **Both gates now satisfied:** Q-072 answered (D-052/D-057 confirmed) and Q-067's UC01 slice answered (throwaway-resource creation approved, founder confirmed holding the Entra role). | C0 | **NEXT** — ready to dispatch on the founder's go | none (branchless) | — | n/a (evidence) | — | — |
 | UC02a | Package skeleton, bindings, contract document, provider port, fake provider, conformance harness, G1–G3 | C1 | QUEUED | `feat/cal-uc02a-skeleton` | — | 0/~70 | — | — |
 | UC02b | HTTP dispatcher and in-code Entra authentication | C1 | QUEUED | `feat/cal-uc02b-http-auth` | — | 0/~45 | — | — |
 | UC03 | Slot engine, slot tokens, `check_availability` | C1 | QUEUED | `feat/cal-uc03-check-availability` | — | 0/~75 | — | — |
