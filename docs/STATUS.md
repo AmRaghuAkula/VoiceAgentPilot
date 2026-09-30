@@ -95,7 +95,10 @@ The agent-agnostic calendar tool service in `agent-tools/calendar/` (D-051, D-05
 | 5 | Entra app registration (echo audience, app role `Calendar.Invoke`, `appRoleAssignmentRequired=false` at first) + its service principal | `cal-uc01-echo-20260930` | tenant (**not** removed by deleting RG 1) | `az ad app delete --id <appId>`; verify `az ad app show` → not found |
 | 6 | Entra app registration + service principal for the refusal test (one short-lived client secret, value kept in the session scratchpad only; no role assignment) | `cal-uc01-unassigned-20260930` | tenant (**not** removed by deleting RG 1) | `az ad app delete --id <appId>`; verify `az ad app show` → not found; delete the scratchpad secret |
 | 6a | Subscription resource-provider registrations `Microsoft.Storage` and `Microsoft.Web` (found `NotRegistered`; required to create items 2 and 4; no cost) | subscription | `az provider unregister` for both after RG 1 is gone, returning the subscription to how it was found; verify `NotRegistered`/`Unregistered` |
-| 7 | Foundry test agent + its OpenAPI and MCP tools (founder/Cowork, portal) | name is config, not committed | existing Foundry project | founder deletes the test agent (or detaches both tools) after Step 5 |
+| 7 | Foundry test agent (founder/Cowork, portal) | `uc01-test-agent` | existing Foundry project | founder deletes it after Step 5 |
+| 7a | Project toolbox holding both tools | `uc01-toolbox` | existing Foundry project | founder deletes it |
+| 7b | Project tool objects: MCP tool and OpenAPI tool | `echo`, `uc01_echo_openapi_tb` | existing Foundry project | founder deletes both |
+| 7c | Project connection created by the portal's direct OpenAPI path (dummy key only, no real secret) | `uc01_echo_openapi` | existing Foundry project | founder deletes it |
 
 **Calendar milestone roll-up:**
 
