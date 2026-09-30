@@ -631,4 +631,14 @@ The sequence is strictly serial: UC01 → UC02a → UC02b → UC03 → UC04a →
 
 A focused re-check of rev 1.1 returned READY WITH FIXES, with no blocking findings; its four follow-ups (R1–R4) and four nits are applied in rev 1.2. The UC00 PR's own Opus code review then ran two rounds, both NEEDS-FIXES. Round 1's fixes produced rev 1.3. Round 2 found that rev 1.3's `KeyRing` fix contradicted UC03's definition, which led to P18 as written above, plus UC01/UC02a corrections, all in rev 1.4. Full disposition is in the plan's §8.
 
+### D-057 · 2026-09-29 · Founder confirms D-052: the two narrow §7 lifts for the calendar tool service take effect
+
+**D-052 moves from PROPOSED to confirmed.** The founder asked for a plain-terms explanation of what each lift means in practice — not just the spec-section framing — before deciding. The explanation given: (1) the tool-wiring lift means the agent can actually check and book real calendar slots, instead of only promising a callback; nothing changes about what the caller experiences beyond that. (2) the data-storage lift means the caller's name and phone number end up written into a real calendar event, the same as if the founder had typed them in by hand after a call — no separate database, no marketing list — and the founder (as calendar owner) becomes responsible for that data the same way as any other calendar entry.
+
+**Founder confirmed both**, on the reasoning that there is no way to get the calendar feature originally requested without this — the two lifts are exactly what "the agent can check and book a real appointment" requires. Both narrow scopes recorded in D-052 stand exactly as written there (see D-052 for the precise data set, storage location and responsibility split); this entry records only the confirmation, not a change to the lift's content.
+
+**Effect:** UC01 (the first unit that would wire an OpenAPI/MCP tool and is gated on this) is unblocked on this specific question. UC01's other gate, Q-067 (throwaway-resource approval), is unaffected and still needs its own founder answer before UC01 can be dispatched.
+
+**Source:** founder, direct confirmation, 2026-09-29, after the partner explained both lifts in plain terms per the founder's request. Tracked as **Q-072**, now answered.
+
 **Numbering note (UC00):** D-050 is the U-RESPWATCHDOG decision (Q-070), merged first. Both entries now sit in number order, D-050 before D-051. The same parallel work had already used Q-071 (a whole-repo security-audit backlog item), so UC00's new questions are **Q-072** and **Q-073**.
