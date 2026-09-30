@@ -698,13 +698,13 @@ This keeps the tests' underlying intent: a bad config or a timeout must not leav
 
 It also found the rewritten tests under-specified (no time bound, no exact end reasons). This text replaces that version in full. Because D-058 had never reached `main`, it was rewritten in place rather than superseded by a new entry.
 
-### D-059 · 2026-09-30 · **DRAFT** · UC01 feasibility result: both tool transports run server-side in Voice Live agent mode; principal claim, publish, timeout and refusal findings (calendar plan UC01 Step 7, fields a–e)
+### D-059 · 2026-09-30 · UC01 feasibility result: GO; OpenAPI attached directly is the calendar tool's primary transport; principal claim, publish, timeout and refusal findings (calendar plan UC01 Step 7, fields a–e)
 
-> **DRAFT.** Written by the builder from UC01's evidence (STATUS.md §2, "UC01 evidence (DRAFT)", rows E1–E15). Field (a) is **not decided** here: the partner decides it. This entry is finalized before the status PR merges, and it gets the Opus docs review (D-013, D-053).
+Evidence: STATUS.md §2, "UC01 evidence", rows E1–E15 (claim **names** only; values stay outside the repo). Field (a) is the partner's decision under D-030; the other fields record what UC01 observed.
 
 **Go/no-go:** **GO.** Both OpenAPI and MCP tools attached to a `prompt`-kind Foundry agent execute server-side inside a Voice Live agent-mode session opened through the bridge's own `VoiceLiveMediaHandler` (E2, E3). Spec §3.1's no-go branch does not apply.
 
-**(a) Primary transport: OPEN, partner decision.** The evidence for each option:
+**(a) Primary transport: OpenAPI attached directly to the agent (partner decision under D-030, 2026-09-30). MCP stays a swappable fallback.** The evidence the decision was made on:
 
 | | OpenAPI attached directly (plan as written) | MCP (attached directly; `/mcp` facade per the plan's "Go (MCP only)" branch) |
 | --- | --- | --- |
@@ -716,9 +716,15 @@ It also found the rewritten tests under-specified (no time bound, no exact end r
 | Plan impact | None | Plan's "Go (MCP only)" revision: an MCP facade over the same core, G3 extended to MCP. A per-agent operator step to set auto-approve |
 | Note | OpenAPI *inside a toolbox* presents the project identity (E5, E6), but toolboxes are offered only on voice-kind agents, which don't work through Voice Live (E1) | — |
 
-Both options share one consequence for the contract (spec §5): **business outcomes must not travel as HTTP 4xx/5xx** if the model is to speak them. On OpenAPI a non-2xx fails the turn (E10). The partner should confirm spec §5's status-code use against this before UC02b.
+Why OpenAPI-direct:
+- It works through today's bridge (E2) and needs no auto-approve setting on each agent. MCP does (E4).
+- Identity does not separate the two. Neither gives a per-agent identity: OpenAPI presents the resource's identity and MCP (or a toolbox) the project's (E6). Either way the in-code `oid` allowlist is the control that takes effect immediately (E13).
+- OpenAPI's 15 s allowance under the bridge watchdog (E12) is enough for a calendar call, provided the service keeps to its own 8 s deadline (d).
+- MCP stays open as a later front end: the service core must keep no transport dependency, so an MCP facade can be added over the same core without a rewrite (spec §3 property 3). Adding one would be its own unit.
 
-**(b) Principal claim for `CALENDAR_AUTH_PRINCIPAL_CLAIM`: `oid`** (the plan's default). `oid` and `appid` are present on every Foundry token; `azp` and `idtyp` are **absent** (v1 tokens, E7), so `azp` must not be configured. The allowlist entry is the `oid` of whichever managed identity (a) implies.
+**Binding rule for the calendar contract (spec §5 and the plan, before UC02b):** on OpenAPI a non-2xx response fails the whole turn and the model never sees the body (E10). So **business outcomes** (for example: slot taken, not found, invalid input) are returned as **HTTP 200** with a structured body carrying an `ok` flag and a `code`, **never** as 4xx/5xx. A missing or invalid token stays **401**. Spec §4.2's **403** for an unknown or disallowed binding is an operator-configuration error, not a caller outcome, so it is **not** changed by this rule. That reading is the builder's, to keep this entry consistent with spec §4.2; the partner confirms it when revising §5. The partner revises spec §5 and the plan to match before UC02b starts.
+
+**(b) Principal claim for `CALENDAR_AUTH_PRINCIPAL_CLAIM`: `oid`** (the plan's default). `oid` and `appid` are present on every Foundry token; `azp` and `idtyp` are **absent** (v1 tokens, E7), so `azp` must not be configured. With (a) = OpenAPI-direct, the allowlist entry is the `oid` of the Foundry **resource**'s system-assigned managed identity, which is **resource-wide** (every project and agent on that resource; spec §4.2's isolation note applies).
 
 **(c) Does publishing change the principal?** Not exercised (partner decision, 2026-09-30).
 - In this portal, "publish" means a channel publish (Teams & Microsoft 365 Copilot). `agent_endpoint.publish_approval_status` stays `not_published` otherwise.
@@ -728,7 +734,7 @@ Both options share one consequence for the contract (spec §5): **business outco
 
 **(d) Foundry tool timeout and budget.** Foundry's own tool timeout is **over 20 s** (not reached, E11). That is ≥ 12 s, so the plan's rule keeps the **8 s** request deadline.
 - The tighter limit in practice is the bridge's D-050 watchdog (E12). For OpenAPI tools, the model's time plus the tool's time must stay under 15 s per response. The 8 s budget plus the observed 1–4 s of model time fits.
-- If (a) is OpenAPI, the partner should decide whether this needs a bridge change (for example, treating OpenAPI tool calls like MCP calls in the watchdog). That would be a separate bridge unit, not part of this track.
+- With (a) = OpenAPI, the 8 s deadline is therefore a hard ceiling the service must keep, not just a target. No bridge change is made by this entry. Raising the watchdog for OpenAPI tool calls would be a separate bridge unit if it is ever needed.
 
 **(e) Refusal test.**
 - Identity type: a throwaway **service principal** using the **client-credentials** flow (scope `api://<echo app>/.default`).
@@ -736,12 +742,12 @@ Both options share one consequence for the contract (spec §5): **business outco
 - After: refused with **`AADSTS501051`** (`invalid_grant`, HTTP 400). Same principal, secret and scope, so the refusal is the assignment rule (E14).
 - **Caveat for UC09/UC05 (E13):** Foundry caches managed-identity tokens for up to 24 h. After an assignment is added, or removed, the `roles` claim and Entra's refusal only take effect when Foundry next fetches a token. In-session, the assigned principals' tool calls kept succeeding on pre-assignment tokens, and `roles: ["Calendar.Invoke"]` could not be observed. The in-code allowlist (spec §9.1) is therefore the control that takes effect immediately. The Entra assignment is a second layer with up to a 24 h lag.
 
-**Teardown and residuals (E15).** All throwaway Azure and Entra objects are verified deleted, including both test agents' Foundry-created agent identities. Known residuals: the project connections `uc01_echo_openapi` (dummy key) and `echo` (MCP), and possibly the toolbox `uc01-toolbox` (founder confirming). They could not be deleted because of the production RG's `CanNotDelete` lock, which stays. They are inert: no agent uses them, there is no real secret, and they point at a deleted host. They are listed for a later cleanup with the founder's go.
+**Teardown and residuals (E15).** All throwaway Azure and Entra objects are verified deleted, including both test agents' Foundry-created agent identities. `Microsoft.Storage` is unregistered; `Microsoft.Web` was still `Unregistering` at the last check (an asynchronous Azure operation that needs no action). Known residuals: the project connections `uc01_echo_openapi` (dummy key) and `echo` (MCP), and possibly the toolbox `uc01-toolbox` (founder confirming). They could not be deleted because of the production RG's `CanNotDelete` lock, which stays. They are inert: no agent uses them, there is no real secret, and they point at a deleted host. They are listed for a later cleanup with the founder's go.
 
 **`roles` claim: deferred to UC09 (founder decision, 2026-09-30).** It was not observed because of the 24 h token cache (E13). UC09's probes must observe `roles: ["Calendar.Invoke"]` on a Foundry-issued token once the assignment is older than the cached token.
 
-**Other findings for the plan or spec (partner to route):**
-- Test and production agents for this track must be `prompt`-kind: a voice-kind agent produces empty responses through Voice Live agent mode (E1).
-- MCP tools need `require_approval: never` for the bridge path (E4).
+**Rules for later units:**
+- **Every test agent (UC10 and any later check) and the production agent MUST be `prompt`-kind.** A voice-kind agent (portal interaction mode "Voice", realtime model) produces empty responses through Voice Live agent mode (E1). The partner adds this to the calendar plan's UC10 and UC11 steps.
+- If MCP is ever used, its tool needs `require_approval: never` (portal: "Always auto-approve all tools") for the bridge path (E4).
 
-**Source:** UC01 verification, 2026-09-30, builder on Opus. The founder did the Foundry portal steps; the partner decided not to exercise the channel publish.
+**Source:** UC01 verification, 2026-09-30, builder on Opus. The founder did the Foundry portal steps. The partner decided not to exercise the channel publish, and chose the transport in (a) under D-030. The founder chose to tear down before the `roles` claim could be observed.
