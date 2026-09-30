@@ -52,6 +52,12 @@ FAILED_RESPONSE_MARKER = "[caller audio was not understood]"
 # connect-time greeting the bridge adds this neutral, factual system item. It states what happened,
 # not what to say: the agent's own instructions still author the greeting (D-004).
 CALL_CONNECTED_MARKER = "[call connected]"
+# Q-070 / D-050: unlike FAILED_RESPONSE_MARKER, the caller's turn was understood fine here; the
+# agent's own response silently stalled. A distinct, accurate marker so the agent's retry doesn't
+# frame this as a caller-side misunderstanding (e.g. "I didn't catch that"). Worded without "my"
+# because it is sent as a user-role item (like D-038's marker), where "my" would read as the caller's.
+# It states what happened, not what to say (D-004).
+RESPONSE_STALLED_MARKER = "[the previous response was interrupted]"
 # Consecutive failed responses tolerated before the call is ended (one retry, then end).
 MAX_CONSECUTIVE_FAILED_RESPONSES = 2
 # Q-070 / D-050: agent mode can emit response.created and then never a response.done (of any status)
@@ -409,17 +415,22 @@ class VoiceLiveMediaHandler:
         )
         await self._retry_or_end_call(attempt)
 
-    async def _add_recovery_marker(self) -> str:
+    async def _add_recovery_marker(self, *, is_timeout: bool = False) -> str:
         """Add the neutral marker item a recovery retry needs, and return its log name.
 
-        D-038: once the caller has spoken, the caller-audio marker. D-048: before any caller turn in
-        agent mode, the call-connected item (agent mode needs one input item). Otherwise nothing.
+        D-038: once the caller has spoken, the caller-audio marker (FAILED path), or for the D-050
+        timeout path the response-stalled marker. D-048: before any caller turn in agent mode, the
+        call-connected item (agent mode needs one input item), on both paths. Otherwise nothing.
         """
         if self._caller_turn_seen:
-            await self.conn.conversation.item.create(
-                item=UserMessageItem(content=[InputTextContentPart(text=FAILED_RESPONSE_MARKER)])
+            text, name = (
+                (RESPONSE_STALLED_MARKER, "response_stalled") if is_timeout
+                else (FAILED_RESPONSE_MARKER, "caller_audio")
             )
-            return "caller_audio"
+            await self.conn.conversation.item.create(
+                item=UserMessageItem(content=[InputTextContentPart(text=text)])
+            )
+            return name
         if self.route is not None:
             await self._add_call_connected_item()
             return "call_connected"
@@ -442,7 +453,7 @@ class VoiceLiveMediaHandler:
             try:
                 if watch_retry and self._retry_superseded(attempt):
                     return
-                marker = await self._add_recovery_marker()
+                marker = await self._add_recovery_marker(is_timeout=watch_retry)
                 if watch_retry:
                     if self._retry_superseded(attempt):
                         return

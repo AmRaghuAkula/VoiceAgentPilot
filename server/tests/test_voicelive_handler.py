@@ -624,14 +624,44 @@ async def test_stuck_response_triggers_marker_retry(fast_watchdog, caplog):
     create_item.assert_awaited_once()
     item = create_item.await_args.kwargs["item"]
     assert isinstance(item, UserMessageItem)
-    assert item.as_dict()["content"] == [{"type": "input_text", "text": vmh.FAILED_RESPONSE_MARKER}]
+    assert item.as_dict()["content"] == [{"type": "input_text", "text": vmh.RESPONSE_STALLED_MARKER}]
     assert_plain_tagged_retry(handler.conn.response.create)  # plain retry: no instructions, no overrides
     assert handler.unrecoverable == 0
     messages = [r.getMessage() for r in caplog.records]
     assert any("response_stuck id=r1" in m and "attempt=1" in m for m in messages)
     assert not any("response_failed" in m for m in messages)  # distinguishable from a real failure
-    assert any("response_retry attempt=1 marker=caller_audio" in m for m in messages)
+    assert any("response_retry attempt=1 marker=response_stalled" in m for m in messages)
     await handler.cleanup()
+
+
+async def test_failed_path_still_uses_the_caller_audio_marker_after_a_timeout(fast_watchdog, monkeypatch, caplog):
+    # The FAILED path (D-038) is unchanged by the timeout path's marker, even within one call.
+    caplog.set_level("WARNING", logger=vmh.logger.name)
+    handler = await start_handler(events=[speech_started(), created("r1")])
+    await eventually(lambda: handler.conn.response.create.await_count == 1)  # timeout retry
+    no_more_timeouts(monkeypatch)
+    handler.conn.queue.put_nowait(created("r2"))
+    handler.conn.queue.put_nowait(response_done("completed", "r2"))  # recovery worked: counter reset
+    handler.conn.queue.put_nowait(failed("r3"))  # a later, ordinary failed response
+    await eventually(lambda: handler.conn.response.create.await_count == 2)
+    texts = [c.kwargs["item"].as_dict()["content"][0]["text"]
+             for c in handler.conn.conversation.item.create.await_args_list]
+    assert texts == [vmh.RESPONSE_STALLED_MARKER, vmh.FAILED_RESPONSE_MARKER]
+    assert handler.conn.response.create.await_args_list[1].kwargs == {}  # FAILED path: bare create()
+    retries = [r.getMessage() for r in caplog.records if "response_retry " in r.getMessage()]
+    assert "marker=response_stalled" in retries[0] and "marker=caller_audio" in retries[1]
+    await handler.cleanup()
+
+
+def test_response_stalled_marker_is_neutral_and_distinct():
+    # D-050 / D-004: a factual statement of what happened, not a scripted line, and not the
+    # caller-side "not understood" marker.
+    marker = vmh.RESPONSE_STALLED_MARKER
+    assert marker.startswith("[") and marker.endswith("]")
+    assert marker not in (vmh.FAILED_RESPONSE_MARKER, vmh.CALL_CONNECTED_MARKER)
+    words = set(marker.strip("[]").lower().split())
+    assert not words & {"say", "sorry", "repeat", "understood", "you", "my"}
+    assert "apolog" not in marker.lower()
 
 
 async def test_response_done_in_time_cancels_the_timer(monkeypatch):
@@ -796,19 +826,23 @@ async def test_new_response_replaces_the_previous_timer(monkeypatch):
 
 @pytest.mark.parametrize("events, route, expected", [
     ([created("r1")], ROUTE, "call_connected"),
-    ([speech_started(), created("r1")], ROUTE, "caller_audio"),
-    ([transcription_completed(), created("r1")], ROUTE, "caller_audio"),
+    ([speech_started(), created("r1")], ROUTE, "response_stalled"),
+    ([transcription_completed(), created("r1")], ROUTE, "response_stalled"),
     ([created("r1")], None, "none"),
 ])
-async def test_stuck_retry_uses_the_same_marker_choice_as_failed(fast_watchdog, caplog, events, route, expected):
+async def test_stuck_retry_marker_choice(fast_watchdog, caplog, events, route, expected):
+    # Same selection as the FAILED path, except that after a caller turn the timeout path uses the
+    # accurate response-stalled marker (the caller was understood; the agent's response stalled).
     caplog.set_level("WARNING", logger=vmh.logger.name)
     handler = await start_handler(route=route, events=events)
     await eventually(lambda: handler.conn.response.create.await_count == 1)
     retries = [r.getMessage() for r in caplog.records if "response_retry " in r.getMessage()]
     assert len(retries) == 1 and f"marker={expected}" in retries[0]
     create_item = handler.conn.conversation.item.create
-    if expected == "caller_audio":
-        assert isinstance(create_item.await_args.kwargs["item"], UserMessageItem)
+    if expected == "response_stalled":
+        item = create_item.await_args.kwargs["item"]
+        assert isinstance(item, UserMessageItem)
+        assert item.as_dict()["content"] == [{"type": "input_text", "text": vmh.RESPONSE_STALLED_MARKER}]
     elif expected == "call_connected":
         assert_call_connected_item(create_item.await_args.kwargs["item"])
     else:
