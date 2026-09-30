@@ -94,6 +94,7 @@ The agent-agnostic calendar tool service in `agent-tools/calendar/` (D-051, D-05
 | 4 | Function app (Flex Consumption, Python) + its plan | `func-cal-uc01-20260930` | in RG 1 | with RG 1 |
 | 5 | Entra app registration (echo audience, app role `Calendar.Invoke`, `appRoleAssignmentRequired=false` at first) + its service principal | `cal-uc01-echo-20260930` | tenant (**not** removed by deleting RG 1) | `az ad app delete --id <appId>`; verify `az ad app show` → not found |
 | 6 | Entra app registration + service principal for the refusal test (one short-lived client secret, value kept in the session scratchpad only; no role assignment) | `cal-uc01-unassigned-20260930` | tenant (**not** removed by deleting RG 1) | `az ad app delete --id <appId>`; verify `az ad app show` → not found; delete the scratchpad secret |
+| 6a | Subscription resource-provider registrations `Microsoft.Storage` and `Microsoft.Web` (found `NotRegistered`; required to create items 2 and 4; no cost) | subscription | `az provider unregister` for both after RG 1 is gone, returning the subscription to how it was found; verify `NotRegistered`/`Unregistered` |
 | 7 | Foundry test agent + its OpenAPI and MCP tools (founder/Cowork, portal) | name is config, not committed | existing Foundry project | founder deletes the test agent (or detaches both tools) after Step 5 |
 
 **Calendar milestone roll-up:**
