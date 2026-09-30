@@ -700,7 +700,7 @@ It also found the rewritten tests under-specified (no time bound, no exact end r
 
 ### D-059 · 2026-09-30 · **DRAFT** · UC01 feasibility result: both tool transports run server-side in Voice Live agent mode; principal claim, publish, timeout and refusal findings (calendar plan UC01 Step 7, fields a–e)
 
-> **DRAFT.** Written by the builder from UC01's evidence (STATUS.md §2, "UC01 evidence (DRAFT)", rows E1–E14). Field (a) is **not decided** here: the partner decides it. This entry is finalized before the status PR merges, and it gets the Opus docs review (D-013, D-053).
+> **DRAFT.** Written by the builder from UC01's evidence (STATUS.md §2, "UC01 evidence (DRAFT)", rows E1–E15). Field (a) is **not decided** here: the partner decides it. This entry is finalized before the status PR merges, and it gets the Opus docs review (D-013, D-053).
 
 **Go/no-go:** **GO.** Both OpenAPI and MCP tools attached to a `prompt`-kind Foundry agent execute server-side inside a Voice Live agent-mode session opened through the bridge's own `VoiceLiveMediaHandler` (E2, E3). Spec §3.1's no-go branch does not apply.
 
@@ -735,6 +735,10 @@ Both options share one consequence for the contract (spec §5): **business outco
 - Before `appRoleAssignmentRequired=true`: token issued, no `roles`.
 - After: refused with **`AADSTS501051`** (`invalid_grant`, HTTP 400). Same principal, secret and scope, so the refusal is the assignment rule (E14).
 - **Caveat for UC09/UC05 (E13):** Foundry caches managed-identity tokens for up to 24 h. After an assignment is added, or removed, the `roles` claim and Entra's refusal only take effect when Foundry next fetches a token. In-session, the assigned principals' tool calls kept succeeding on pre-assignment tokens, and `roles: ["Calendar.Invoke"]` could not be observed. The in-code allowlist (spec §9.1) is therefore the control that takes effect immediately. The Entra assignment is a second layer with up to a 24 h lag.
+
+**Teardown and residuals (E15).** All throwaway Azure and Entra objects are verified deleted, including both test agents' Foundry-created agent identities. Known residuals: the project connections `uc01_echo_openapi` (dummy key) and `echo` (MCP), and possibly the toolbox `uc01-toolbox` (founder confirming). They could not be deleted because of the production RG's `CanNotDelete` lock, which stays. They are inert: no agent uses them, there is no real secret, and they point at a deleted host. They are listed for a later cleanup with the founder's go.
+
+**`roles` claim: deferred to UC09 (founder decision, 2026-09-30).** It was not observed because of the 24 h token cache (E13). UC09's probes must observe `roles: ["Calendar.Invoke"]` on a Foundry-issued token once the assignment is older than the cached token.
 
 **Other findings for the plan or spec (partner to route):**
 - Test and production agents for this track must be `prompt`-kind: a voice-kind agent produces empty responses through Voice Live agent mode (E1).
