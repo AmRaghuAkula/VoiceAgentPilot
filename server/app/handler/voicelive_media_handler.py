@@ -497,9 +497,9 @@ class VoiceLiveMediaHandler:
     #
     # A Voice Live response can be created and then never resolved, with no event at all, so the
     # D-038 recovery in _on_response_status() is never reached. The watchdog notices the absence of
-    # progress instead and runs the same recovery. It adds no new caller-facing behavior: the retry
-    # uses the same neutral markers as D-038/D-048, and the agent still authors everything the caller
-    # hears (D-004). Everything below runs on the event loop, and the claim steps have no await, so
+    # progress instead and runs the same recovery. The retry adds a neutral marker: after a caller
+    # turn, RESPONSE_STALLED_MARKER (the caller was understood; the agent's response stalled), else the
+    # D-048 call-connected item. The agent still authors everything the caller hears (D-004). Everything below runs on the event loop, and the claim steps have no await, so
     # the timer and a late response.done can never both act on one response.
 
     def _arm_response_watchdog(self, response_id) -> None:

@@ -638,8 +638,11 @@ async def test_failed_path_still_uses_the_caller_audio_marker_after_a_timeout(fa
     # The FAILED path (D-038) is unchanged by the timeout path's marker, even within one call.
     caplog.set_level("WARNING", logger=vmh.logger.name)
     handler = await start_handler(events=[speech_started(), created("r1")])
+    cancel_gate = gated(handler.conn.response.cancel)
+    await eventually(lambda: handler.conn.response.cancel.await_count == 1)  # timeout recovery started
+    no_more_timeouts(monkeypatch)  # before the retry arms its own timer
+    cancel_gate.set()
     await eventually(lambda: handler.conn.response.create.await_count == 1)  # timeout retry
-    no_more_timeouts(monkeypatch)
     handler.conn.queue.put_nowait(created("r2"))
     handler.conn.queue.put_nowait(response_done("completed", "r2"))  # recovery worked: counter reset
     handler.conn.queue.put_nowait(failed("r3"))  # a later, ordinary failed response
@@ -650,6 +653,7 @@ async def test_failed_path_still_uses_the_caller_audio_marker_after_a_timeout(fa
     assert handler.conn.response.create.await_args_list[1].kwargs == {}  # FAILED path: bare create()
     retries = [r.getMessage() for r in caplog.records if "response_retry " in r.getMessage()]
     assert "marker=response_stalled" in retries[0] and "marker=caller_audio" in retries[1]
+    assert handler.unrecoverable == 0  # the intended path: no timer ended the call in between
     await handler.cleanup()
 
 
