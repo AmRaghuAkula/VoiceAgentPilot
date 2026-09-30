@@ -641,4 +641,18 @@ A focused re-check of rev 1.1 returned READY WITH FIXES, with no blocking findin
 
 **Source:** founder, direct confirmation, 2026-09-29, after the partner explained both lifts in plain terms per the founder's request. Tracked as **Q-072**, now answered.
 
+### D-058 · 2026-09-29 · Rescopes TELEPHONY_BRIDGE_SPEC.md §8 acceptance tests 7 and 8 for the Twilio path — unblocks M7
+
+**Background:** M7 (live acceptance tests) has been listed as blocked since the M6/Twilio re-plan, with a standing note that tests 7 and 8 "assume ACS behavior" and need re-scoping before M7 can start. Reading the actual spec text confirms exactly why: test 7 says "the caller hears the fallback message and the call ends cleanly" and test 8 says "the call ends with a goodbye at one minute" — both were written when ACS was still the number provider (pre-D-041), and both assume the bridge speaks a message before hanging up in these two failure modes.
+
+**That assumption no longer matches the bridge's actual, deliberately-chosen design.** D-038 (Q-036) and D-048 (Q-063) both explicitly considered and rejected having the bridge speak any scripted fallback or goodbye line, on D-004 grounds (Foundry, not the bridge, must author everything a caller hears) — the chosen design for every one of these failure paths (a bad agent version, a call-cap timeout, an unrecoverable response failure) is a **clean, silent hangup**, confirmed via bridge logs (`call_ended`, `response_unrecoverable`, etc.), not a spoken message. D-041 separately locked Twilio, not ACS, as the permanent number provider, and the Twilio path has no "speak a goodbye, then hang up via Call Automation" mechanism the way ACS's Call Automation API did — ending the call is simply closing the media stream.
+
+**Decision:** rewrite tests 7 and 8 in TELEPHONY_BRIDGE_SPEC.md §8 to test for the actual, correct Twilio-path behavior — a silent, clean hangup, verified via bridge logs — rather than a spoken message that the current architecture will never produce. This is not a lowering of the bar: the original tests' underlying intent (a bad config or a timeout must not leave the caller in indefinite silence, and must end the call cleanly) is still fully covered; only the specific "and speaks a message first" detail, which was never true for the design this project actually shipped, is corrected.
+
+**Why this is a partner decision, not a founder escalation:** this is a spec-accuracy correction reconciling two already-founder-approved decisions (D-038/D-048's silent-hangup design, D-041's Twilio choice) against a stale test definition — it doesn't create new behavior or reopen either prior decision, so it falls under the partner's standing planning authority (D-030), the same class of correction as D-045's version-drift fix.
+
+**Effect:** M7 is unblocked on this specific gap. M7's other prerequisite — confirming the U15b live smoke-test checklist is fully closed out (the masking and Twilio Debugger checks were left partially done earlier) — is unaffected by this decision and should be verified separately before M7's first live test call.
+
+**Source:** founder, direct instruction, 2026-09-29 ("yes, make that change, so M7 is unblocked"), after the partner identified the exact test text and explained the mismatch.
+
 **Numbering note (UC00):** D-050 is the U-RESPWATCHDOG decision (Q-070), merged first. Both entries now sit in number order, D-050 before D-051. The same parallel work had already used Q-071 (a whole-repo security-audit backlog item), so UC00's new questions are **Q-072** and **Q-073**.

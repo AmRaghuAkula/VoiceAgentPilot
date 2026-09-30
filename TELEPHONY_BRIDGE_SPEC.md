@@ -144,8 +144,8 @@ Raghu calls the test number from his mobile; Cowork pulls the matching Foundry t
 - [ ] 4. **Filler timing:** no "let me check" filler on fast replies (confirms the 2500 ms Interim Response setting reached the phone line; if not, apply modification 3's exception)
 - [ ] 5. **Speech accuracy on a phone line:** repeat the "buying" / "bye" script and a 10-digit phone number; Alex confirms the ambiguous word and reads the number back correctly
 - [ ] 6. **Hang-up:** after Raghu hangs up, the bridge logs show the Voice Live session closed within 5 seconds
-- [ ] 7. **Failure path:** with a deliberately wrong agent version in config, the caller hears the fallback message and the call ends cleanly
-- [ ] 8. **Call cap:** with `MAX_CALL_SECONDS` temporarily set to 60, the call ends with a goodbye at one minute
+- [ ] 7. **Failure path (D-058, Twilio path):** with a deliberately wrong agent version in config, the call ends cleanly with no spoken fallback message — a silent hangup is the correct, by-design behavior on the Twilio path (unlike the original ACS-era assumption this test was written against), confirmed via bridge logs (`response_unrecoverable`/`call_ended`) rather than by listening for speech
+- [ ] 8. **Call cap (D-058, Twilio path):** with `MAX_CALL_SECONDS` temporarily set to 60, the call ends silently at one minute with no spoken goodbye — confirmed via bridge logs, not by listening for speech
 - [ ] 9. **Latency baseline:** record average per-turn response time from Traces and compare with the ~5.9 s browser baseline from Stage 0
 
 The pilot passes when 1–8 pass. Test 9 is a measurement, not pass/fail.
