@@ -98,6 +98,7 @@ The agent-agnostic calendar tool service in `agent-tools/calendar/` (D-051, D-05
 | 7 | Foundry test agent (founder/Cowork, portal) | `uc01-test-agent` | existing Foundry project | founder deletes it after Step 5 |
 | 7-p | Second Foundry test agent, `prompt`-kind (tools attached directly) | `uc01-test-agent-p` | existing Foundry project | founder deletes it after Step 5 |
 | 7d | Agent-level OpenAPI tool on 7-p | `uc01_echo_openapi_direct` | existing Foundry project | removed with 7-p (founder confirms) |
+| 7e | Entra agent-identity objects Foundry creates with each agent (an `agentIdentity` service principal, and an `agentIdentityBlueprint` application + principal), for both test agents | tenant, named `<resource>-<project>-<agent>-AgentIdentity[Blueprint]` | tenant (**not** removed by deleting RG 1) | after the founder deletes 7 and 7-p, verify both agents' objects are gone (Graph lookup → not found); if they remain, delete them explicitly |
 | 7a | Project toolbox holding both tools | `uc01-toolbox` | existing Foundry project | founder deletes it |
 | 7b | Project tool objects: MCP tool and OpenAPI tool | `echo`, `uc01_echo_openapi_tb` | existing Foundry project | founder deletes both |
 | 7c | Project connection created by the portal's direct OpenAPI path (dummy key only, no real secret) | `uc01_echo_openapi` | existing Foundry project | founder deletes it |
