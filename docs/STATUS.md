@@ -67,7 +67,7 @@ The agent-agnostic calendar tool service in `agent-tools/calendar/` (D-051, D-05
 
 | Unit | Plan task | Milestone | Status | Branch | PR | Tests (pass/planned) | Opus review | cso |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| UC01 | Feasibility and token-claims check (OpenAPI + MCP in a Voice Live agent-mode session; principal claim before/after publish). **Both gates now satisfied:** Q-072 answered (D-052/D-057 confirmed) and Q-067's UC01 slice answered (throwaway-resource creation approved, founder confirmed holding the Entra role). | C0 | **NEXT** — ready to dispatch on the founder's go | none (branchless) | — | n/a (evidence) | — | — |
+| UC01 | Feasibility and token-claims check (OpenAPI + MCP in a Voice Live agent-mode session; principal claim before/after publish). **Both gates now satisfied:** Q-072 answered (D-052/D-057 confirmed) and Q-067's UC01 slice answered (throwaway-resource creation approved, founder confirmed holding the Entra role). | C0 | **NEXT** — in progress (2026-09-30) on status branch `docs/status-2026-09-30`; throwaway resources listed below | none (branchless) | — | n/a (evidence) | — | — |
 | UC02a | Package skeleton, bindings, contract document, provider port, fake provider, conformance harness, G1–G3 | C1 | QUEUED | `feat/cal-uc02a-skeleton` | — | 0/~70 | — | — |
 | UC02b | HTTP dispatcher and in-code Entra authentication | C1 | QUEUED | `feat/cal-uc02b-http-auth` | — | 0/~45 | — | — |
 | UC03 | Slot engine, slot tokens, `check_availability` | C1 | QUEUED | `feat/cal-uc03-check-availability` | — | 0/~75 | — | — |
@@ -83,6 +83,18 @@ The agent-agnostic calendar tool service in `agent-tools/calendar/` (D-051, D-05
 | UC10 | Real-calendar consent, test-agent wiring, T1–T5. **Needs Q-069** | C4 | QUEUED | none (branchless) | — | n/a (T1–T5 evidence) | — | — |
 | UC11 | Production-agent attach (founder-gated). **Needs Q-068** | C5 | QUEUED | none (branchless) | — | n/a | — | — |
 | UC12 | Live voice rehearsal, T6 (the acceptance gate) | C5 | QUEUED | none (branchless) | — | n/a (T6 evidence) | — | — |
+
+**UC01 throwaway-resource list (cleanup record, CLAUDE.md §3 / D-053; committed before anything is created, 2026-09-30).** Approved under Q-067's UC01 slice. Subscription: the bridge's ("Azure - Voice Pilot Subscription", the partner's Q-067 recommendation), region `eastus2`. Every item below is created and **deleted in the UC01 session**; if this list is still here with no teardown row in §2, a resumed session must verify or finish the teardown first (§4 step 1).
+
+| # | Resource | Name | Scope | Teardown |
+| --- | --- | --- | --- | --- |
+| 1 | Resource group | `rg-cal-uc01-20260930` | subscription | `az group delete`; verify `az group show` → not found |
+| 2 | Storage account (Function host storage) | `stcaluc0120260930` | in RG 1 | with RG 1 |
+| 3 | Log Analytics workspace + Application Insights (echo logs) | `log-cal-uc01-20260930`, `appi-cal-uc01-20260930` | in RG 1 | with RG 1 |
+| 4 | Function app (Flex Consumption, Python) + its plan | `func-cal-uc01-20260930` | in RG 1 | with RG 1 |
+| 5 | Entra app registration (echo audience, app role `Calendar.Invoke`, `appRoleAssignmentRequired=false` at first) + its service principal | `cal-uc01-echo-20260930` | tenant (**not** removed by deleting RG 1) | `az ad app delete --id <appId>`; verify `az ad app show` → not found |
+| 6 | Entra app registration + service principal for the refusal test (one short-lived client secret, value kept in the session scratchpad only; no role assignment) | `cal-uc01-unassigned-20260930` | tenant (**not** removed by deleting RG 1) | `az ad app delete --id <appId>`; verify `az ad app show` → not found; delete the scratchpad secret |
+| 7 | Foundry test agent + its OpenAPI and MCP tools (founder/Cowork, portal) | name is config, not committed | existing Foundry project | founder deletes the test agent (or detaches both tools) after Step 5 |
 
 **Calendar milestone roll-up:**
 
