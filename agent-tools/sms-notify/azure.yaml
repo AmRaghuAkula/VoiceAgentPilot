@@ -1,0 +1,12 @@
+# sms-notify azd project (self-contained; D-062). Run azd only from agent-tools/sms-notify/,
+# always with -e sms-<env>; `azd env get-value AGENT_TOOL -e sms-<env>` must print sms-notify first.
+name: sms-notify
+infra:
+  provider: bicep
+  path: infra
+  module: main
+services:
+  api:
+    project: .
+    language: python
+    host: function
