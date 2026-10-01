@@ -1,6 +1,6 @@
 # Calendar Booking Tools — Milestones
 
-Last updated: 2026-10-01 (rev 1.2, UC01-F: C1/C4/C5 DoD aligned with plan rev 1.6 and spec rev 3.2; rev 1.1, written in UC00, aligned with plan rev 1.1 after its Opus design review) · Plan: [2026-09-29-calendar-booking-plan.md](2026-09-29-calendar-booking-plan.md) · Spec: [../specs/2026-09-29-calendar-booking-design.md](../specs/2026-09-29-calendar-booking-design.md) (rev 3.2; rev 3.1 founder-accepted, D-051) · **Live status: [../../STATUS.md](../../STATUS.md) §1b**
+Last updated: 2026-10-01 (rev 1.2, UC01-F: C1/C2/C4/C5 DoD aligned with plan rev 1.6 and spec rev 3.2; rev 1.1, written in UC00, aligned with plan rev 1.1 after its Opus design review) · Plan: [2026-09-29-calendar-booking-plan.md](2026-09-29-calendar-booking-plan.md) · Spec: [../specs/2026-09-29-calendar-booking-design.md](../specs/2026-09-29-calendar-booking-design.md) (rev 3.2; rev 3.1 founder-accepted, D-051) · **Live status: [../../STATUS.md](../../STATUS.md) §1b**
 
 **End state of this track:** a real phone call through the production bridge reaches an agent that checks real availability on the host's Google calendar, books a slot after an explicit yes, and confirms it; the event appears on the real calendar with the correct title, local time and contact details; and the same call shows one honest-failure path (spec §13.4, test T6). The calendar tool service is agent-agnostic and provider-agnostic: a second agent is a binding plus a tool attachment, and a second calendar vendor is one adapter module that passes the conformance suite.
 
@@ -79,7 +79,7 @@ Last updated: 2026-10-01 (rev 1.2, UC01-F: C1/C4/C5 DoD aligned with plan rev 1.
 **Definition of done:**
 - A dedicated resource group (per Q-067), user-assigned identity, dedicated RBAC Key Vault, and identity-only storage account with a `claims` container and a 90-day lifecycle rule exist, created by Bicep under the calendar project's own `azure.yaml`, with `az deployment sub validate` and `--preview` gates passed.
 - The identity holds exactly Key Vault Secrets User on the vault and Storage Blob Data Contributor on the claims container (or on a separate claims account, if UC05's Flex check requires it).
-- The Entra app registration exists with one app role, assignment required, no credentials, and the role assigned only to the UC01-verified principal(s).
+- The Entra app registration exists with one app role, assignment required, no credentials, and the role assigned only to the UC01-verified principal: the Foundry resource's system-assigned identity for OpenAPI-direct (D-059 (a)/(b); the project's identity only if the MCP fallback is ever adopted).
 - `slot-token-key` and `fingerprint-key` exist in the vault; no value was ever printed or committed; the operator's time-bound Secrets Officer grant is removed.
 - `AzureBlobClaimStore` passes the claim-store conformance suite against a faithful Blob emulator and, once, against the real `claims` container, including concurrent claims on one cell and age measured by storage-server time.
 
@@ -110,7 +110,7 @@ Last updated: 2026-10-01 (rev 1.2, UC01-F: C1/C4/C5 DoD aligned with plan rev 1.
 ## C5 — Production and acceptance (UC11, UC12)
 
 **Definition of done:**
-- The production agent carries the tool and the §11.4 instructions, attached per Q-068 (not before the 2026-10-02 demo has finished unless the founder says otherwise), with principal/publish and pinned/unpinned (D-049) handling confirmed and a written rollback. The agent stays `prompt`-kind with Voice mode on, and is not channel-published without a principal re-check (D-059 (c)).
+- The production agent carries the tool and the §11.4 instructions, attached per Q-068 (not before the 2026-10-02 demo has finished unless the founder says otherwise), with principal/publish and pinned/unpinned (D-049) handling confirmed and a written rollback. The agent stays `prompt`-kind with its Voice Live setting on (`microsoft.voice-live.enabled`; not the "Voice" interaction mode), and is not channel-published without a principal re-check (D-059 (c)).
 - **T6 passes on the production path** (spec §13.4): the acceptance gate. Automated tests and T1–T5 are necessary but not sufficient.
 
 **Test coverage:** T6 evidence (call ID, Foundry trace, service log lines, calendar screenshot). Any behavior T6 finds that the automated tests missed gets a regression test in a new code unit before its fix is accepted.
