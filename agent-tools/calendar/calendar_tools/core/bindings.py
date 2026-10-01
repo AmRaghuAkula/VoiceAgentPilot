@@ -378,7 +378,7 @@ def _binding(binding_id: str, raw: Any, provider_names: frozenset[str]) -> Bindi
     )
 
 
-def _valid_binding_id(value: Any) -> bool:
+def is_valid_binding_id(value: Any) -> bool:
     return (
         isinstance(value, str)
         and _BINDING_ID.fullmatch(value) is not None
@@ -405,7 +405,7 @@ def load_bindings(raw_json: str, provider_names: frozenset[str]) -> Mapping[str,
 
     bindings: dict[str, Binding] = {}
     for binding_id, raw in raw_bindings.items():
-        if not _valid_binding_id(binding_id):
+        if not is_valid_binding_id(binding_id):
             raise BindingConfigError(None, "binding_id")
         bindings[binding_id] = _binding(binding_id, raw, provider_names)
     return MappingProxyType(bindings)
