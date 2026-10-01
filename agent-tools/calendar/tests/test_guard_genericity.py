@@ -18,8 +18,6 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 DENYLIST = ROOT / "tests" / "genericity_denylist.txt"
 SKIP_DIRS = {".venv", "__pycache__", ".pytest_cache", ".python_packages", ".azure"}
-SCAN_SUFFIXES = {".py", ".json", ".bicep", ".yaml", ".yml", ".md", ".txt", ".toml", ".ini", ".sh", ".cfg"}
-SCAN_NAMES = {".gitignore", ".funcignore", ".python-version"}
 EXCLUDED = {DENYLIST.resolve()}
 
 PHONE_PATTERNS = (
@@ -77,25 +75,38 @@ def phone_hits(text: str) -> bool:
     return False
 
 
-def scanned_files() -> list[Path]:
+def _text_or_none(path: Path) -> str | None:
+    """Every file that decodes as UTF-8 is scanned, whatever its suffix; only
+    binary files are skipped."""
+    data = path.read_bytes()
+    if b"\x00" in data:
+        return None
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+
+
+def scanned_files(root: Path = ROOT) -> list[Path]:
     files = []
-    for path in ROOT.rglob("*"):
+    for path in root.rglob("*"):
         if not path.is_file():
             continue
-        if any(part in SKIP_DIRS for part in path.relative_to(ROOT).parts):
+        if any(part in SKIP_DIRS for part in path.relative_to(root).parts):
             continue
         if path.resolve() in EXCLUDED or path.name == "uv.lock":
             continue
-        if path.suffix.lower() in SCAN_SUFFIXES or path.name in SCAN_NAMES:
+        if _text_or_none(path) is not None:
             files.append(path)
     return files
 
 
-def scan_file(path: Path) -> list[str]:
+def scan_file(path: Path, root: Path = ROOT) -> list[str]:
     findings = []
-    for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+    text = _text_or_none(path) or ""
+    for number, line in enumerate(text.splitlines(), start=1):
         if word_hits(line) or phone_hits(line):
-            findings.append(f"{path.relative_to(ROOT).as_posix()}:{number}")
+            findings.append(f"{path.relative_to(root).as_posix()}:{number}")
     return findings
 
 
@@ -120,6 +131,22 @@ def test_scanned_files_cover_the_project():
     ):
         assert expected in names
     assert "tests/genericity_denylist.txt" not in names
+
+
+def test_any_text_suffix_is_scanned_and_binary_skipped(tmp_path):
+    for name in ("main.bicepparam", "deploy.ps1", "Dockerfile", ".env.sample", "notes.csv"):
+        (tmp_path / name).write_text("plain text\n", encoding="utf-8")
+    (tmp_path / "logo.png").write_bytes(b"\x89PNG\x00\x01\xff")
+    (tmp_path / ".venv").mkdir()
+    (tmp_path / ".venv" / "skip.py").write_text("x\n", encoding="utf-8")
+    names = {p.relative_to(tmp_path).as_posix() for p in scanned_files(tmp_path)}
+    assert names == {"main.bicepparam", "deploy.ps1", "Dockerfile", ".env.sample", "notes.csv"}
+
+
+def test_a_hit_in_an_unlisted_suffix_is_reported(tmp_path):
+    probe = tmp_path / "main.bicepparam"
+    probe.write_text("x\n" + "".join(["+1 613 ", "555 ", "02", "00"]) + "\n", encoding="utf-8")
+    assert scan_file(probe, tmp_path) == ["main.bicepparam:2"]
 
 
 def test_no_denylisted_words_or_real_numbers_anywhere():

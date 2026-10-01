@@ -13,6 +13,7 @@ import re
 import string
 from collections.abc import Mapping
 from dataclasses import dataclass
+from dataclasses import fields as dataclass_fields
 from datetime import time
 from types import MappingProxyType
 from typing import Any
@@ -50,6 +51,7 @@ _HHMM = re.compile(r"([01]\d|2[0-3]):([0-5]\d)")
 _LOCALE = re.compile(r"en(-[A-Za-z0-9]{1,8})*")
 _SECRET_NAME = re.compile(r"[A-Za-z0-9-]{1,127}")
 _REGION = re.compile(r"[A-Z]{2}")
+_FIELD_NAME = re.compile(r"[a-z][a-z0-9_]{0,63}")
 _MAX_LABEL = 80
 _MAX_TEXT = 1024
 
@@ -112,6 +114,10 @@ class Binding:
             calendar_id=self.calendar_id,
             credential_secret_name=self.credential_secret_name,
         )
+
+
+# The document's field names for one binding (the ID is the key, not a field).
+_BINDING_FIELDS: frozenset[str] = frozenset(f.name for f in dataclass_fields(Binding)) - {"binding_id"}
 
 
 class _Reader:
@@ -273,12 +279,12 @@ def _contact_fields(r: _Reader) -> frozenset[str]:
     raw = r.get(field)
     if not isinstance(raw, list) or not all(isinstance(v, str) for v in raw):
         raise r.fail(field)
-    fields = frozenset(raw)
-    if len(fields) != len(raw) or not fields <= CONTACT_FIELDS:
+    chosen = frozenset(raw)
+    if len(chosen) != len(raw) or not chosen <= CONTACT_FIELDS:
         raise r.fail(field)
-    if "name" not in fields or not fields & {"phone", "email"}:
+    if "name" not in chosen or not chosen & {"phone", "email"}:
         raise r.fail(field)
-    return fields
+    return chosen
 
 
 def _principals(r: _Reader) -> frozenset[str]:
@@ -295,6 +301,7 @@ def _principals(r: _Reader) -> frozenset[str]:
 def _binding(binding_id: str, raw: Any, provider_names: frozenset[str]) -> Binding:
     if not isinstance(raw, Mapping):
         raise BindingConfigError(binding_id, "$")
+    _check_known_fields(binding_id, raw)
     r = _Reader(binding_id, raw)
 
     enabled = r.boolean("enabled")
@@ -379,21 +386,41 @@ def _binding(binding_id: str, raw: Any, provider_names: frozenset[str]) -> Bindi
 
 
 def is_valid_binding_id(value: Any) -> bool:
+    """Spec 4.1: the ID regex, and no phone number. Dashes are ignored for the
+    digit-run check, so `x-613-555-0123` is refused like `x-6135550123`."""
     return (
         isinstance(value, str)
         and _BINDING_ID.fullmatch(value) is not None
-        and _PHONE_LIKE_RUN.search(value) is None
+        and _PHONE_LIKE_RUN.search(value.replace("-", "")) is None
     )
+
+
+def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    keys = [k for k, _ in pairs]
+    if len(set(keys)) != len(keys):
+        # A repeated key would silently discard an earlier definition.
+        raise ValueError("duplicate key")
+    return dict(pairs)
+
+
+def _check_known_fields(binding_id: str, raw: Mapping[str, Any]) -> None:
+    for key in raw:
+        if key not in _BINDING_FIELDS:
+            # Name the key only when it is identifier-shaped; otherwise "$".
+            shown = key if isinstance(key, str) and _FIELD_NAME.fullmatch(key) else "$"
+            raise BindingConfigError(binding_id, shown)
 
 
 def load_bindings(raw_json: str, provider_names: frozenset[str]) -> Mapping[str, Binding]:
     """Parse and validate the `CALENDAR_BINDINGS_JSON` document.
 
     Returns a read-only mapping of every binding, enabled or not (a disabled
-    binding is served as unknown by the HTTP layer).
+    binding is served as unknown by the HTTP layer). Duplicate keys anywhere and
+    unknown binding fields (a misspelt optional field would otherwise be dropped
+    silently) are refused.
     """
     try:
-        doc = json.loads(raw_json)
+        doc = json.loads(raw_json, object_pairs_hook=_reject_duplicate_keys)
     except (ValueError, TypeError):
         # `from None`: the decoder's message quotes the document.
         raise BindingConfigError(None, "$") from None

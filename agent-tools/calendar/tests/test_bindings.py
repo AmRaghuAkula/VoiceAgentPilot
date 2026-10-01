@@ -225,6 +225,8 @@ BAD_IDS = [
     ("41-chars", "a" * 41),
     ("underscore", "test_alpha"),
     ("phone-like-run", "call-" + "613" + "5550123"),
+    ("dashed-phone", "agent-" + "-".join(["613", "555", "0123"])),
+    ("dashed-seven-digits", "id-123-4567"),
     ("seven-digits", "id-1234567"),
     ("email-like", "someone@example.com"),
 ]
@@ -379,10 +381,49 @@ def test_disabled_binding_loads_marked_disabled():
     assert b.enabled is False
 
 
-def test_unknown_binding_fields_ignored():
+def test_misspelt_binding_field_rejected_by_name(caplog):
+    # A misspelt optional field would otherwise be dropped silently.
     binding = copy.deepcopy(BASE)
-    binding["future_field"] = SENTINEL
-    assert _load(_doc(binding))["test-alpha"]
+    binding["host_display_nam"] = SENTINEL
+    with pytest.raises(BindingConfigError) as info:
+        _load(_doc(binding))
+    assert info.value.field == "host_display_nam"
+    assert info.value.binding_id == "test-alpha"
+    _assert_safe(info.value, SENTINEL, caplog)
+
+
+def test_unknown_non_identifier_key_not_echoed(caplog):
+    binding = copy.deepcopy(BASE)
+    binding[SENTINEL] = 1
+    with pytest.raises(BindingConfigError) as info:
+        _load(_doc(binding))
+    assert info.value.field == "$"
+    _assert_safe(info.value, SENTINEL, caplog)
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        '{"bindings": {"test-alpha": {}, "test-alpha": {}}}',
+        '{"bindings": {}, "bindings": {}}',
+    ],
+    ids=["duplicate-binding-id", "duplicate-top-level"],
+)
+def test_duplicate_keys_rejected(raw):
+    with pytest.raises(BindingConfigError) as info:
+        _load(raw)
+    assert info.value.binding_id is None
+    assert info.value.field == "$"
+
+
+def test_duplicate_field_inside_binding_rejected():
+    text = _doc(copy.deepcopy(BASE))
+    # Repeat one field inside test-alpha's object: the earlier value must not be dropped silently.
+    text = text.replace('"buffer_minutes": 0', '"buffer_minutes": 0, "buffer_minutes": 10', 1)
+    assert text.count('"buffer_minutes"') == 3  # test-beta's, plus the two in test-alpha
+    with pytest.raises(BindingConfigError) as info:
+        _load(text)
+    assert info.value.field == "$"
 
 
 def test_sample_file_loads_with_fake_provider():

@@ -59,9 +59,15 @@ def log_request(
     `status` is the response `status` for a 200, or the HTTP code for a non-2xx.
     A non-OK outcome whose `diagnostic` is empty or `ok` is a programming error:
     under `STRICT` it raises `ValueError`; otherwise the line is logged with
-    diagnostic `unclassified` (alerted in UC09) plus one WARNING.
+    diagnostic `unclassified` (alerted in UC09) plus one WARNING. Under `STRICT`
+    a non-OK outcome passed in as `unclassified` also raises.
     """
-    if not is_ok_outcome(status) and (not diagnostic or diagnostic == "ok"):
+    non_ok = not is_ok_outcome(status)
+    if STRICT and non_ok and diagnostic == UNCLASSIFIED:
+        # e.g. a bare `ProviderError` copied into the line: a missed path, so the
+        # suite fails on it rather than passing with an alerted `unclassified`.
+        raise ValueError(f"non-OK outcome {status!r} of {operation} logged as unclassified")
+    if non_ok and (not diagnostic or diagnostic == "ok"):
         if STRICT:
             raise ValueError(f"non-OK outcome {status!r} of {operation} logged without a diagnostic")
         logger.warning(

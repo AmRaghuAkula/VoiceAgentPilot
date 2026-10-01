@@ -140,6 +140,22 @@ def test_non_ok_without_diagnostic_raises_under_strict(status, diagnostic, caplo
         _log(status=status, diagnostic=diagnostic)
 
 
+def test_bare_provider_error_diagnostic_fails_under_strict(caplog):
+    from calendar_tools.core.ports import ProviderError
+
+    caplog.set_level(logging.INFO, logger=LOGGER.name)
+    exc = ProviderError()
+    with pytest.raises(ValueError):
+        _log(status="calendar_unavailable", diagnostic=exc.diagnostic, reason=exc.reason)
+
+
+def test_unclassified_passed_in_production_is_logged(caplog, monkeypatch):
+    monkeypatch.setattr(obs, "STRICT", False)
+    caplog.set_level(logging.INFO, logger=LOGGER.name)
+    _log(status="calendar_unavailable", diagnostic="unclassified")
+    assert json.loads(_lines(caplog)[0].getMessage())["diagnostic"] == "unclassified"
+
+
 @pytest.mark.parametrize("status", NON_OK)
 def test_non_ok_with_diagnostic_logs(status, caplog):
     caplog.set_level(logging.INFO, logger=LOGGER.name)

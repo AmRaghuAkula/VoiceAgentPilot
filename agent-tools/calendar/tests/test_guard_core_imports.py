@@ -47,8 +47,11 @@ def _resolve_relative(path: Path, module: str | None, level: int) -> str:
     return base
 
 
-def imported_modules(path: Path) -> list[str]:
-    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+def imported_modules(path: Path, source: str | None = None) -> list[str]:
+    """Imported module names; `source` lets a probe be parsed as if it were at
+    `path` without writing a file into the tree."""
+    text = path.read_text(encoding="utf-8") if source is None else source
+    tree = ast.parse(text, filename=str(path))
     names: list[str] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
@@ -104,12 +107,8 @@ def test_g1b_no_import_of_bridge_or_sibling_tool():
     ],
 )
 def test_g1_detects_planted_violations(source):
-    probe = CORE / "_g1_probe_tmp.py"
-    probe.write_text(source, encoding="utf-8")
-    try:
-        assert any(_forbidden_in_core(n) for n in imported_modules(probe))
-    finally:
-        probe.unlink()
+    probe = CORE / "_g1_probe.py"  # never written; parsed as if it lived in core/
+    assert any(_forbidden_in_core(n) for n in imported_modules(probe, source))
 
 
 @pytest.mark.parametrize(
@@ -117,21 +116,14 @@ def test_g1_detects_planted_violations(source):
     ["import " + "server" + ".app\n", "from " + "app" + ".config import x\n", "import sms" + "_notify\n"],
 )
 def test_g1b_detects_planted_violations(source):
-    probe = ROOT / "calendar_tools" / "_g1b_probe_tmp.py"
-    probe.write_text(source, encoding="utf-8")
-    try:
-        assert any(n.split(".")[0] in FORBIDDEN_TOP_LEVEL for n in imported_modules(probe))
-    finally:
-        probe.unlink()
+    probe = ROOT / "calendar_tools" / "_g1b_probe.py"  # never written
+    assert any(n.split(".")[0] in FORBIDDEN_TOP_LEVEL for n in imported_modules(probe, source))
 
 
 def test_allowed_core_imports_not_flagged():
-    probe = CORE / "_g1_probe_ok_tmp.py"
-    probe.write_text("from . import ports\nfrom .clock import Clock\nimport phonenumbers\n", encoding="utf-8")
-    try:
-        assert not any(_forbidden_in_core(n) for n in imported_modules(probe))
-    finally:
-        probe.unlink()
+    probe = CORE / "_g1_probe_ok.py"  # never written
+    source = "from . import ports\nfrom .clock import Clock\nimport phonenumbers\n"
+    assert not any(_forbidden_in_core(n) for n in imported_modules(probe, source))
 
 
 def test_relative_import_resolution():

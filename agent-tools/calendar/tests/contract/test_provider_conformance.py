@@ -31,6 +31,9 @@ from calendar_tools.providers.fake import FakeCalendarProvider
 
 PROVIDERS = ["fake"]
 
+READ_METHODS = frozenset({"resolve_calendar_identity", "get_busy", "find_bookings", "get_event"})
+WRITE_METHODS = frozenset({"create_event", "delete_event"})
+
 T0 = datetime(2026, 10, 5, 14, 0, tzinfo=UTC)
 WINDOW_START = T0 - timedelta(hours=4)
 WINDOW_END = T0 + timedelta(hours=8)
@@ -57,7 +60,8 @@ class FakeHarness:
             "unavailable": ProviderUnavailable(reason="http_503"),
             "auth": ProviderAuthError(reason="http_401"),
             "config": ProviderConfigError(reason="calendar_not_found"),
-            "timeout": ProviderTimeout(maybe_committed=(method == "create_event")),
+            # A write whose request may have reached the vendor is maybe-committed.
+            "timeout": ProviderTimeout(maybe_committed=method in WRITE_METHODS),
         }[failure]
         self.provider.fail_next(method, exc)
 
@@ -257,6 +261,25 @@ async def test_exact_retry_dedupe(provider_under_test):
     assert len(found) == 1
 
 
+@pytest.mark.parametrize("removal", ["delete", "cancel"])
+async def test_retry_after_original_removed_creates_a_new_active_event(provider_under_test, removal):
+    # Spec 8.2 / 13.1 "409-on-ID": once the original event is gone, the same
+    # request_key must yield a new, active booking, never the removed one.
+    h = provider_under_test
+    first = await h.provider.create_event(h.cal, _new_event(request_key="rk-again"))
+    if removal == "delete":
+        await h.provider.delete_event(h.cal, first.event_id)
+    else:
+        await h.cancel(h.cal, first.event_id)
+    second = await h.provider.create_event(h.cal, _new_event(request_key="rk-again"))
+    assert second.event_id != first.event_id
+    found = await h.provider.find_bookings(h.cal, WINDOW_START, WINDOW_END)
+    assert [r.event_id for r in found] == [second.event_id]
+    assert await h.provider.get_event(h.cal, second.event_id) is not None
+    busy = await h.provider.get_busy(h.cal, WINDOW_START, WINDOW_END)
+    assert _covers(busy, T0, T0 + timedelta(minutes=30))
+
+
 async def test_distinct_request_keys_create_distinct_events(provider_under_test):
     h = provider_under_test
     a = await h.provider.create_event(h.cal, _new_event(request_key="rk-a"))
@@ -295,8 +318,15 @@ async def test_error_mapping(provider_under_test, method, failure):
     with pytest.raises(FAILURE_EXPECTATIONS[failure]) as info:
         await _call(h, method)
     if failure == "timeout":
-        # Only a write whose request may have reached the vendor is maybe-committed.
-        assert info.value.maybe_committed is (method == "create_event")
+        # Spec 6.2: maybe_committed=True only for a write whose request may have
+        # reached the vendor. Reads are never maybe-committed; a create timeout
+        # always is (the core's uncertain path depends on it); a delete may be either.
+        if method == "create_event":
+            assert info.value.maybe_committed is True
+        elif method in READ_METHODS:
+            assert info.value.maybe_committed is False
+        else:
+            assert isinstance(info.value.maybe_committed, bool)
     # The failure is one-shot: the next call succeeds.
     await _call(h, method)
 

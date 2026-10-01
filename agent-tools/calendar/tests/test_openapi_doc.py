@@ -190,14 +190,24 @@ def _example(name: str) -> dict:
     return json.loads((EXAMPLES / name).read_text(encoding="utf-8"))
 
 
+FORMATS = jsonschema.FormatChecker()
+
+
 @pytest.mark.parametrize(("name", "op_id"), RESPONSE_EXAMPLES)
 def test_spec_response_examples_validate(doc, name, op_id):
-    jsonschema.validate(_example(name), _response_schema(doc, op_id))
+    jsonschema.validate(_example(name), _response_schema(doc, op_id), format_checker=FORMATS)
 
 
 @pytest.mark.parametrize(("name", "op_id"), REQUEST_EXAMPLES)
 def test_spec_request_examples_validate(doc, name, op_id):
-    jsonschema.validate(_example(name), _request_schema(doc, op_id))
+    jsonschema.validate(_example(name), _request_schema(doc, op_id), format_checker=FORMATS)
+
+
+def test_format_checker_rejects_a_naive_datetime(doc):
+    bad = _example("check_available.json")
+    bad["slots"][0]["start"] = "2026-10-05T10:00:00"
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(bad, _response_schema(doc, "check_availability"), format_checker=FORMATS)
 
 
 def test_every_example_file_is_exercised():
