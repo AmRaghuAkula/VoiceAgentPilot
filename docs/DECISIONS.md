@@ -751,3 +751,45 @@ Why OpenAPI-direct:
 - If MCP is ever used, its tool needs `require_approval: never` (portal: "Always auto-approve all tools") for the bridge path (E4).
 
 **Source:** UC01 verification, 2026-09-30, builder on Opus. The founder did the Foundry portal steps. The partner decided not to exercise the channel publish, and chose the transport in (a) under D-030. The founder chose to tear down before the `roles` claim could be observed.
+
+### D-062 · 2026-09-30 · ACCEPTED · `agent-tools/sms-notify/`: a minimal SMS follow-up tool for the 2026-10-02 demo; USMS units re-sequenced ahead of calendar UC02a
+
+**Numbering note:** D-060 and D-061 are held by a call-records and notifications design draft that has not landed in this repo. They are deliberately left unused here so that draft keeps its numbers; nothing in this entry depends on them. Likewise Q-077 to Q-084 are held for that draft (Q-075 and Q-076 are UC01's), so this track's questions start at Q-085 (Q-085 to Q-094).
+
+**Decision.** A new sibling tool, `agent-tools/sms-notify/`, specified in `docs/superpowers/specs/2026-09-30-sms-notify-design.md` (rev 2.1) and planned in `docs/superpowers/plans/2026-09-30-sms-notify-plan.md`. Near the end of a call, a Foundry agent calls one operation, `send_follow_up_sms(message)`, and the service sends that agent-written text by Twilio Programmable SMS, from the existing Twilio number, to a fixed follow-up contact.
+- **Self-contained (the D-053 pattern):** its own `pyproject.toml`, lockfile, tests, `infra/`, `azure.yaml` and resource group. No imports to or from `server/` (or `agent-tools/calendar/`).
+- **Transport:** attached to the agent as an **OpenAPI-direct** tool, with a framework-free core so an MCP facade can be added later. This does **not** decide calendar's D-059(a).
+- **Contract:** every request with a valid token returns HTTP 200 with `{ok, code, retry:false}` (UC01 E10); only a missing or invalid token gets 401.
+- **Recipients** are held only in Key Vault (`sms-recipients`, E.164, Canada only, at most 3). The agent can't choose a recipient: there is no `to` argument.
+- **Auth:** an Entra app role (`Sms.Send`, assignment required) plus an in-code `oid` allowlist. The role check is switched on (`SMS_REQUIRE_ROLE=true`) only after `roles` has been seen on a Foundry token, because of the 24 h token lag (UC01 E13).
+- **Limits:** a 5 s end-to-end deadline with no retry; a 90 s cooldown, a 30 min dedupe that records the send outcome, and at most 6 sends an hour, each to the fixed recipient list. "One SMS per call" is instructions plus these backstops, not a true per-call limit (Q-093).
+- **Message format:** the founder's six-line format lives only in the agent's Foundry instructions (spec §11), not in code, tests or the OpenAPI document. The service is generic: a cap of 480 characters and 8 lines, newlines allowed (spec K11).
+- **Region:** East US 2 for the demo only (Q-085). It moves to Canada with the rest of the stack under Q-074.
+- **Units:** USMS00 (docs, this entry), USMS01 (build, Opus, provisions nothing), USMS02 (branchless deploy and rehearsal).
+- **Carve-out from D-053:** USMS02's Azure resources are **persistent**, not throwaway, so its same-session teardown does not apply. Its resource list is still committed first on its status branch, and each item is founder-approved (Q-091). Its azd environment is `sms-<env>`, guarded by `AGENT_TOOL=sms-notify`, under D-042's rules applied by analogy (CLAUDE.md §10).
+- **Re-sequencing (Q-088):** USMS00 to USMS02 run before calendar UC02a, which moves back by about two sessions.
+- **Later reuse:** the Twilio adapter implements a channel-neutral `Notifier` shape (copied into the plan, P1) so a future call-records track could lift it rather than rewrite it. How it would be shared is that track's decision.
+
+**Governance changes made in USMS00 (CLAUDE.md), none of which weakens an existing rule:** §1 and §11 describe `agent-tools/sms-notify/` and list its spec, plan and milestone doc; §3 names USMS02 as a branchless unit with this persistent-resource carve-out; §4 adds its bootstrap line; §5 steps 1 and 3 name STATUS.md §1c as a source of prerequisites and branch names; §5 step 5 and §9 add its suite to "the whole suite" once USMS01 merges; §7 extends the hashed-denylist exemption to its own G2 file, generalizes the "don't change the bridge" trigger to every `agent-tools/` tool, and notes that the §7 lifts are per tool (D-052/D-057, D-063); §9 adds its README config table; §10 adds the `sms-<env>` infra rule, limited to USMS01 and USMS02 unless a later unit is named in the plan or a new D-NNN.
+
+**After the demo:** the persistent resources and the Twilio API key outlive USMS02. Whether to keep them, tear them down, revoke the key, or redeploy in Canada is **Q-094** (OPEN, founder); any of those is its own unit.
+
+**Why:** the founder wants a working follow-up text on the Friday demo. A minimal, fixed-recipient tool is the smallest thing that does it without touching the live bridge, and the D-053 pattern lets it reuse this repo's governance unchanged. Persistent resources are needed because the service must still exist at demo time, after the deploy session ends.
+
+**Source:** partner decision under D-030 (architecture and the D-053 carve-out), with the founder's re-sequencing (Q-088) and resource and spend approval (Q-091). **Founder-confirmed 2026-09-30**, direct instruction in chat ("expedite SMS today"; Q-085 to Q-093 all answered).
+
+### D-063 · 2026-09-30 · ACCEPTED · Narrow TELEPHONY_BRIDGE_SPEC.md §7 lifts for `agent-tools/sms-notify/` only
+
+TELEPHONY_BRIDGE_SPEC.md §7 ("Do not build") is lifted in two places, **for `agent-tools/sms-notify/` only** (spec §12). Every other §7 item stands, including outbound calling: an SMS is not a call. Nothing here applies to the bridge (`server/`), which still wires no tools. TELEPHONY_BRIDGE_SPEC.md itself is not edited, as with D-052.
+
+1. **"Calendar or booking tools, or any OpenAPI tool wiring":** OpenAPI tool wiring is allowed for this one tool, attached to Foundry agents. This extends D-052 item 1, which covered the calendar service only.
+2. **"Storing transcripts or caller data anywhere outside Foundry traces and logs":** lifted to allow **sending** an agent-written text to the fixed follow-up contact. It does not allow storing caller data in our systems.
+   - **The data set:** whatever the agent puts in the text. The instructions limit it to six fields: the caller's name, confirmed callback number, purpose, budget, timeline and meeting preference; a field the caller didn't give is written as `not given`. Budget is personal financial information and is covered by this lift.
+   - **Where it goes:** Twilio (the processor, which keeps message bodies in its logs; accepted for the demo, Q-092), the carriers, and the recipient's handset.
+   - **Our systems store only:** a SHA-256 hash of the normalized text with its send outcome, used for 30 min of dedupe and deleted within about two days by a storage lifecycle rule (a 1-day rule, plus up to a day for the policy run), plus timestamps. No body, no number, no transcript; the log line masks numbers as `***1234` and never contains the body.
+   - **Responsibility afterwards:** the business receiving the text, for retention and follow-up.
+   - **Caller notice (Q-089):** the agent tells the caller first and asks; if they decline, it sends nothing. A privacy review is still advised before real callers.
+
+**Why:** a follow-up text with the caller's details is exactly what the founder asked for; it can't exist without these two lifts. Keeping them per tool, as D-052 did for calendar, leaves the bridge's §7 boundary intact.
+
+**Source:** founder, direct instruction in chat, 2026-09-30, confirming the partner's proposal (Q-087: "YES").
