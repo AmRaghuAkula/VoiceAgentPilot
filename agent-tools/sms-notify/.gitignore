@@ -1,0 +1,9 @@
+local.settings.json
+.env
+.env.*
+.venv/
+.python_packages/
+__pycache__/
+.pytest_cache/
+.azure/
+__azurite_db*
