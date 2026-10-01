@@ -1,0 +1,15 @@
+# Never commit local settings, real bindings, secrets or OAuth client downloads.
+local.settings.json
+.env
+.env.*
+bindings.json
+bindings.*.json
+!bindings.sample.json
+*.client.json
+client_secret*.json
+.python_packages/
+__azurite_db*
+.venv/
+__pycache__/
+.pytest_cache/
+.azure/
