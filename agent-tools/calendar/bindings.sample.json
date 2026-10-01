@@ -1,0 +1,72 @@
+{
+  "bindings": {
+    "sample-alpha": {
+      "enabled": true,
+      "provider": "google",
+      "calendar_id": "primary",
+      "credential_secret_name": "cal-binding-sample-alpha-google",
+      "timezone": "America/Toronto",
+      "locale": "en-CA",
+      "bookable_hours": {
+        "mon": [["09:00", "19:00"]], "tue": [["09:00", "19:00"]], "wed": [["09:00", "19:00"]],
+        "thu": [["09:00", "19:00"]], "fri": [["09:00", "19:00"]], "sat": [["09:00", "19:00"]],
+        "sun": [["09:00", "19:00"]]
+      },
+      "default_duration_minutes": 30,
+      "allowed_durations_minutes": [30],
+      "slot_step_minutes": 30,
+      "buffer_minutes": 0,
+      "min_notice_minutes": 120,
+      "max_days_ahead": 14,
+      "default_search_days": 3,
+      "max_slots_returned": 6,
+      "slot_selection": "spread",
+      "slot_token_ttl_minutes": 30,
+      "appointment_types": [
+        { "id": "phone_call", "label": "Phone call" },
+        { "id": "in_person", "label": "In-person meeting" }
+      ],
+      "required_contact_fields": ["name", "phone"],
+      "default_phone_region": "CA",
+      "accept_notes": false,
+      "max_active_bookings_per_contact": 2,
+      "host_display_name": "Sam Sample",
+      "event_title_template": "{appointment_type_label}: {contact_name} (booked by AI agent)",
+      "event_description_template": "Booked by an AI agent.\nName: {contact_name}\nPhone: {contact_phone}\nType: {appointment_type_label}\n{notes_block}Booking ref: {booking_ref}",
+      "allowed_principals": ["00000000-0000-0000-0000-0000000000a1"]
+    },
+    "sample-beta": {
+      "enabled": true,
+      "provider": "google",
+      "calendar_id": "primary",
+      "credential_secret_name": "cal-binding-sample-beta-google",
+      "timezone": "Europe/London",
+      "locale": "en-GB",
+      "bookable_hours": {
+        "mon": [["10:00", "12:00"], ["13:00", "16:00"]],
+        "wed": [["10:00", "12:00"], ["13:00", "16:00"]],
+        "fri": [["10:00", "12:00"]]
+      },
+      "default_duration_minutes": 20,
+      "allowed_durations_minutes": [20, 40],
+      "slot_step_minutes": 20,
+      "buffer_minutes": 10,
+      "min_notice_minutes": 60,
+      "max_days_ahead": 30,
+      "default_search_days": 5,
+      "max_slots_returned": 4,
+      "slot_selection": "earliest",
+      "slot_token_ttl_minutes": 20,
+      "appointment_types": [
+        { "id": "video_call", "label": "Video call" }
+      ],
+      "required_contact_fields": ["name", "email"],
+      "default_phone_region": "GB",
+      "accept_notes": true,
+      "max_active_bookings_per_contact": 1,
+      "event_title_template": "{appointment_type_label} with {contact_name}",
+      "event_description_template": "Email: {contact_email}\nLength: {duration_minutes} min\n{notes_block}Ref: {booking_ref}",
+      "allowed_principals": ["00000000-0000-0000-0000-0000000000b2"]
+    }
+  }
+}
