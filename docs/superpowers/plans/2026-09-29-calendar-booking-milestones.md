@@ -1,6 +1,6 @@
 # Calendar Booking Tools — Milestones
 
-Last updated: 2026-09-29 (rev 1.1, written in UC00; aligned with plan rev 1.1 after its Opus design review) · Plan: [2026-09-29-calendar-booking-plan.md](2026-09-29-calendar-booking-plan.md) · Spec: [../specs/2026-09-29-calendar-booking-design.md](../specs/2026-09-29-calendar-booking-design.md) (rev 3.1, founder-accepted, D-051) · **Live status: [../../STATUS.md](../../STATUS.md) §1b**
+Last updated: 2026-10-01 (rev 1.2, UC01-F: C1/C4/C5 DoD aligned with plan rev 1.6 and spec rev 3.2; rev 1.1, written in UC00, aligned with plan rev 1.1 after its Opus design review) · Plan: [2026-09-29-calendar-booking-plan.md](2026-09-29-calendar-booking-plan.md) · Spec: [../specs/2026-09-29-calendar-booking-design.md](../specs/2026-09-29-calendar-booking-design.md) (rev 3.2; rev 3.1 founder-accepted, D-051) · **Live status: [../../STATUS.md](../../STATUS.md) §1b**
 
 **End state of this track:** a real phone call through the production bridge reaches an agent that checks real availability on the host's Google calendar, books a slot after an explicit yes, and confirms it; the event appears on the real calendar with the correct title, local time and contact details; and the same call shows one honest-failure path (spec §13.4, test T6). The calendar tool service is agent-agnostic and provider-agnostic: a second agent is a binding plus a tool attachment, and a second calendar vendor is one adapter module that passes the conformance suite.
 
@@ -61,7 +61,7 @@ Last updated: 2026-09-29 (rev 1.1, written in UC00; aligned with plan rev 1.1 af
 - `check_availability` implements spec §5.2/§7.1/§7.2 against the fake provider, including DST.
 - `book_appointment` implements spec §5.3/§7.3/§7.4 in full (steps 1–8, recovery, verification, the uncertain-create path) against the fake provider and fake claim store, with every §13.1 booking case green, including the round-2 chain cases, the cross-binding race, mixed buffers, clock skew and the host-edit cases.
 - One service instance serves two bindings on two adapters with no cross-binding leakage (G4).
-- Logs carry one structured line per request and no contact data, tokens, titles or calendar IDs.
+- Logs carry one structured line per request and no contact data, tokens, titles or calendar IDs. Every non-OK outcome logs a diagnostic that is neither empty nor `ok`, with a non-secret `reason` where spec §10 requires one; a malformed secret is `secret_invalid`, apart from `secret_store_unreachable` (spec rev 3.2).
 
 **Test coverage (~335, estimate):**
 
@@ -102,14 +102,15 @@ Last updated: 2026-09-29 (rev 1.1, written in UC00; aligned with plan rev 1.1 af
 - The Function app runs on Flex Consumption with the user-assigned identity, identity-based storage, the bindings from azd (`CALENDAR_BINDINGS_JSON_B64`), App Insights, and the spec §10 alerts; deployed with the D-042 rules applied by analogy (provision immediately followed by deploy).
 - Probes: health 200; no/malformed/wrong-audience token 401; unknown and forbidden bindings an identical 403 (via the test agent, UC10).
 - Cold-start and warm latency are measured; the always-ready decision is put to the founder under Q-067.
-- The real host calendar is consented; the demo binding uses Q-069's values; the tool is attached to a **test** agent; T1–T5 pass with evidence.
+- A Foundry-issued token is shown to carry `roles: ["Calendar.Invoke"]` once the app-role assignment is older than Foundry's 24 h token cache (Q-075, UC01 E13).
+- The real host calendar is consented; the demo binding uses Q-069's values; the tool is attached to a **test** agent that is `prompt`-kind (UC01 E1); T1–T5 pass with evidence.
 
 **Test coverage (~10):** the Functions adapter, the requirements/lockfile sync check, and wiring (no service key read at startup, plan P18); the rest is live evidence (probes, T1–T5).
 
 ## C5 — Production and acceptance (UC11, UC12)
 
 **Definition of done:**
-- The production agent carries the tool and the §11.4 instructions, attached per Q-068 (not before the 2026-10-02 demo has finished unless the founder says otherwise), with principal/publish and pinned/unpinned (D-049) handling confirmed and a written rollback.
+- The production agent carries the tool and the §11.4 instructions, attached per Q-068 (not before the 2026-10-02 demo has finished unless the founder says otherwise), with principal/publish and pinned/unpinned (D-049) handling confirmed and a written rollback. The agent stays `prompt`-kind with Voice mode on, and is not channel-published without a principal re-check (D-059 (c)).
 - **T6 passes on the production path** (spec §13.4): the acceptance gate. Automated tests and T1–T5 are necessary but not sufficient.
 
 **Test coverage:** T6 evidence (call ID, Foundry trace, service log lines, calendar screenshot). Any behavior T6 finds that the automated tests missed gets a regression test in a new code unit before its fix is accepted.
