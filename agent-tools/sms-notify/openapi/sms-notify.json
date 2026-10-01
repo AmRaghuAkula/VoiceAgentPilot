@@ -1,0 +1,74 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "sms-notify",
+    "version": "1.0.0",
+    "description": "Sends one short follow-up text message to a fixed contact. The recipient is configured by the service, never by the caller."
+  },
+  "servers": [
+    {
+      "url": "https://<function-host>/api"
+    }
+  ],
+  "paths": {
+    "/v1/follow-up-sms": {
+      "post": {
+        "operationId": "send_follow_up_sms",
+        "summary": "Send one follow-up text message",
+        "description": "Sends one short text message to this business's follow-up contact so a team member can reach the caller. The recipient is fixed; you supply only the message text, in the format your instructions give. Use at most once per call, near the end, after the caller has confirmed their callback number and agreed to a follow-up. Plain text, one field per line allowed, no links, at most 480 characters (aim for 320 or fewer). Returns ok true or false. Never call it again in the same call, whatever the result.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["message"],
+                "properties": {
+                  "message": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 480,
+                    "description": "The whole text message, plain text, one field per line allowed, no links."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The outcome. ok is true only when the message was sent (or the same text was already sent).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["ok", "code", "retry"],
+                  "properties": {
+                    "ok": {"type": "boolean"},
+                    "code": {
+                      "type": "string",
+                      "enum": [
+                        "sent",
+                        "already_sent",
+                        "invalid_request",
+                        "content_rejected",
+                        "rate_limited",
+                        "forbidden",
+                        "send_failed",
+                        "send_unconfirmed",
+                        "unavailable"
+                      ]
+                    },
+                    "retry": {"type": "boolean", "enum": [false]}
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
