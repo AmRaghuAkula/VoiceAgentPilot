@@ -1,0 +1,26 @@
+[project]
+name = "sms-notify"
+version = "0.1.0"
+description = "Sends one agent-written follow-up text message to a fixed contact (Foundry OpenAPI tool)."
+requires-python = ">=3.12"
+dependencies = [
+    "azure-functions>=1.25.0",
+    "azure-identity>=1.25.3",
+    "httpx>=0.28.1",
+    "pyjwt[crypto]>=2.15.1",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = "-m \"not live_twilio\""
+markers = [
+    "live_twilio: one real send through Twilio using the Key Vault secrets (opt-in; USMS02 only)",
+]
