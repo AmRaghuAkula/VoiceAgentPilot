@@ -111,7 +111,7 @@ The response carries only the code and the fixed `reason` value. It never echoes
 **OpenAPI 3.0 document** (`openapi/sms-notify.json`). The builder generates it and a contract test pins it:
 - `servers[0].url`: `https://<function-host>/api` (filled in at deploy; not in the repo with a real host).
 - One operation: `POST /v1/follow-up-sms`, `operationId: send_follow_up_sms`.
-- Request body: `{ "message": string, minLength 1, maxLength 480 }`, `additionalProperties: false`. (`maxLength` bounds the message alone; the service then checks prefix + text against the same 480, K11. With the default empty prefix the two are identical.) **No recipient field and no other fields.** Unknown fields return `invalid_request`.
+- Request body: `{ "message": string, minLength 1, maxLength 480 }`, `additionalProperties: false`. (`maxLength` is the contract shown to the agent; the service doesn't apply it in its schema check. After normalization it checks prefix + text against `SMS_MAX_CHARS`, which gives `too_long` (K11, K12). With the default empty prefix the two limits are identical.) **No recipient field and no other fields.** Unknown fields return `invalid_request`.
 - Response `200`: `{ "ok": boolean, "code": string, "retry": false, "reason"?: string }`. `reason` is present **only** when `code` is `invalid_request`, and is one of `bad_request`, `empty`, `too_many_lines`, `too_long`, `bad_line`, `unknown_label`, `duplicate_label` or `bad_character` (K12). The schema pins that enum. (`retry` stays `false`; the snippet allows one corrected retry after `invalid_request`, §11, because nothing was claimed or sent.)
 - Security: Foundry's managed-identity auth, audience `api://<sms-notify-api app id>`.
 
