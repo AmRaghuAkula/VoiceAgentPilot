@@ -38,7 +38,8 @@ class ProviderRegistry:
     def names(self) -> frozenset[str]:
         return frozenset(self._factories)
 
-    def create(self, name: str, **deps: Any) -> CalendarProvider:
+    def create(self, name: str, /, **deps: Any) -> CalendarProvider:
+        # `name` is positional-only so a factory may itself take a `name` dependency.
         try:
             factory = self._factories[name]
         except KeyError:
