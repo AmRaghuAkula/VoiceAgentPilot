@@ -19,6 +19,7 @@ Last updated: 2026-09-30 (rev 1, written in USMS00) · Plan: [2026-09-30-sms-not
 | USMS00 | Spec, plan, milestones, D-062/D-063, governance | SM0 | `docs/sms-notify-spec` | Docs | Q-087, Q-088 (answered) | 0 |
 | USMS01 | Build `agent-tools/sms-notify/` (provisions nothing) | SM1 | `feat/usms01-sms-notify` | Code | Q-085, Q-093 (answered) | ~90 (+1 opt-in live) |
 | USMS02 | Deploy, rehearse, production attach, detach | SM2 | none (branchless; `docs/status-YYYY-MM-DD`) | Ops | Q-086, Q-089, Q-090, Q-091, Q-092 (answered) | 0 (evidence; 1 live send) |
+| USMS03 | Contingent: Twilio API key rotation if USMS02's session ends first (plan §4 step 5) | SM2 | none (branchless; `docs/status-YYYY-MM-DD`) | Ops | Q-094 (answered) | 0 |
 
 ## Milestones
 
@@ -34,6 +35,6 @@ Last updated: 2026-09-30 (rev 1, written in USMS00) · Plan: [2026-09-30-sms-not
 - **PR slots:** 1 (USMS01).
 
 ### SM2 — Demo-ready and demo done (USMS02)
-- **DoD:** plan §5 USMS02 (one session that starts before the demo and runs through the detach, holding the only branch; plan §3 timeline; a pre-demo code fix goes through the plan §3 USMS02b contingency): resource list committed first; validated and previewed provision; `live_twilio` passes; copy agent sends exactly one SMS and refuses a repeat; failure drill passes; production test call delivers; tool detached after the demo; redacted evidence recorded; status PR merged.
+- **DoD:** plan §5 USMS02 (one session that starts before the demo and runs through the detach, holding the only branch; plan §3 timeline; a pre-demo code fix goes through the plan §3 USMS02b contingency): resource list committed first; validated and previewed provision; `live_twilio` passes; copy agent sends exactly one SMS and refuses a repeat; failure drill passes; production test call delivers; tool detached after the demo; Twilio API key rotated (Q-094, by USMS02 or the contingent USMS03); redacted evidence recorded; status PR merged.
 - **Test coverage:** one opt-in live send; scripted copy-agent checks; one live production call.
 - **PR slots:** 1 status PR (branchless unit).

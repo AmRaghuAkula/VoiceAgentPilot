@@ -75,8 +75,8 @@ The bridge's own code and traffic are unchanged. The only new edges start at the
 - **At demo volume, where the hourly cap is 6 sends, that's a few cents per text either way.** The service logs the encoding and the segment count so the cost is visible.
 
 **Template validator (K12, D-064).** It runs on the agent's text after K11 normalization (so NFKC has already turned a full-width dot into `.`, zero-width and other format characters are gone, and the ideographic full stop is mapped to `.`), and before `SMS_PREFIX` is added.
-1. **Label config.** `SMS_ALLOWED_LABELS` is a comma-separated list, set at deploy time from the azd environment; the repo holds no value. Each entry is trimmed. There must be 1 to `SMS_MAX_LINES` entries; each is 1 to 32 characters from the value charset (rule 4) **without** `,` and `.`; and none repeats (compared case-insensitively). If it is unset, empty, or has any bad entry, every request gets `unavailable`. It fails closed: there is never a free-text fallback.
-2. **Line shape.** Every line must be exactly `<label>: <value>`. That is a label, then a colon and one space, then a non-empty value. A line with no label, with nothing after the label, or with any other shape is rejected (`bad_line`). The text needs at least one line.
+1. **Label config.** `SMS_ALLOWED_LABELS` is a comma-separated list, set at deploy time from the azd environment; the repo holds no value. Each entry is trimmed. There must be 1 to `SMS_MAX_LINES` entries; each is 1 to 32 characters from the value charset (rule 4) **without** `,` and `.`, with no double spaces; and none repeats (compared case-insensitively). If it is unset, empty, or has any bad entry, every request gets `unavailable`. It fails closed: there is never a free-text fallback.
+2. **Line shape.** Every line must be exactly `<label>: <value>`. The line is split at its **first** `:`. The part before it is the label, which must not be empty. The part after it must be exactly one space followed by a non-empty value. A line with no `:`, an empty label, nothing after the label, or any other shape is rejected (`bad_line`). The text needs at least one line.
 3. **Labels.** The label must equal an allowed label, compared case-insensitively (ASCII); otherwise `unknown_label`. Each label may appear at most once (`duplicate_label`). Order is not enforced, and a label may be left out.
 4. **Value charset.** A value may contain only:
    - the ASCII letters `A`–`Z` and `a`–`z`;
@@ -86,7 +86,7 @@ The bridge's own code and traffic are unchanged. The only new edges start at the
    - `$ # , + - ( ) ' & %`;
    - and `.`, under rule 5.
 
-   Every other character gives `bad_character`, including `/ \ : @ _ < > [ ] { } | ~ ^ " ! ? ; = *` and the backtick. So `://` and `@` can't occur in a value.
+   Every other character gives `bad_character`, including `/ \ : @ _ < > [ ] { } | ~ ^ " ! ? ; = *`. So `://` and `@` can't occur in a value. (The backtick never reaches this check: K11 maps it to `'`.)
 5. **The period rule.** A `.` is allowed only with an ASCII digit directly before it **and** directly after it. Any run of digits and periods may hold at most one `.`.
    - Accepted: `$1.5M` and `2.5`.
    - Rejected: `1.2.3` and `203.0.113.5`, so no IP address can be written.
@@ -95,11 +95,11 @@ The bridge's own code and traffic are unchanged. The only new edges start at the
 7. **`SMS_PREFIX`.** It must be a single line that obeys rules 4 to 6. It needs no label. If it breaks any of these rules, every request gets `unavailable`.
 
 **Order of checks, and `reason`.** The first failure wins, in this order:
-1. The schema check (`bad_request`).
+1. The schema check (`bad_request`). It rejects only bad JSON, a missing, non-string or empty `message`, and unknown fields. It does **not** apply the 480 `maxLength`: an over-length message, including one over the dispatcher's loose raw pre-check, gives `too_long`.
 2. Normalization, then the config checks on `SMS_PREFIX` and `SMS_ALLOWED_LABELS` (`unavailable`).
 3. `empty` (nothing left after normalization).
-4. `too_many_lines` (over 8).
-5. `too_long` (prefix + text over 480).
+4. `too_many_lines` (over `SMS_MAX_LINES`, default 8).
+5. `too_long` (prefix + text over `SMS_MAX_CHARS`, default 480).
 6. Each line from the top. Within a line: `bad_line`, then `unknown_label`, then `duplicate_label`, then `bad_character`.
 
 The response carries only the code and the fixed `reason` value. It never echoes the text, the offending character, or a label.
@@ -116,7 +116,7 @@ The response carries only the code and the fixed `reason` value. It never echoes
 - Security: Foundry's managed-identity auth, audience `api://<sms-notify-api app id>`.
 
 **Tool description.** This goes in the repo's OpenAPI document, so it stays **generic**: it contains no domain words and no message format. The founder attaches the document as it is. The six-line format comes only from the §11 instruction snippet.
-> Sends one short text message to this business's follow-up contact so a team member can reach the caller. The recipient is fixed; you supply only the message text. Write only lines of the form "Label: value", one per line, using only the labels your instructions give, each at most once. Plain text only: letters, digits, spaces and $ # , + - ( ) ' & %, with a period only as a decimal point between two digits. Never include a link, web address, email address, social handle or anything beyond those lines. At most 480 characters (aim for 320 or fewer). Use at most once per call, near the end, after the caller has confirmed their callback number and agreed to a follow-up. Returns ok true or false. If the code is invalid_request, correct the message as its reason says and call once more; otherwise never call it again in the same call.
+> Sends one short text message to this business's follow-up contact so a team member can reach the caller. The recipient is fixed; you supply only the message text. Write only lines of the form "Label: value", one per line, using only the labels your instructions give, each at most once. Plain text only: letters, digits, spaces and $ # , + - ( ) ' & %, with a period only as a decimal point between two digits. Never include a link, web address, email address, social handle or anything beyond those lines. At most 480 characters (aim for 320 or fewer). Use it once per call, near the end, after the caller has confirmed their callback number and agreed to a follow-up. Returns ok true or false. If the code is invalid_request, correct the message as its reason says and call once more; otherwise never call it again in the same call.
 
 **Result codes** (`ok` / `code`):
 
@@ -139,7 +139,8 @@ If several recipients are configured, the core sends to each one separately (pla
 2. Parse the body against the schema, then normalize the text (K11):
    - NFKC;
    - CRLF and CR become LF;
-   - strip C0/C1 control characters except LF, and bidi-override characters;
+   - strip C0/C1 control characters except LF, bidi-override characters, and every Unicode format character (category Cf, including zero-width characters and the soft hyphen U+00AD);
+   - U+2028 and U+2029 become LF; U+3002, U+FF0E and U+FF61 become `.` (so the K12 period rule sees them);
    - collapse whitespace within each line, and drop blank lines;
    - map curly quotes, dashes, ellipses and the backtick to ASCII.
 
@@ -207,7 +208,7 @@ agent-tools/sms-notify/
 ## 9. Test plan (USMS01; all offline except the opt-in marker)
 
 - **Unit, core:**
-  - Normalization: NFKC, controls, bidi, and CRLF/CR to LF. Newlines are kept, whitespace is collapsed within lines, and blank lines are dropped. Curly quotes, dashes and the backtick become ASCII.
+  - Normalization: NFKC, controls, bidi, Cf characters, the dot variants, and CRLF/CR/U+2028/U+2029 to LF. Newlines are kept, whitespace is collapsed within lines, and blank lines are dropped. Curly quotes, dashes and the backtick become ASCII.
   - Boundaries: 480 and 481 characters, and 8 and 9 lines; with a non-empty `SMS_PREFIX`, the boundary moves down by the prefix length; a prefix containing a newline gives `unavailable`.
   - Template validator (K12, D-064): the full list is in the plan, USMS01 amendment A1 (tests T1 to T12). In short: a six-line fixture with **made-up** labels and fictional values passes unchanged (`$650K`, `$1.5M`, `416-555-0142`). `pay-now.top`, `evil.ru`, `goo.gl/x`, `203.0.113.5/x`, `http://x`, `a@b.com`, `J.Smith` and `Jr.` are rejected as values. An unknown label, a duplicate label and a bad line shape are rejected. Empty or invalid `SMS_ALLOWED_LABELS` gives `unavailable`. Zero-width and full-width or ideographic dot tricks are still rejected. The founder's real labels are **not** used in tests (genericity).
   - An empty result after stripping gives `invalid_request` with `reason` `empty`.
@@ -246,7 +247,7 @@ The rehearsal and production-attach procedure that uses this snippet is in the p
 > ```
 >
 > 4. For any field the caller did not give, write `not given`. Never guess or invent a value. Use only what the caller said.
-> 5. Use plain text only: letters, digits, spaces and `$ # , + - ( ) ' & %`. Use a period only as a decimal point inside a number (`$1.5M`). Never put a period after a letter: write `J Smith`, `Jr`, `am`. Don't use slashes, colons inside a value, `@`, quotes or emoji. Write dates in words (`October 15`), not with slashes.
+> 5. Use plain text only: letters, digits, spaces and `$ # , + - ( ) ' & %`. Use a period only as a decimal point inside a number (`$1.5M`). Never put a period after a letter: write `J Smith`, `Jr`, `am`. Don't use slashes, colons inside a value, `@`, double quotes or emoji (an apostrophe, as in `O'Brien`, is fine). Write dates in words (`October 15`), not with slashes. Spell every name with plain letters (A to Z, or accented letters such as é, ü or ñ); if a name uses other letters, write the nearest plain-letter spelling.
 > 6. **Never include a website, link, email address or social media handle**, even if the caller gives one or asks you to. Leave it out. If that was the only thing the caller gave for a field, write `not given` for that field.
 > 7. Keep the whole message under 320 characters, with each value short, and no other personal details.
 > 8. If the result's code is `invalid_request`, nothing was sent: fix the message as its `reason` says and call the tool **once more**. Otherwise, never call the tool again in the same call, even if it fails or times out. Don't mention the tool to the caller. Whatever the result, just tell the caller a team member will follow up. If the tool fails, say nothing about errors or technical problems.
@@ -291,7 +292,7 @@ It's a sibling self-contained azd project under `agent-tools/` (the D-053 patter
 
    Every other §7 item stands, including outbound calling. An SMS is not a call.
 
-**D-064 · 2026-10-01 · ACCEPTED (founder direct instruction, 2026-10-01): the message contains nothing beyond the agreed fields.** It supersedes the link-check part of K11/§5 step 2 (rev 2.1) with the positive template validator (K12). The service now enforces the field list as config (`SMS_ALLOWED_LABELS`) plus a strict character allowlist, so no link, URL, email, handle or IP address can be sent. D-063's scope (its two lifts and its data set) is unchanged; D-064 only narrows what can pass.
+**D-064 · 2026-10-01 · ACCEPTED (founder direct instruction, 2026-10-01): the message contains nothing beyond the agreed fields.** It supersedes the link check in §5 step 2 (rev 2.1) with the positive template validator (K12). The service now enforces the field list as config (`SMS_ALLOWED_LABELS`) plus a strict character allowlist, so no link, URL, email, handle or IP address can be sent. D-063's scope (its two lifts and its data set) is unchanged; D-064 only narrows what can pass.
 
 ## 13. Open questions
 
@@ -322,7 +323,7 @@ Moved to the [plan](../plans/2026-09-30-sms-notify-plan.md) §5 and the [milesto
 
 ## 16. Changelog
 
-- **rev 2.2 (2026-10-01, D-064, founder direct instruction; amended mid-USMS01 on its branch):** the round-1 code review found the TLD-list link check leaky (`pay-now.top`, `evil.ru`, `goo.gl/x` and `203.0.113.5/x` passed). It is replaced by a positive template validator (K12): labels from `SMS_ALLOWED_LABELS` (config, fail closed), `<label>: <value>` lines with each label at most once, a value character allowlist, and `.` only between digits. `content_rejected` is retired; every content failure is `invalid_request` with a fixed `reason` enum (§4). The tool description and the §11 snippet now require only the six lines in plain text, no website, link, email or handle, and allow one corrected retry after `invalid_request`. The sample uses `416-555-0142` and `$650K` (111 characters). Q-094 is recorded as ANSWERED.
+- **rev 2.2 (2026-10-01, D-064, founder direct instruction; amended mid-USMS01 on its branch):** the round-1 code review found the TLD-list link check leaky (`pay-now.top`, `evil.ru`, `goo.gl/x` and `203.0.113.5/x` passed). It is replaced by a positive template validator (K12): labels from `SMS_ALLOWED_LABELS` (config, fail closed), `<label>: <value>` lines with each label at most once, a value character allowlist, and `.` only between digits. `content_rejected` is retired; every content failure is `invalid_request` with a fixed `reason` enum (§4). The tool description and the §11 snippet now require only the six lines in plain text, no website, link, email or handle, and allow one corrected retry after `invalid_request`. The sample uses `416-555-0142` and `$650K` (111 characters). Q-094 is recorded as ANSWERED. **Opus docs review:** NEEDS-FIXES (1 blocking, 6 should-fix, 5 nits), all applied: the backtick note (K11 maps it before K12), the §5 normalization list (Cf characters, dot variants, U+2028/U+2029), the schema check not applying `maxLength`, the first-`:` split rule, a plain-letter spelling for names outside Latin-1, the double-space rule for config labels, limits named by setting, and a contingent USMS03 for the key rotation.
 
 - **rev 2.1 (2026-09-30, USMS00, landing edits):**
   - The plan (units, USMS01 steps, rehearsal procedure, founder checklist, DoD) is split out to `docs/superpowers/plans/2026-09-30-sms-notify-plan.md`, with a milestone doc (D-015). §10, §14 and §15 now point there; §11 keeps only the snippet and sample.

@@ -796,7 +796,7 @@ TELEPHONY_BRIDGE_SPEC.md §7 ("Do not build") is lifted in two places, **for `ag
 
 ### D-064 · 2026-10-01 · ACCEPTED · The SMS follow-up message contains nothing beyond the agreed fields: a positive template validator replaces the link heuristic
 
-**Decision.** The text `agent-tools/sms-notify/` sends may contain **only** the agreed fields. That rules out links, URLs, IP addresses and anything else. This supersedes the **link-check part** of spec K11 and §5 step 2 (rev 2.1): the short-TLD deny-list (`_LINK_TLDS`/`_TLD_LINK` in USMS01's draft code) is removed. Spec rev 2.2 adds **K12**, a positive template validator:
+**Decision.** The text `agent-tools/sms-notify/` sends may contain **only** the agreed fields. That rules out links, URLs, IP addresses and anything else. This supersedes the **link check** in spec §5 step 2 (rev 2.1): the short-TLD deny-list (`_LINK_TLDS`/`_TLD_LINK` in USMS01's draft code) is removed. Spec rev 2.2 adds **K12**, a positive template validator:
 - **Line shape.** Every line is `<label>: <value>`.
 - **Labels are config.** They come from `SMS_ALLOWED_LABELS`, a comma-separated list set at deploy time in the azd environment and never committed. An unset, empty or invalid list gives `unavailable` (it fails closed and never falls back to free text). Each label is used at most once.
 - **Value charset.** Values use only ASCII and Latin-1 letters, digits, space and `$ # , + - ( ) ' & %`.
