@@ -1,6 +1,6 @@
 # SMS follow-up notification tool (`agent-tools/sms-notify/`): design spec
 
-> **Status:** ACCEPTED rev 2.1, 2026-09-30, voice-agent-partner (Opus). The founder's answers of 2026-09-30 are applied: **D-062 and D-063 are ACCEPTED**, and Q-085 to Q-093 are all ANSWERED (STATUS.md §3). Rev 2.1 is the text landed in USMS00, after its Opus docs review (D-013). The changelog is §16.
+> **Status:** ACCEPTED rev 2.2, 2026-10-01, voice-agent-partner (Opus). The founder's answers of 2026-09-30 are applied: **D-062 and D-063 are ACCEPTED**, and Q-085 to Q-094 are all ANSWERED (STATUS.md §3). Rev 2.1 is the text landed in USMS00, after its Opus docs review (D-013). **Rev 2.2 (D-064, founder direct instruction 2026-10-01)** replaces the link heuristic with a positive template validator (K12). The changelog is §16.
 > **Plan:** [2026-09-30-sms-notify-plan.md](../plans/2026-09-30-sms-notify-plan.md) (units USMS00 to USMS02, steps, rehearsal procedure, founder checklist, DoD). **Milestones:** [2026-09-30-sms-notify-milestones.md](../plans/2026-09-30-sms-notify-milestones.md).
 > **Goal:** a founder demo on **Friday 2026-10-02**. Near the end of a call, the Foundry agent sends **one** SMS to a fixed follow-up contact, who can then call the caller back.
 > **Shape:** a demo first, but built so it can later become the **Twilio SMS notifier adapter** of a future call-records and notifications service. That service's design is a **draft that is not in this repo**; its decision numbers D-060 and D-061 are provisional and are not recorded in DECISIONS.md. Nothing here depends on that draft being accepted. The adapter shape this tool must implement is copied in full into the plan (§2, P1), so the builder never needs the draft. That adapter is **not** built here as part of any call-records service.
@@ -10,7 +10,7 @@
 ## 1. Scope
 
 **In scope**
-- One HTTP tool operation, `send_follow_up_sms(message)`. The agent writes the whole text, in the six-line format the founder specified. That format lives **only** in the Foundry instruction snippet (§11), never in `agent-tools/` code, so the service stays generic. The service checks it, applies limits, and forwards it through Twilio Programmable SMS, from the existing Twilio number (a Canadian local number, SMS-capable), to the recipient(s) held in service config.
+- One HTTP tool operation, `send_follow_up_sms(message)`. The agent writes the whole text, in the six-line format the founder specified. That format lives in the Foundry instruction snippet (§11), and its line labels live only in the deployment's `SMS_ALLOWED_LABELS` app setting (set in the azd environment, never committed; K12). They never appear in `agent-tools/` code, tests or the OpenAPI document, so the service stays generic. The service checks the text against that label list and a strict character allowlist (K12), applies limits, and forwards it through Twilio Programmable SMS, from the existing Twilio number (a Canadian local number, SMS-capable), to the recipient(s) held in service config.
 - A self-contained azd project under `agent-tools/sms-notify/` with its own `pyproject.toml`, lockfile, tests, `infra/` and `azure.yaml`, in its own resource group (D-053 pattern).
 
 **Out of scope (do not build)**
@@ -61,6 +61,7 @@ The bridge's own code and traffic are unchanged. The only new edges start at the
 | K9 | **Hosting**: Azure Functions Flex Consumption, Python 3.12, anonymous route with auth done in code (calendar P4). It gets its own RG `rg-sms-notify-<env>`, Key Vault, and storage account (the Functions storage account, container `sms-state`). The azd environment is `sms-<env>`, guarded by `AGENT_TOOL=sms-notify` (the D-042/P11 analogue; CLAUDE.md §10) | This mirrors the calendar pattern, costs almost nothing at demo volume, and keeps the bridge's infra untouched |
 | K10 | **Region: East US 2, for the demo only** (Q-085, answered by the founder). It moves to Canada with the rest of the agent stack under Q-074 (Canada data residency) | Co-located with the Foundry resource. The move to Canada is a later redeploy of this self-contained azd project |
 | K11 | **Cap of 480 characters, 8 lines** (raised from 320; see the budget below). The agent is told to aim for 320 or fewer. **Newlines are allowed**: CRLF and CR become LF, up to 8 lines, blank lines are dropped, and whitespace is collapsed *within* each line. Curly quotes, dashes, ellipses and the backtick become their ASCII equivalents so the text stays in the GSM-7 character set where it can. **The cap applies to the body as sent**, `SMS_PREFIX` + text, so a non-empty prefix shrinks the room for the text | The founder's format is one field per line, so a validator that strips newlines would break it. 320 characters is too tight for the worst case. Mapping punctuation to ASCII avoids a silent switch to UCS-2 encoding, which costs about 2.3 times as many segments |
+| K12 | **Positive template validator (D-064), replacing the rev 2.1 link heuristic.** The text may contain only `<label>: <value>` lines, each label from the `SMS_ALLOWED_LABELS` config and used at most once, with every value drawn from a small character allowlist. Anything else is `invalid_request` with a `reason`; nothing is sent. Rules below | Founder, 2026-10-01: the message contains nothing beyond the agreed fields. It goes to a real person's phone and is built from what callers say. A deny-list of link shapes leaked (`pay-now.top`, `evil.ru`, `goo.gl/x` and `203.0.113.5/x` all passed the TLD list). In an allowlist where `/`, `:` and `@` don't exist inside values, and `.` only sits between two digits, no URL, email, handle or IP address can be written |
 
 **Length budget (K11).**
 - **The labels are fixed at 64 characters:** `Name: ` (6), `Phone #: ` (9), `Purpose: ` (9), `Budget: ` (8), `Timeline: ` (10), `Meet preference: ` (17), plus 5 newlines.
@@ -73,17 +74,49 @@ The bridge's own code and traffic are unchanged. The only new edges start at the
 - **In UCS-2,** if any character falls outside GSM-7 (an emoji, or an uncommon accented letter), a message of up to 70 characters is 1 segment and a longer one is billed at 67 per segment. 480 characters would then be 8 segments.
 - **At demo volume, where the hourly cap is 6 sends, that's a few cents per text either way.** The service logs the encoding and the segment count so the cost is visible.
 
+**Template validator (K12, D-064).** It runs on the agent's text after K11 normalization (so NFKC has already turned a full-width dot into `.`, zero-width and other format characters are gone, and the ideographic full stop is mapped to `.`), and before `SMS_PREFIX` is added.
+1. **Label config.** `SMS_ALLOWED_LABELS` is a comma-separated list, set at deploy time from the azd environment; the repo holds no value. Each entry is trimmed. There must be 1 to `SMS_MAX_LINES` entries; each is 1 to 32 characters from the value charset (rule 4) **without** `,` and `.`; and none repeats (compared case-insensitively). If it is unset, empty, or has any bad entry, every request gets `unavailable`. It fails closed: there is never a free-text fallback.
+2. **Line shape.** Every line must be exactly `<label>: <value>`. That is a label, then a colon and one space, then a non-empty value. A line with no label, with nothing after the label, or with any other shape is rejected (`bad_line`). The text needs at least one line.
+3. **Labels.** The label must equal an allowed label, compared case-insensitively (ASCII); otherwise `unknown_label`. Each label may appear at most once (`duplicate_label`). Order is not enforced, and a label may be left out.
+4. **Value charset.** A value may contain only:
+   - the ASCII letters `A`–`Z` and `a`–`z`;
+   - the Latin-1 accented letters U+00C0 to U+00FF, except `×` (U+00D7) and `÷` (U+00F7);
+   - the ASCII digits `0`–`9`;
+   - space;
+   - `$ # , + - ( ) ' & %`;
+   - and `.`, under rule 5.
+
+   Every other character gives `bad_character`, including `/ \ : @ _ < > [ ] { } | ~ ^ " ! ? ; = *` and the backtick. So `://` and `@` can't occur in a value.
+5. **The period rule.** A `.` is allowed only with an ASCII digit directly before it **and** directly after it. Any run of digits and periods may hold at most one `.`.
+   - Accepted: `$1.5M` and `2.5`.
+   - Rejected: `1.2.3` and `203.0.113.5`, so no IP address can be written.
+   - **A `.` next to a letter is always rejected.** So `J.Smith`, `Jr.`, `a.m.`, `St.` and a period at the end of a sentence all fail. The agent writes `J Smith`, `Jr` and `am` instead, and is told to (§11).
+6. **`www`.** The string `www` anywhere in a value, in any case, gives `bad_character`. This is belt-and-braces: rules 4 and 5 already block every web address.
+7. **`SMS_PREFIX`.** It must be a single line that obeys rules 4 to 6. It needs no label. If it breaks any of these rules, every request gets `unavailable`.
+
+**Order of checks, and `reason`.** The first failure wins, in this order:
+1. The schema check (`bad_request`).
+2. Normalization, then the config checks on `SMS_PREFIX` and `SMS_ALLOWED_LABELS` (`unavailable`).
+3. `empty` (nothing left after normalization).
+4. `too_many_lines` (over 8).
+5. `too_long` (prefix + text over 480).
+6. Each line from the top. Within a line: `bad_line`, then `unknown_label`, then `duplicate_label`, then `bad_character`.
+
+The response carries only the code and the fixed `reason` value. It never echoes the text, the offending character, or a label.
+
+**Residual risk, accepted.** Words can still spell an address (`evil dot ru`), and a value can hold any digits that look like a phone number. A phone does not turn either into a link, and the recipient is our own fixed follow-up contact.
+
 ## 4. Tool contract
 
 **OpenAPI 3.0 document** (`openapi/sms-notify.json`). The builder generates it and a contract test pins it:
 - `servers[0].url`: `https://<function-host>/api` (filled in at deploy; not in the repo with a real host).
 - One operation: `POST /v1/follow-up-sms`, `operationId: send_follow_up_sms`.
 - Request body: `{ "message": string, minLength 1, maxLength 480 }`, `additionalProperties: false`. (`maxLength` bounds the message alone; the service then checks prefix + text against the same 480, K11. With the default empty prefix the two are identical.) **No recipient field and no other fields.** Unknown fields return `invalid_request`.
-- Response `200`: `{ "ok": boolean, "code": string, "retry": false }`.
+- Response `200`: `{ "ok": boolean, "code": string, "retry": false, "reason"?: string }`. `reason` is present **only** when `code` is `invalid_request`, and is one of `bad_request`, `empty`, `too_many_lines`, `too_long`, `bad_line`, `unknown_label`, `duplicate_label` or `bad_character` (K12). The schema pins that enum. (`retry` stays `false`; the snippet allows one corrected retry after `invalid_request`, §11, because nothing was claimed or sent.)
 - Security: Foundry's managed-identity auth, audience `api://<sms-notify-api app id>`.
 
 **Tool description.** This goes in the repo's OpenAPI document, so it stays **generic**: it contains no domain words and no message format. The founder attaches the document as it is. The six-line format comes only from the §11 instruction snippet.
-> Sends one short text message to this business's follow-up contact so a team member can reach the caller. The recipient is fixed; you supply only the message text, in the format your instructions give. Use at most once per call, near the end, after the caller has confirmed their callback number and agreed to a follow-up. Plain text, one field per line allowed, no links, at most 480 characters (aim for 320 or fewer). Returns ok true or false. Never call it again in the same call, whatever the result.
+> Sends one short text message to this business's follow-up contact so a team member can reach the caller. The recipient is fixed; you supply only the message text. Write only lines of the form "Label: value", one per line, using only the labels your instructions give, each at most once. Plain text only: letters, digits, spaces and $ # , + - ( ) ' & %, with a period only as a decimal point between two digits. Never include a link, web address, email address, social handle or anything beyond those lines. At most 480 characters (aim for 320 or fewer). Use at most once per call, near the end, after the caller has confirmed their callback number and agreed to a follow-up. Returns ok true or false. If the code is invalid_request, correct the message as its reason says and call once more; otherwise never call it again in the same call.
 
 **Result codes** (`ok` / `code`):
 
@@ -91,8 +124,7 @@ The bridge's own code and traffic are unchanged. The only new edges start at the
 | --- | --- | --- |
 | true | `sent` | Twilio accepted the message for every recipient (HTTP 201) |
 | true | `already_sent` | The same normalized text was **sent successfully** in the last 30 min (dedupe; §5 step 4) |
-| false | `invalid_request` | Bad JSON, a missing or empty `message`, unknown fields, or over 480 characters (prefix + text) or over 8 lines after normalization |
-| false | `content_rejected` | The text contains a link (§5 step 2), or is left empty after control characters are stripped |
+| false | `invalid_request` | With a `reason` (K12). Bad JSON, a missing or empty `message`, or unknown fields give `bad_request`. Text left empty after normalization gives `empty`. Over 8 lines or over 480 characters (prefix + text) gives `too_many_lines` or `too_long`. A failed template check gives `bad_line`, `unknown_label`, `duplicate_label` or `bad_character`. Nothing is claimed or sent |
 | false | `rate_limited` | Inside the cooldown, the hourly cap is reached, or the same text was attempted in the last 30 min without a confirmed send (§5 step 4) |
 | false | `forbidden` | A valid token whose `oid` isn't on the allowlist, or whose role is missing when `SMS_REQUIRE_ROLE=true` |
 | false | `send_failed` | Nothing was sent: Twilio returned a definite error (4xx/5xx, reported with the Twilio error code, never the body), or the connection failed or the deadline ran out **before** the request was sent (K5) |
@@ -111,7 +143,7 @@ If several recipients are configured, the core sends to each one separately (pla
    - collapse whitespace within each line, and drop blank lines;
    - map curly quotes, dashes, ellipses and the backtick to ASCII.
 
-   Then validate `SMS_PREFIX` (an app setting, not a secret): it must be a single line, with no newline, otherwise return `unavailable`. It is prepended directly to the first line. Then check the limits: at most 480 characters for `SMS_PREFIX` + text, and 8 lines. Reject links, meaning any `://`, `www.`, or a token ending in a common TLD from a short fixed list (for example `.com .net .org .ca .io .ly .co .me .info .biz .app .link .xyz .us`, case-insensitive). A bare dotted name (`J.Doe`) or an amount (`$1.5M`) must **not** be rejected.
+   Then validate `SMS_PREFIX` and `SMS_ALLOWED_LABELS` (app settings, not secrets; K12 rules 1 and 7). If either is invalid, return `unavailable`. The prefix is prepended directly to the first line. Then check `empty`, the limits (8 lines; at most 480 characters for `SMS_PREFIX` + text), and the template validator (K12), in the order K12 gives. Any failure returns `invalid_request` with its `reason`, before anything is claimed. There is no link deny-list: the K12 allowlist replaces it (D-064).
 3. Load the config and secrets. Key Vault values are cached for 5 min, and a failure returns `unavailable`. Validate the recipients: E.164 only, country code in `SMS_ALLOWED_COUNTRIES`, which is fixed to `CA` (Q-086: recipients are in Canada only), and at most 3.
 4. **Dedupe:** create `sms-state/dedupe/<sha256(normalized text)>` if it doesn't exist (`If-None-Match: *`), with the body `{"at": <UTC time>, "outcome": "pending"}`. If a copy exists from less than `SMS_DEDUPE_MINUTES` (30) ago, nothing is sent: return `already_sent` (`ok:true`) **only if its recorded outcome is `sent`**, and `rate_limited` (`ok:false`) for any other recorded outcome (`pending`, or a failure). An older copy is replaced using compare-and-swap. After step 7, the outcome is written back to the blob (best-effort; if that write fails, the blob stays `pending`, which fails closed).
 5. **Cooldown (the per-call backstop):** the blob `cooldown` holds the time of the last **claimed** send. It is stamped here, before sending, with `If-Match` compare-and-swap (or created with `If-None-Match: *` if it doesn't exist yet), and is not rolled back if the send later fails. If the stored time is less than `SMS_MIN_INTERVAL_SECONDS` ago (default 90), return `rate_limited` without stamping. A lost compare-and-swap race also returns `rate_limited`.
@@ -156,7 +188,8 @@ agent-tools/sms-notify/
 | `SMS_AUTH_AUDIENCE` / `SMS_AUTH_TENANT_ID` | `api://…` / `<tid>` | |
 | `SMS_REQUIRE_ROLE` | `false` | Set to `true` once `roles` has been seen on a Foundry token |
 | `SMS_MIN_INTERVAL_SECONDS` / `SMS_MAX_PER_HOUR` / `SMS_DEDUPE_MINUTES` | `90` / `6` / `30` | |
-| `SMS_PREFIX` | `""` | Optional fixed operational prefix |
+| `SMS_PREFIX` | `""` | Optional fixed operational prefix; a single line under K12 rules 4 to 6, or `unavailable` |
+| `SMS_ALLOWED_LABELS` | `Ref,Callback #,Note` | **Required**. A comma-separated list of the line labels the text may use (K12 rule 1). Unset or empty means `unavailable` (fail closed). Set only in the azd environment; the repo, Bicep defaults and tests never hold the real labels |
 | `KEY_VAULT_URI` / `STATE_BLOB_URL` | | Accessed through the managed identity |
 | KV secret `twilio-api` | `{"account_sid","api_key_sid","api_key_secret"}` | Set by the founder |
 | KV secret `sms-recipients` | `{"recipients":["+1XXX5550199"]}` | Set by the founder |
@@ -164,7 +197,7 @@ agent-tools/sms-notify/
 ## 8. Security and privacy checks (for the `cso` review, and in the DoD)
 
 - **SSRF:** none. There's one hard-coded Twilio host and one Key Vault and storage endpoint from config. No URL comes from a request.
-- **Injection:** `message` is untrusted text bound for a human. It's normalized, length-capped, stripped of links (anti-phishing), and never interpreted, templated, logged or echoed back. It can't change the recipient, the sender or any headers, and it's sent as a single form field.
+- **Injection:** `message` is untrusted text bound for a human. It's normalized, length-capped, and accepted only if it passes the positive template validator (K12): configured labels only, a character allowlist with no `/`, `:` or `@` in values, and `.` only between digits. So it can't carry a link, email, handle or IP address (anti-phishing, D-064). It's never interpreted, templated, logged or echoed back, and a rejection's `reason` names only the failed rule. It can't change the recipient, the sender or any headers, and it's sent as a single form field.
 - **Abuse:** the recipient is fixed, and there's the cooldown, the hourly cap, dedupe, and Twilio Messaging **Geo Permissions** limited to the allowed countries (founder checklist, plan §6). The worst case for a compromised or misbehaving agent is at most 6 sends an hour, each to the same fixed recipient list (at most 3 numbers we already know; one in the demo).
 - **Identity blast radius:** the OpenAPI-direct identity is resource-wide (E6), so any agent on the Foundry resource that attaches this tool can call it. That's accepted for the demo because the recipient is fixed and the cap applies. Moving to MCP later narrows it to the project.
 - **Logging:** one line per request: request ID, `code`, recipient(s) masked `***1234`, Twilio message SID, character count, encoding (GSM-7 or UCS-2), segment count, and latency. **The message body, the caller's details and full numbers are never logged.** A test (caplog) enforces this. Twilio error bodies aren't logged either, only the numeric Twilio error code.
@@ -176,15 +209,14 @@ agent-tools/sms-notify/
 - **Unit, core:**
   - Normalization: NFKC, controls, bidi, and CRLF/CR to LF. Newlines are kept, whitespace is collapsed within lines, and blank lines are dropped. Curly quotes, dashes and the backtick become ASCII.
   - Boundaries: 480 and 481 characters, and 8 and 9 lines; with a non-empty `SMS_PREFIX`, the boundary moves down by the prefix length; a prefix containing a newline gives `unavailable`.
-  - Link rejection: `https://`, `www.`, `example.com` and `x.ca` are rejected. `J.Doe`, `$1.5M` and `a.m.` pass.
-  - An empty result after stripping is rejected.
-  - A generic six-line fixture with made-up labels passes unchanged. The founder's real labels are **not** used in tests (genericity).
+  - Template validator (K12, D-064): the full list is in the plan, USMS01 amendment A1 (tests T1 to T12). In short: a six-line fixture with **made-up** labels and fictional values passes unchanged (`$650K`, `$1.5M`, `416-555-0142`). `pay-now.top`, `evil.ru`, `goo.gl/x`, `203.0.113.5/x`, `http://x`, `a@b.com`, `J.Smith` and `Jr.` are rejected as values. An unknown label, a duplicate label and a bad line shape are rejected. Empty or invalid `SMS_ALLOWED_LABELS` gives `unavailable`. Zero-width and full-width or ideographic dot tricks are still rejected. The founder's real labels are **not** used in tests (genericity).
+  - An empty result after stripping gives `invalid_request` with `reason` `empty`.
   - A GSM-7 vs UCS-2 segment-count helper, tested at 160, 161, 306, 307, 70 and 71 characters, plus a GSM-7 extension-character case (`{` or `€` counting as 2).
 - **Unit, limits** (with `FakeStateStore` and `FakeClock`): the deadline arithmetic (each operation gets the smaller of its budget and the time left; the deadline expiring before or after a POST gives `send_failed` or `send_unconfirmed`); per-recipient sending with partial success across two recipients giving `ok:false` with the worst code (P6); the cooldown stamped at claim time and not rolled back; dedupe within and after the window; a duplicate after a `sent` outcome gives `already_sent`, and a duplicate after a `pending` or failed outcome gives `rate_limited`, with nothing sent in either case; cooldown boundary; the hourly cap on its 6th and 7th sends; hour rollover; concurrent claims (two tasks, one wins); a storage failure gives `unavailable` and nothing is sent.
 - **Unit, Twilio adapter** (with `FakeTwilioTransport` / `httpx.MockTransport`): the exact URL, host and form fields (`To`, `From`, `Body`); Basic auth uses the API key; 201 gives `sent`; 400 or 500 gives `send_failed` with only the error code; a timeout or dropped connection after sending raises `NotifierUnavailable(maybe_sent=True)` (→ `send_unconfirmed`) with **no retry**; a connection failure before sending raises `NotifierUnavailable(maybe_sent=False)` (→ `send_failed`); `validate_config` rejects a `NotifierConfig` with other than exactly one recipient (P6).
 - **Unit, auth and dispatcher:** locally minted RS256 keys and JWKS. Good token (with `aud` as the app ID URI and as the bare app ID); bad signature, `aud`, `iss`, `tid`, expired or not-yet-valid beyond the 60 s leeway all give 401. An unknown `kid` triggers one JWKS refresh, and a second unknown `kid` within 60 s gets 401 with no fetch; JWKS unreachable gives 200 `unavailable`. A valid token that isn't allowlisted gives 200 `forbidden`. `SMS_REQUIRE_ROLE` on and off. **Every non-401 path returns HTTP 200** (a parametrized matrix). Unknown fields give `invalid_request`. A `to` or `recipient` field is rejected.
 - **Config:** a non-E.164 recipient, a disallowed country, more than 3 recipients, or a missing setting all give `unavailable` at request time. The error message never includes the number.
-- **Contract:** the OpenAPI document has exactly one operation, only a `message` property, `additionalProperties:false`, and a `maxLength` of 480 that equals `SMS_MAX_CHARS`'s default. Its description passes the G2 denylist.
+- **Contract:** the OpenAPI document has exactly one operation, only a `message` property, `additionalProperties:false`, and a `maxLength` of 480 that equals `SMS_MAX_CHARS`'s default. The response's `code` enum has no `content_rejected`, and its `reason` enum is exactly K12's eight values. Its description passes the G2 denylist.
 - **Guards:** G1, no import of `server` anywhere (AST scan). G2, the genericity denylist: a regex for any phone number outside `555-01xx`, plus a hashed-name denylist following calendar P6's format, in `agent-tools/sms-notify/tests/genericity_denylist.txt` (sms-notify owns its own copy, because calendar's G2 hasn't merged yet; CLAUDE.md §7 exempts both files). G3, a logging test (caplog) showing no body, no full number, and no secret.
 - **Opt-in `-m live_twilio`:** one real send, of a fictional body with no personal data, to the configured recipient, using the Key Vault secrets. Run only in USMS02 and by the founder's choice. It's excluded by default in `pyproject` (`addopts = -m "not live_twilio"`).
 - **Whole suite (CLAUDE.md §5 step 5, extended in USMS00):** the bridge suite, the calendar suite if UC02a has merged, and `cd agent-tools/sms-notify && python -m uv run pytest -q`.
@@ -202,30 +234,34 @@ The rehearsal and production-attach procedure that uses this snippet is in the p
 > **Follow-up text message.** Near the end of the call, before you say goodbye:
 > 1. Tell the caller that their details will be passed to a team member by text message so someone can follow up, and ask if that's okay. If they decline, do not send anything.
 > 2. Read their callback number back to them digit by digit and get their confirmation. If you can't confirm it, do not send.
-> 3. Call `send_follow_up_sms` **exactly once**, with a message of exactly these six lines, in this order:
+> 3. Call `send_follow_up_sms` **once**, with a message of **only** these six lines, in this order and exactly this format (label, colon, one space, value), and nothing else before, between or after them:
 >
 > ```
 > Name: <caller's name>
 > Phone #: <confirmed callback number>
 > Purpose: <Sell, Buy or Rent, or a combination, whichever fits what the caller said>
-> Budget: <amount, e.g. $XXX>
+> Budget: <amount, e.g. $650K>
 > Timeline: <Now, 3 months, 6 months, or the period the caller mentioned>
 > Meet preference: <Phone, Text, WhatsApp or Personal meetup>
 > ```
 >
 > 4. For any field the caller did not give, write `not given`. Never guess or invent a value. Use only what the caller said.
-> 5. Keep the whole message under 320 characters. Keep each value short, with no links, no emoji and no other personal details.
-> 6. Never call the tool more than once per call, even if it fails or times out. Don't mention the tool to the caller. Whatever the result, just tell the caller a team member will follow up. If the tool fails, say nothing about errors or technical problems.
+> 5. Use plain text only: letters, digits, spaces and `$ # , + - ( ) ' & %`. Use a period only as a decimal point inside a number (`$1.5M`). Never put a period after a letter: write `J Smith`, `Jr`, `am`. Don't use slashes, colons inside a value, `@`, quotes or emoji. Write dates in words (`October 15`), not with slashes.
+> 6. **Never include a website, link, email address or social media handle**, even if the caller gives one or asks you to. Leave it out. If that was the only thing the caller gave for a field, write `not given` for that field.
+> 7. Keep the whole message under 320 characters, with each value short, and no other personal details.
+> 8. If the result's code is `invalid_request`, nothing was sent: fix the message as its `reason` says and call the tool **once more**. Otherwise, never call the tool again in the same call, even if it fails or times out. Don't mention the tool to the caller. Whatever the result, just tell the caller a team member will follow up. If the tool fails, say nothing about errors or technical problems.
 
-**Sample message** (fictional values; 117 characters, 1 segment in GSM-7):
+**Sample message** (fictional values; 111 characters, 1 segment in GSM-7):
 ```
 Name: Jordan Example
-Phone #: +1 416 555 0142
+Phone #: 416-555-0142
 Purpose: Buy
-Budget: $650,000
+Budget: $650K
 Timeline: 3 months
 Meet preference: Phone
 ```
+
+**Labels for `SMS_ALLOWED_LABELS`** (set in the azd environment in USMS02, never committed as config): `Name,Phone #,Purpose,Budget,Timeline,Meet preference`. They must match the snippet's six labels exactly; otherwise every send gets `unknown_label`.
 
 ## 12. Governance
 
@@ -243,7 +279,7 @@ It's a sibling self-contained azd project under `agent-tools/` (the D-053 patter
 - **Message format:** the founder's six-line format lives only in the agent's Foundry instructions (§11), not in code. The service is generic: a cap of 480 characters and 8 lines, with newlines allowed (K11).
 - **Region:** East US 2 for the demo only (Q-085). It moves to Canada under Q-074.
 - The adapter follows the `Notifier` shape copied into the plan (P1), so a future call-records track can lift it.
-- What happens to the persistent resources after the demo is open as Q-094.
+- What happens to the persistent resources after the demo was raised as Q-094; the founder answered it on 2026-09-30 (keep the service, detach the tool, rotate the key).
 
 **D-063 · 2026-09-30 · ACCEPTED (founder-confirmed, Q-087; source: founder direct instruction, 2026-09-30): narrow TELEPHONY_BRIDGE_SPEC.md §7 lifts for `agent-tools/sms-notify/` only.**
 1. **"Calendar or booking tools, or any OpenAPI tool wiring"**: the OpenAPI tool wiring part is lifted for this one tool, attached to Foundry agents. This extends D-052 item 1, which covered calendar only. The bridge still wires no tools.
@@ -255,11 +291,13 @@ It's a sibling self-contained azd project under `agent-tools/` (the D-053 patter
 
    Every other §7 item stands, including outbound calling. An SMS is not a call.
 
+**D-064 · 2026-10-01 · ACCEPTED (founder direct instruction, 2026-10-01): the message contains nothing beyond the agreed fields.** It supersedes the link-check part of K11/§5 step 2 (rev 2.1) with the positive template validator (K12). The service now enforces the field list as config (`SMS_ALLOWED_LABELS`) plus a strict character allowlist, so no link, URL, email, handle or IP address can be sent. D-063's scope (its two lifts and its data set) is unchanged; D-064 only narrows what can pass.
+
 ## 13. Open questions
 
 Numbers: Q-075 and Q-076 are UC01's (already on `main`); Q-077 to Q-084 are reserved for the unlanded call-records draft. The authoritative rows are in STATUS.md §3.
 
-**Q-085 to Q-093 were answered by the founder directly, in chat, on 2026-09-30.** Q-094 was raised afterwards, in USMS00's docs review, and is open.
+**Q-085 to Q-093 were answered by the founder directly, in chat, on 2026-09-30.** Q-094 was raised afterwards, in USMS00's docs review, and the founder answered it the same day.
 
 | Q | Question | Owner | Blocks | Status and answer |
 | --- | --- | --- | --- | --- |
@@ -272,7 +310,7 @@ Numbers: Q-075 and Q-076 are UC01's (already on `main`); Q-077 to Q-084 are rese
 | Q-091 | Spending and resource approval (Function, storage, Key Vault, SMS charges); paid or trial Twilio account | Founder | USMS02 | **ANSWERED: YES.** The account is paid and the founder has created an API key. **No values are recorded here** |
 | Q-092 | Twilio keeps message bodies in its logs | Founder | USMS02 | **ANSWERED: YES** (accepted for the demo). Before real callers, look at deleting message records after delivery through the API (to be verified, not assumed) |
 | Q-093 | Accept "one SMS per call" as instructions + 90 s cooldown + dedupe + hourly cap | Partner / founder | USMS01 | **ANSWERED: YES.** A true per-call limit would need a future bridge unit |
-| Q-094 | After the demo, what happens to USMS02's persistent resources and credentials: keep them (allowlist unchanged, so any agent on the Foundry resource that attaches the tool could call it, E6), tear them down, revoke the Twilio API key, or redeploy in Canada (Q-074)? Any later infra change needs its own unit, named in the plan or a new D-NNN (CLAUDE.md §10) | Founder | Nothing before the demo; decide within a week after it | **OPEN** (raised in USMS00's docs review) |
+| Q-094 | After the demo, what happens to USMS02's persistent resources and credentials: keep them (allowlist unchanged, so any agent on the Foundry resource that attaches the tool could call it, E6), tear them down, revoke the Twilio API key, or redeploy in Canada (Q-074)? Any later infra change needs its own unit, named in the plan or a new D-NNN (CLAUDE.md §10) | Founder | Nothing before the demo | **ANSWERED** (founder, 2026-09-30, accepting the partner's recommendation): keep the service after the demo, detach the tool from production (Q-090), and rotate the Twilio API key. The rotation is named in the plan (§3, USMS02 / USMS03) |
 
 ## 14. Founder checklist
 
@@ -283,6 +321,8 @@ Moved to the [plan](../plans/2026-09-30-sms-notify-plan.md) §6.
 Moved to the [plan](../plans/2026-09-30-sms-notify-plan.md) §5 and the [milestone doc](../plans/2026-09-30-sms-notify-milestones.md).
 
 ## 16. Changelog
+
+- **rev 2.2 (2026-10-01, D-064, founder direct instruction; amended mid-USMS01 on its branch):** the round-1 code review found the TLD-list link check leaky (`pay-now.top`, `evil.ru`, `goo.gl/x` and `203.0.113.5/x` passed). It is replaced by a positive template validator (K12): labels from `SMS_ALLOWED_LABELS` (config, fail closed), `<label>: <value>` lines with each label at most once, a value character allowlist, and `.` only between digits. `content_rejected` is retired; every content failure is `invalid_request` with a fixed `reason` enum (§4). The tool description and the §11 snippet now require only the six lines in plain text, no website, link, email or handle, and allow one corrected retry after `invalid_request`. The sample uses `416-555-0142` and `$650K` (111 characters). Q-094 is recorded as ANSWERED.
 
 - **rev 2.1 (2026-09-30, USMS00, landing edits):**
   - The plan (units, USMS01 steps, rehearsal procedure, founder checklist, DoD) is split out to `docs/superpowers/plans/2026-09-30-sms-notify-plan.md`, with a milestone doc (D-015). §10, §14 and §15 now point there; §11 keeps only the snippet and sample.

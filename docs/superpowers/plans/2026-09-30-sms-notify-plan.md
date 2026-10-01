@@ -1,6 +1,6 @@
 # SMS Follow-up Notification Tool — Implementation Plan (USMS00–USMS02)
 
-Last updated: 2026-09-30 (rev 1, written in USMS00 from spec rev 2.1, after its Opus docs review) · Spec: [../specs/2026-09-30-sms-notify-design.md](../specs/2026-09-30-sms-notify-design.md) · Milestones: [2026-09-30-sms-notify-milestones.md](2026-09-30-sms-notify-milestones.md) · Decisions: D-062, D-063
+Last updated: 2026-10-01 (rev 1.1: amendment A1 for spec rev 2.2 / D-064, the positive template validator, and Q-094's answer; rev 1 was written in USMS00 from spec rev 2.1, after its Opus docs review) · Spec: [../specs/2026-09-30-sms-notify-design.md](../specs/2026-09-30-sms-notify-design.md) · Milestones: [2026-09-30-sms-notify-milestones.md](2026-09-30-sms-notify-milestones.md) · Decisions: D-062, D-063
 
 > **For agentic workers:** REQUIRED SUB-SKILL: use superpowers:executing-plans (one task = one unit = one session). Steps use checkbox (`- [ ]`) syntax. [CLAUDE.md](../../../CLAUDE.md) §4–§6 is the authoritative lifecycle around every task; the steps below cover only the unit's own work.
 
@@ -30,7 +30,7 @@ Last updated: 2026-09-30 (rev 1, written in USMS00 from spec rev 2.1, after its 
 **Self-containment (D-053 pattern, D-062)**
 - `agent-tools/sms-notify/` has its own `pyproject.toml`, `uv.lock`, tests, `infra/` and `azure.yaml`. It never imports from `server/` or `agent-tools/calendar/`, and neither imports from it (G1).
 - No real-estate words, agent names, person names or real phone numbers anywhere under `agent-tools/sms-notify/`, tests included. Fictional NANP `555-0100`–`555-0199` only. The single exemption is `agent-tools/sms-notify/tests/genericity_denylist.txt`, which holds names only as hashes (CLAUDE.md §7, calendar P6 format).
-- The founder's six-line message format and its labels never appear in code, tests or the OpenAPI document. They live only in the Foundry instructions (spec §11).
+- The founder's six-line message format and its labels never appear in code, tests, Bicep defaults or the OpenAPI document. The format lives only in the Foundry instructions (spec §11); the labels are set only in the azd environment as `SMS_ALLOWED_LABELS` in USMS02 (spec K12, D-064). Tests use made-up labels.
 
 **Infra (CLAUDE.md §10, sms-notify rule)**
 - `agent-tools/sms-notify/infra/` and `azure.yaml` change only in USMS01 (write and validate, provision nothing) and USMS02 (provision and deploy).
@@ -108,12 +108,34 @@ Implements spec §4 (contract), §5 (processing order), §6 (layout), §7 (confi
 
 - [ ] **Step 1 — Prerequisites.** USMS00 is `CLOSED`. Run `az functionapp list-flexconsumption-locations` and confirm East US 2 offers Flex Consumption with Python 3.12 (Q-085); if not, stop and hand back. Create the uv project and pin `httpx`, `PyJWT[crypto]`, `azure-identity`, `azure-functions` and `pytest` from what `uv add` installs, not from memory.
 - [ ] **Step 2 — Scaffold and guards first.** `pyproject.toml` (with `addopts = -m "not live_twilio"` and the `live_twilio` marker registered), `.gitignore` covering `local.settings.json`, and the guard tests G1 (no `server` or `calendar_tools` import, AST scan), G2 (the phone regex from calendar P6 and the hashed-name denylist in `tests/genericity_denylist.txt`, including self-tests that pass on their own file) and G3 (caplog: no body, no full number, no secret). They fail first, then pass as code lands.
-- [ ] **Step 3 — Core messages and limits, test-first.** `core/messages.py` (normalization, limits, link rule, GSM-7/UCS-2 segment helper) and `core/limits.py` (dedupe with outcome per P2, cooldown stamped at claim time, hourly slots) and `core/service.py` (`notify()`: the processing order of spec §5, the K5 deadline arithmetic, per-recipient sending and the worst-code rule per P6, against a fake `Notifier`) using `FakeStateStore` and `FakeClock`; all spec §9 "core" and "limits" tests.
+- [ ] **Step 3 — Core messages and limits, test-first.** `core/messages.py` (normalization, limits, the K12 template validator per amendment A1 below, GSM-7/UCS-2 segment helper) and `core/limits.py` (dedupe with outcome per P2, cooldown stamped at claim time, hourly slots) and `core/service.py` (`notify()`: the processing order of spec §5, the K5 deadline arithmetic, per-recipient sending and the worst-code rule per P6, against a fake `Notifier`) using `FakeStateStore` and `FakeClock`; all spec §9 "core" and "limits" tests.
 - [ ] **Step 4 — Twilio adapter, test-first.** `adapters/twilio_sms.py` implementing P1 against `httpx.MockTransport`: exact URL and host, form fields `To`/`From`/`Body`, Basic auth with the API key, 201 → sent, 4xx/5xx → `send_failed` with only the Twilio error code, timeout or drop after sending → `send_unconfirmed` with no retry, failure before sending → `send_failed`, and `validate_config` rejecting anything but exactly one recipient (P6). Plus `adapters/blob_state.py` (`If-None-Match`/`If-Match` semantics) and `adapters/keyvault_secrets.py` (P4), each with mocked-transport tests.
 - [ ] **Step 5 — Auth and dispatcher, test-first.** `http/auth.py` and `http/dispatcher.py` (P3): locally minted RS256 keys and JWKS; JWKS caching and the refresh on an unknown `kid`, at most once per 60 s (a second unknown `kid` inside that window is 401 with no fetch); both `aud` forms; the 60 s leeway; JWKS unreachable → 200 `unavailable`; the 401 cases; `forbidden` as 200; `SMS_REQUIRE_ROLE` on and off; the parametrized always-200 matrix; unknown fields and any `to`/`recipient` field → `invalid_request`; config errors → `unavailable` with no number in the message.
-- [ ] **Step 6 — OpenAPI document and contract test.** `openapi/sms-notify.json` per spec §4 with a placeholder server host; the contract test pins one operation, only `message`, `additionalProperties:false`, `maxLength` 480 equal to `SMS_MAX_CHARS`'s default, and the description passing G2.
-- [ ] **Step 7 — Infra, validated only.** `infra/main.bicep` + `main.parameters.json` + `azure.yaml`: RG `rg-sms-notify-<env>`, Flex app with a system-assigned MI, storage with shared-key access disabled (the MI gets Storage Blob Data Contributor on `sms-state`), Key Vault in RBAC mode (the MI gets Key Vault Secrets User; the founder gets Key Vault Secrets Officer), app settings from spec §7 (no secret values), HTTPS only, TLS 1.2, no CORS, and a storage lifecycle rule that deletes blobs under `sms-state/dedupe/` and `sms-state/rate/` one day after last modification (spec §5 "State retention"). `az bicep build` and `az deployment sub validate` pass. **Nothing is provisioned**, and no azd environment is created.
-- [ ] **Step 8 — README.** The configuration table (every spec §7 setting and secret, fictional examples only), the P5 Entra commands with placeholders, and the local test command.
+- [ ] **Step 6 — OpenAPI document and contract test.** `openapi/sms-notify.json` per spec §4 with a placeholder server host; the contract test pins one operation, only `message`, `additionalProperties:false`, `maxLength` 480 equal to `SMS_MAX_CHARS`'s default, the response `code` enum without `content_rejected`, the `reason` enum (A1), and the description (spec §4 rev 2.2 text) passing G2.
+- [ ] **Step 7 — Infra, validated only.** `infra/main.bicep` + `main.parameters.json` + `azure.yaml`: RG `rg-sms-notify-<env>`, Flex app with a system-assigned MI, storage with shared-key access disabled (the MI gets Storage Blob Data Contributor on `sms-state`), Key Vault in RBAC mode (the MI gets Key Vault Secrets User; the founder gets Key Vault Secrets Officer), app settings from spec §7 (no secret values; `SMS_ALLOWED_LABELS` and `SMS_PREFIX` come from azd environment parameters with **no** default value in the repo, so an unset label list fails closed), HTTPS only, TLS 1.2, no CORS, and a storage lifecycle rule that deletes blobs under `sms-state/dedupe/` and `sms-state/rate/` one day after last modification (spec §5 "State retention"). `az bicep build` and `az deployment sub validate` pass. **Nothing is provisioned**, and no azd environment is created.
+- [ ] **Step 8 — README.** The configuration table (every spec §7 setting and secret, including `SMS_ALLOWED_LABELS` with a made-up example and its fail-closed note; fictional examples only), the P5 Entra commands with placeholders, and the local test command.
+- [ ] **Amendment A1 — positive template validator (spec rev 2.2, K12, D-064; founder direct instruction 2026-10-01; applied mid-unit on this branch).** Replaces the TLD link check.
+  - **Builder changes:**
+    1. In `core/messages.py`, delete `_LINK_TLDS`, `_TLD_LINK` and `contains_link`, and remove every link-specific test.
+    2. Add the K12 validator with the rules exactly as spec §3 "Template validator" states them. Keep the K11 normalization in front of it, including Cf stripping and the full-width and ideographic dot mapping.
+    3. Add `SMS_ALLOWED_LABELS` parsing and validation, with an empty or invalid list giving `unavailable`. Validate `SMS_PREFIX` against K12 rules 4 to 6.
+    4. Retire `content_rejected` everywhere: the service, the OpenAPI enum and the tests. Every content failure becomes `invalid_request` with `reason`.
+    5. Add the optional `reason` field to the response envelope, the dispatcher and the OpenAPI schema, as an enum of the eight values.
+    6. Replace the OpenAPI operation description with the spec §4 rev 2.2 text.
+    7. Add the `SMS_ALLOWED_LABELS` app setting in Bicep, with no default, and its README config row.
+  - **Tests the builder must write** (made-up labels only, for example `SMS_ALLOWED_LABELS=Contact,Callback #,Reason,Amount,When,Channel`; never the founder's labels):
+    - **T1, accepted.** A six-line message using all six labels, with fictional values. It includes `Amount: $650K`, a line with `$1.5M`, `Callback #: 416-555-0142` and an accented name such as `Zoë Example`. It passes unchanged. The same message with a label in another case, or with lines in another order, or with a label left out, also passes.
+    - **T2, rejected values.** Each of these as a value gives `invalid_request` with `bad_character`: `pay-now.top`, `evil.ru`, `goo.gl/x`, `203.0.113.5/x`, `203.0.113.5`, `1.2.3`, `http://x`, `a@b.com`, `J.Smith`, `Jr.`, `3 months.`, `wwwexample`, `x_y` and `"quoted"`.
+    - **T3, bad line shape.** Each of these gives `bad_line`: a bare `http://x` line, `Contact:` with nothing after it, `Contact:value` with no space, and a line with no colon.
+    - **T4, unknown label.** `Website: x` gives `unknown_label`.
+    - **T5, duplicate label.** The same label twice, including in another case, gives `duplicate_label`.
+    - **T6, empty or invalid label config.** Each of these gives `unavailable`, with nothing claimed and nothing sent: `SMS_ALLOWED_LABELS` unset, empty, only commas, an entry containing `.` or `:`, duplicate entries, more than `SMS_MAX_LINES` entries, or an entry over 32 characters.
+    - **T7, `SMS_PREFIX`.** A prefix containing `/`, `@`, `a.b` or a newline gives `unavailable`. A valid prefix still moves the 480 boundary down by its length.
+    - **T8, Unicode tricks.** These are still rejected after normalization, as `bad_character`: `evil` + U+200B + `.ru`, `evil` + U+00AD + `.ru`, `evil` + U+FF0E + `ru`, `evil` + U+3002 + `ru`, and the full-width `ｅｖｉｌ．ｒｕ`.
+    - **T9, no echo.** No rejection's response body contains any of the message text or the label names. Its keys are exactly `ok`, `code`, `retry` and `reason`. The G3 caplog test also covers these paths.
+    - **T10, no claim.** Every `invalid_request` path makes no state-store call and no Twilio call.
+    - **T11, check order.** A message that is both too long and has a bad character gives `too_long`. A message whose first line has an unknown label and whose second line has a bad character gives `unknown_label`.
+    - **T12, contract.** The OpenAPI `code` enum has no `content_rejected`; the `reason` enum equals the eight K12 values; the description is the rev 2.2 text and passes G2.
 - [ ] **Step 9 — Close.** The whole suite (bridge, calendar if present, sms-notify) passes; Opus `/code-review` and `cso` until clean; open the PR `USMS01: SMS follow-up notification tool`; partner status commit; merge with a merge commit; delete the branch.
 
 ### USMS02 — Deploy and rehearse (branchless ops)
@@ -121,12 +143,12 @@ Implements spec §4 (contract), §5 (processing order), §6 (layout), §7 (confi
 See §4 for the procedure. Steps in order:
 
 - [ ] Cut the `docs/status-YYYY-MM-DD` branch **first**, and commit and push the resource list (RG, Flex app and plan, storage, Key Vault, Log Analytics/App Insights if the Bicep creates them, the Entra app `sms-notify-api` and its service principal and role assignment, the copy agent) before anything is created. Each item is approved under Q-091.
-- [ ] `azd env new sms-demo` from `agent-tools/sms-notify/`; set `AGENT_TOOL=sms-notify` and the non-secret settings; confirm the guard prints `sms-notify`; `az deployment sub validate` and `azd provision --preview -e sms-demo`; then `azd provision` immediately followed by `azd deploy`.
+- [ ] `azd env new sms-demo` from `agent-tools/sms-notify/`; set `AGENT_TOOL=sms-notify` and the non-secret settings, including `SMS_ALLOWED_LABELS` set to the six labels listed under spec §11 (exactly as the snippet writes them); confirm the guard prints `sms-notify`; `az deployment sub validate` and `azd provision --preview -e sms-demo`; then `azd provision` immediately followed by `azd deploy`.
 - [ ] Create the Entra app and role assignment (P5); set `SMS_ALLOWED_PRINCIPALS` to the Foundry resource MI's `oid`.
 - [ ] The founder loads `twilio-api` and `sms-recipients` with `az keyvault secret set` personally (§6 item 4).
 - [ ] Run `-m live_twilio` once (fictional body, no personal data).
-- [ ] §4 steps 1–4 (copy agent, failure drill, production attach, detach after the demo).
-- [ ] Record redacted evidence (codes, latencies, segment counts; no numbers, bodies, SIDs, `oid`s or GUIDs), including the detach after the demo; then open, merge and delete the status branch in the same session (which runs through the demo; see the timeline above). Bring Q-094 (post-demo lifecycle) to the founder in the daily email. If the PR adds a D-NNN or revises this plan or the spec, it gets the Opus docs review first.
+- [ ] §4 steps 1–5 (copy agent, failure drill, production attach, detach after the demo, Twilio API key rotation).
+- [ ] Record redacted evidence (codes, latencies, segment counts; no numbers, bodies, SIDs, `oid`s or GUIDs), including the detach after the demo; then open, merge and delete the status branch in the same session (which runs through the demo; see the timeline above). Q-094 is answered (keep the service, detach, rotate the key); record the detach and the rotation (no key values) in the evidence. If the PR adds a D-NNN or revises this plan or the spec, it gets the Opus docs review first.
 
 ## 4. USMS02 rehearsal and production attach (D-049-safe)
 
@@ -135,6 +157,7 @@ D-049 and UC01 E9 mean any **saved** edit to the production agent goes live on t
 2. **Failure drill** on the copy agent: temporarily set `SMS_ALLOWED_PRINCIPALS` to a dummy value. The agent should get `forbidden` and say nothing alarming. Then restore it.
 3. **Production attach** 30 to 60 min before the demo (Q-090, answered). Attach the tool and paste the snippet in **one save**. Make one test call from the founder's mobile and confirm the SMS arrives.
 4. **After the demo:** detach the tool and remove the snippet in one save (Q-090, answered). Delete the copy agent and its Foundry agent identity.
+5. **Rotate the Twilio API key (Q-094, answered).** The founder creates a new Standard API key in the Twilio console, loads it personally with `az keyvault secret set` on `twilio-api`, and then revokes the old key. No values pass through an agent or the repo. The service stays deployed, with the tool detached. If USMS02's session ends before this step, it runs as **USMS03** (branchless, its own `docs/status-YYYY-MM-DD` branch). USMS03 is named here so CLAUDE.md §10 allows it, and it changes no infra.
 
 ## 5. Definition of Done
 
@@ -151,6 +174,7 @@ D-049 and UC01 E9 mean any **saved** edit to the production agent goes live on t
 5. Create the **prompt-kind copy agent**, attach the tool, paste the spec §11 snippet, and run the copy-agent tests.
 6. 30 to 60 min before the demo (Q-090): attach the tool to production and paste the snippet in **one save**. Make one test call from your mobile, and check that the six-line SMS arrives.
 7. After the demo: **detach** the tool and remove the snippet from the production agent in one save (Q-090), then delete the copy agent.
+8. Then rotate the Twilio API key (Q-094): create a new key, run `az keyvault secret set` on `twilio-api` yourself, and revoke the old key.
 
 ## 7. Consistency with DECISIONS.md (checked in USMS00)
 
@@ -161,7 +185,8 @@ D-049 and UC01 E9 mean any **saved** edit to the production agent goes live on t
 - **D-050 / D-059:** the 5 s deadline keeps model time plus tool time inside the 15 s OpenAPI watchdog; OpenAPI-direct here does not decide calendar's D-059(a).
 - **D-052 / D-057 / D-063:** the §7 lifts are narrow and per tool; the bridge still wires no tools; outbound calling stays banned.
 - **TELEPHONY_BRIDGE_SPEC.md:** unchanged; D-063 records the lifts, as D-052 did for calendar.
-- **Post-demo lifecycle:** the persistent resources outlive USMS02; keeping, tearing down, revoking the Twilio key or moving to Canada is Q-094 (OPEN). Any such infra change is its own unit, named in this plan or a new D-NNN (CLAUDE.md §10).
+- **Post-demo lifecycle:** the persistent resources outlive USMS02. Q-094 is ANSWERED (founder, 2026-09-30): keep the service, detach the tool, rotate the key (§4 step 5, USMS02 or USMS03). A teardown or Canada move is still its own unit, named in this plan or a new D-NNN (CLAUDE.md §10).
+- **D-064 / D-063:** the K12 template validator only narrows what D-063's lift lets through; D-063's scope and data set are unchanged.
 
 ## 8. Review history
 
@@ -170,3 +195,4 @@ D-049 and UC01 E9 mean any **saved** edit to the production agent goes live on t
   - Round 2: NEEDS-FIXES from two independent reviewers (0 blocking, 3 should-fix, 6 nits).
   - Round 3: CLEAN from two reviewers, with their optional nits applied.
   - Every finding was fixed on Opus. Details are in STATUS.md §2 and the spec §16 changelog.
+- **D-064 amendment (2026-10-01, mid-USMS01):** after USMS01's code review round 1, the founder ruled that the message holds nothing beyond the six fields. Spec rev 2.2 (K12) and amendment A1 above were written by the partner on Opus and got an Opus docs review on the amendment's own commit (STATUS.md §2).

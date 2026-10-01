@@ -793,3 +793,20 @@ TELEPHONY_BRIDGE_SPEC.md §7 ("Do not build") is lifted in two places, **for `ag
 **Why:** a follow-up text with the caller's details is exactly what the founder asked for; it can't exist without these two lifts. Keeping them per tool, as D-052 did for calendar, leaves the bridge's §7 boundary intact.
 
 **Source:** founder, direct instruction in chat, 2026-09-30, confirming the partner's proposal (Q-087: "YES").
+
+### D-064 · 2026-10-01 · ACCEPTED · The SMS follow-up message contains nothing beyond the agreed fields: a positive template validator replaces the link heuristic
+
+**Decision.** The text `agent-tools/sms-notify/` sends may contain **only** the agreed fields. That rules out links, URLs, IP addresses and anything else. This supersedes the **link-check part** of spec K11 and §5 step 2 (rev 2.1): the short-TLD deny-list (`_LINK_TLDS`/`_TLD_LINK` in USMS01's draft code) is removed. Spec rev 2.2 adds **K12**, a positive template validator:
+- **Line shape.** Every line is `<label>: <value>`.
+- **Labels are config.** They come from `SMS_ALLOWED_LABELS`, a comma-separated list set at deploy time in the azd environment and never committed. An unset, empty or invalid list gives `unavailable` (it fails closed and never falls back to free text). Each label is used at most once.
+- **Value charset.** Values use only ASCII and Latin-1 letters, digits, space and `$ # , + - ( ) ' & %`.
+- **The period rule.** A `.` is allowed only between two digits, and at most once per numeric run. So `$1.5M` passes, while `J.Smith`, `Jr.` and IP addresses fail. `www` is rejected.
+- **`SMS_PREFIX`** obeys the same character rules.
+- **Rejections.** Each one returns HTTP 200 `invalid_request` with a fixed `reason` enum, and never echoes the text. `content_rejected` is retired.
+- **Agent instructions.** The tool description and the Foundry snippet tell the agent to write only the six lines in plain text, and never a website, link, email or handle (it writes `not given` or leaves the item out). The agent may make one corrected retry after `invalid_request`, because nothing was claimed or sent.
+
+**Scope.** D-063's scope is unchanged: both of its lifts, its data set (the six fields), where the data goes, and what our systems store. D-064 only narrows what the service lets through, and it applies to `agent-tools/sms-notify/` only. The code stays generic: the founder's labels live in the snippet (docs) and in the deployment's config, never in code, tests or the OpenAPI document. The change is applied mid-unit on USMS01's branch, `feat/usms01-sms-notify` (plan amendment A1); no new unit is created.
+
+**Why:** the message goes to a real person's phone and is built from what callers say, so a caller could try to get a link or a lookalike address into it. USMS01's code review round 1 showed that the deny-list leaked: `pay-now.top`, `evil.ru`, `goo.gl/x` and `203.0.113.5/x` all passed. Any TLD list is incomplete by design. A strict allowlist template, where `/`, `:` and `@` can't appear in a value and `.` only sits between digits, cannot express a URL, email, handle or IP address. It is also simpler to reason about and to test. What's left is an address spelled in words (`evil dot ru`), which a phone does not make clickable. The recipient is our own fixed contact, so that's accepted.
+
+**Source:** founder, direct instruction in chat, 2026-10-01 ("nothing beyond the six agreed fields: no links, no URLs, no IP addresses, nothing else"). The validator's detailed design is the partner's, under that instruction.
