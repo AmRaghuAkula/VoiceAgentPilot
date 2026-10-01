@@ -810,3 +810,31 @@ TELEPHONY_BRIDGE_SPEC.md §7 ("Do not build") is lifted in two places, **for `ag
 **Why:** the message goes to a real person's phone and is built from what callers say, so a caller could try to get a link or a lookalike address into it. USMS01's code review round 1 showed that the deny-list leaked: `pay-now.top`, `evil.ru`, `goo.gl/x` and `203.0.113.5/x` all passed. Any TLD list is incomplete by design. A strict allowlist template, where `/`, `:` and `@` can't appear in a value and `.` only sits between digits, cannot express a URL, email, handle or IP address. It is also simpler to reason about and to test. What's left is an address spelled in words (`evil dot ru`), which a phone does not make clickable. The recipient is our own fixed contact, so that's accepted.
 
 **Source:** founder, direct instruction in chat, 2026-10-01 ("nothing beyond the six agreed fields: no links, no URLs, no IP addresses, nothing else"). The validator's detailed design is the partner's, under that instruction.
+
+### D-065 · 2026-10-01 · ACCEPTED · USMS02's status branch merges before the demo; its remaining steps are tracked open and recorded in later status-only PRs
+
+**Decision.** The USMS02 status branch `docs/status-2026-10-01` is merged **now**, before the 2026-10-02 demo, instead of running through the demo to the detach (sms-notify plan §3 timeline, rev 1.2). USMS02 is **not** CLOSED: it stays **IN PROGRESS** in STATUS.md §1c, a status value used only for this unit (a merged status branch with steps still open; no branch held; not `NEXT`). Its remaining steps are listed explicitly in the §1c USMS02 row:
+- (a) the failure drill on the copy agent (optional; the founder may skip it). The copy-agent repeat-refusal check is also unrun; either skip is recorded as a DoD deviation for the founder to accept alongside Q-095.
+- (b) the production attach, in one save, 30 to 60 min before the demo (Q-090), with voice mode left on, the production version re-read just before the save, and test values that differ from the rehearsal's (dedupe keys on the text, 30 min).
+- (c) the demo.
+- (d) after the demo, **detach** the tool and remove the snippet in one save (Q-090), then delete the copy agent and its agent identity. Tracked as **Q-096** (OPEN, Founder).
+- (e) rotate the Twilio API key (Q-094; as USMS03 if needed).
+- (f) the founder's Q-095 acknowledgement.
+
+Each step's redacted evidence (no numbers, bodies, IDs or secret values) is recorded afterwards in a status-only PR (D-018), one `docs/status-YYYY-MM-DD` branch per session under the one-branch rule (D-012). If a unit branch is in flight at that moment, the record waits until that unit merges; **the detach itself never waits for a branch**, because it is a portal action. USMS02 is CLOSED in the status-only PR that records the last of (d), (e) and (f). The SM2 DoD is unchanged in substance: it still needs the detach, the rotation and Q-095 (plan rev 1.3 §5, milestones rev 1.3).
+
+**Nothing merged is reverted.** USMS01's code stays on `main` (#54). The SMS service stays deployed, as D-062's persistent resources. USMS03 stays contingent. No calendar unit is marked `NEXT` by this decision; the partner proposes the next unit at the next session start (CLAUDE.md §4 step 6, §5 step 10), and UC02a stays QUEUED until then. This session starts no other unit.
+
+**Scope against earlier decisions.** This supersedes, **for USMS02 only**, two things: the plan rev 1.2 timeline (the status branch held through the demo), and D-018's "when no unit is in flight" condition, so that status-only PRs may record USMS02's remaining steps while USMS02 is IN PROGRESS. It does not weaken D-011 or D-012: the remaining steps are founder portal and console actions that need no branch, every record still uses one short-lived status branch, and nothing is bundled into another unit's PR. The plan §3 USMS02b contingency already allowed USMS02's status branch to merge before the detach, so the pattern is not new. It also supersedes, **for this purpose only**, D-062's re-sequencing (Q-088: USMS00 to USMS02 before calendar UC02a): UC02a, or any other unit, may be sequenced while USMS02 is IN PROGRESS, because USMS02's remaining steps need no branch. D-062's persistent-resource carve-out and CLAUDE.md §10's sms-notify infra rule are unchanged.
+
+**Governance.** CLAUDE.md is **not** edited. Its §3 text for branchless units ("its evidence ... go on that same branch, which is merged and deleted in the same session") is still met for this branch, which merges in the session that cut it. The later records are D-018 status-only PRs, which CLAUDE.md §3 already allows. This entry is the narrow, USMS02-only exception; if the founder wants it written into CLAUDE.md §3, that is a separate, founder-approved docs change.
+
+**Risk acknowledged.** Until the founder detaches it after the demo, the SMS tool stays attached to the production agent from the moment of the attach (step (b)), so every real call to that agent can text the follow-up contact. The mitigations:
+- the **OPEN SAFETY ITEM** line at the top of STATUS.md and in §1c: "after the demo the SMS tool MUST be detached from the production agent (Q-090). Until then every real call can text the contact."
+- Q-096 (OPEN, Founder).
+- **The partner reminds the founder of Q-096 at every session start until it is closed.**
+- the service's own backstops (90 s cooldown, 30 min dedupe, hourly cap, the fixed recipient list, the K12 template), which bound the volume but do not stop a send.
+
+**Why:** it frees the one-branch slot for calendar work before the demo. The remaining USMS02 steps are portal and console actions that need no branch, and their evidence fits status-only PRs (D-018). Holding the branch through the demo would block every other unit for a day for no safety gain, since the detach does not depend on the branch.
+
+**Source:** founder, direct chat instruction, 2026-10-01 ("merge the USMS02 status branch now, before the demo, so the one-branch slot frees up for calendar work"; the remaining steps tracked as open founder and partner items and recorded later in status-only PRs). The wording of the tracking (IN PROGRESS, Q-096, the safety line) is the partner's, under that instruction.
