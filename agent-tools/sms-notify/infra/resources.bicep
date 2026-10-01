@@ -132,6 +132,7 @@ resource site 'Microsoft.Web/sites@2024-04-01' = {
   tags: union(tags, { 'azd-service-name': 'api' })
   kind: 'functionapp,linux'
   identity: { type: 'SystemAssigned' }
+  dependsOn: [packageContainer]
   properties: {
     serverFarmId: plan.id
     httpsOnly: true

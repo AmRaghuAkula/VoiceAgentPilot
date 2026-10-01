@@ -75,7 +75,7 @@ def _parse_message(body: bytes) -> str | None:
         return None
     try:
         data = json.loads(body.decode("utf-8"))
-    except (UnicodeDecodeError, ValueError):
+    except (UnicodeDecodeError, ValueError, RecursionError):
         return None
     if not isinstance(data, dict) or set(data) != {"message"}:
         return None  # unknown fields, including any "to" or "recipient", are rejected
@@ -97,8 +97,15 @@ class Dispatcher:
         start = self._clock.monotonic()
         deadline = Deadline(self._clock)
         record = RequestRecord()
-        response = await self._handle(request, deadline, record)
-        _log(record, response, (self._clock.monotonic() - start) * 1000.0)
+        response = _envelope(UNAVAILABLE)
+        try:
+            response = await self._handle(request, deadline, record)
+        except Exception:  # noqa: BLE001 - K4: no unexpected fault may escape as a 500
+            logger.error("sms_notify.unexpected_error")
+            record.code = UNAVAILABLE
+            response = _envelope(UNAVAILABLE)
+        finally:
+            _log(record, response, (self._clock.monotonic() - start) * 1000.0)
         return response
 
     async def _handle(self, request: Request, deadline: Deadline, record: RequestRecord) -> Response:

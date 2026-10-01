@@ -386,3 +386,63 @@ async def test_log_line_fields(caplog):
     assert line["code"] == "sent" and line["encoding"] == "GSM-7" and line["segments"] == 1
     assert line["recipients"][0]["to"] == "***0199"
     assert line["recipients"][0]["provider_message_id"].startswith("SM")
+
+
+# --- review round 1 regressions ---------------------------------------------------------------
+
+
+async def test_deeply_nested_json_is_invalid_request_not_500():
+    app = App()
+    response = await app.call(raw=b"[" * 8000)
+    assert envelope(response)["code"] == "invalid_request"
+
+
+async def test_unexpected_auth_fault_is_200_unavailable_and_logged_once(caplog):
+    app = App()
+
+    async def boom(kid, deadline):
+        raise AttributeError("unexpected")
+
+    app.jwks.get_key = boom
+    caplog.set_level(logging.INFO, logger="sms_notify")
+    response = await app.call()
+    assert envelope(response)["code"] == "unavailable"
+    assert sum("sms_notify.request" in r.getMessage() for r in caplog.records) == 1
+
+
+async def test_jwks_non_object_body_is_unavailable():
+    app = App()
+
+    def handler(request):
+        app.jwks_server.fetches += 1
+        return httpx.Response(200, json=[1, 2])
+
+    app.jwks = JwksCache(httpx.AsyncClient(transport=httpx.MockTransport(handler)), TENANT_ID, app.clock)
+    from sms_notify.http.auth import JwksUnavailable
+    from sms_notify.core.deadline import Deadline
+
+    with pytest.raises(JwksUnavailable):
+        await app.jwks.get_key("kid-a", Deadline(app.clock))
+
+
+async def test_jwks_outage_is_not_amplified():
+    app = App()
+    app.jwks_server.down = True
+    assert envelope(await app.call())["code"] == "unavailable"
+    assert envelope(await app.call(token=mint(kid="kid-z")))["code"] == "unavailable"
+    assert app.jwks_server.fetches == 1  # second request inside 60 s: no fetch
+    app.clock.advance(61)
+    app.jwks_server.down = False
+    assert envelope(await app.call(body={"message": "after outage"}))["code"] == "sent"
+    assert app.jwks_server.fetches == 2
+
+
+async def test_failed_unknown_kid_refresh_is_throttled():
+    app = App()
+    await app.call()
+    app.clock.advance(61)
+    app.jwks_server.down = True
+    assert (await app.call(token=mint(key=KEY_B, kid="kid-n1"))).status in (200, 401)
+    fetches = app.jwks_server.fetches
+    assert (await app.call(token=mint(key=KEY_B, kid="kid-n2"))).status == 401
+    assert app.jwks_server.fetches == fetches

@@ -68,6 +68,9 @@ _ASCII_MAP = str.maketrans(
     }
 )
 
+# Ideographic and full-width full stops render as a dot; map them so the link check sees one.
+_DOT_MAP = str.maketrans({"。": ".", "．": ".", "｡": "."})
+
 _WHITESPACE_RUN = re.compile(r"\s+")
 
 _LINK_TLDS = ("com", "net", "org", "ca", "io", "ly", "co", "me", "info", "biz", "app", "link", "xyz", "us")
@@ -89,7 +92,13 @@ def normalize(text: str) -> str:
     text = text.replace("\r\n", "\n").replace("\r", "\n")
     text = text.replace(" ", "\n").replace(" ", "\n")
     text = text.replace("\t", " ")
-    text = "".join(ch for ch in text if ch == "\n" or not (_is_control(ch) or ch in _INVISIBLE))
+    text = text.translate(_DOT_MAP)
+    text = "".join(
+        ch
+        for ch in text
+        if ch == "\n"
+        or not (_is_control(ch) or ch in _INVISIBLE or unicodedata.category(ch) == "Cf")
+    )
     lines = []
     for line in text.split("\n"):
         collapsed = _WHITESPACE_RUN.sub(" ", line).strip()

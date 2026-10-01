@@ -121,7 +121,7 @@ class TwilioSmsNotifier:
                     url,
                     data=form,
                     auth=(key_sid, key_secret),
-                    timeout=httpx.Timeout(budget),
+                    timeout=httpx.Timeout(budget, connect=min(budget, 1.0), pool=min(budget, 0.5)),
                     follow_redirects=False,
                 )
         except _NOT_SENT:

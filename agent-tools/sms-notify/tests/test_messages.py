@@ -183,3 +183,14 @@ def test_emoji_counts_as_two_utf16_units():
     info = segment_info("\U0001f600" * 35)
     assert info.encoding == "UCS-2" and info.segments == 1
     assert segment_info("\U0001f600" * 36).segments == 2
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["example­.com", "example.c­om", "example⁡.com", "evil。com", "evil．com"],
+    ids=["soft-hyphen-dot", "soft-hyphen-tld", "invisible-op", "ideographic-dot", "fullwidth-dot"],
+)
+def test_hidden_link_tricks_rejected(text):
+    with pytest.raises(MessageRejected) as err:
+        _ok(text)
+    assert err.value.code == "content_rejected"

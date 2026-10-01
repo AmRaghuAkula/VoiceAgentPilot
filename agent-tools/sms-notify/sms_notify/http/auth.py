@@ -50,41 +50,66 @@ class JwksCache:
         self._clock = clock
         self._keys: dict[str, object] = {}
         self._fetched_at: float | None = None
+        self._attempted_at: float | None = None
+        self._last_failed = False
         self._lock = asyncio.Lock()
 
     async def _fetch(self, deadline: Deadline) -> None:
         timeout = deadline.budget(JWKS_BUDGET)
         if timeout <= 0:
             raise JwksUnavailable("no time left")
+        self._attempted_at = self._clock.monotonic()
         try:
             async with asyncio.timeout(timeout):
                 response = await self._client.get(self._url, timeout=timeout, follow_redirects=False)
             if response.status_code != 200:
                 raise JwksUnavailable(f"jwks status {response.status_code}")
             keyset = jwt.PyJWKSet.from_dict(response.json())
-        except (httpx.HTTPError, TimeoutError, ValueError, jwt.PyJWTError) as err:
+        except JwksUnavailable:
+            raise
+        except Exception as err:  # noqa: BLE001 - any malformed or failed fetch fails closed
             raise JwksUnavailable(type(err).__name__) from None
         self._keys = {k.key_id: k.key for k in keyset.keys if k.key_id}
         self._fetched_at = self._clock.monotonic()
 
+    def _attempted_recently(self) -> bool:
+        return (
+            self._attempted_at is not None
+            and self._clock.monotonic() - self._attempted_at < UNKNOWN_KID_REFRESH_SECONDS
+        )
+
     async def get_key(self, kid: str, deadline: Deadline) -> object | None:
-        """The signing key for ``kid``; None if unknown. Raises ``JwksUnavailable``."""
+        """The signing key for ``kid``; None if unknown. Raises ``JwksUnavailable``.
+
+        Every outbound fetch after the first is throttled to once per 60 s, measured from
+        the last attempt (successful or not), so a JWKS outage can't be amplified.
+        """
         async with self._lock:
-            now = self._clock.monotonic()
             if self._fetched_at is None:
-                await self._fetch(deadline)
-            elif now - self._fetched_at >= JWKS_MAX_AGE_SECONDS:
+                if self._attempted_recently() and self._last_failed:
+                    # The first load failed less than 60 s ago: answer unavailable, no fetch.
+                    raise JwksUnavailable("recent fetch failed")
+                await self._fetch_tracked(deadline)
+            elif (
+                self._clock.monotonic() - self._fetched_at >= JWKS_MAX_AGE_SECONDS
+                and not self._attempted_recently()
+            ):
                 try:
-                    await self._fetch(deadline)
+                    await self._fetch_tracked(deadline)
                 except JwksUnavailable:
                     if kid not in self._keys:
                         raise
             if kid in self._keys:
                 return self._keys[kid]
-            if self._clock.monotonic() - (self._fetched_at or 0.0) < UNKNOWN_KID_REFRESH_SECONDS:
+            if self._attempted_recently():
                 return None  # refreshed too recently: no fetch, the token is rejected
-            await self._fetch(deadline)
+            await self._fetch_tracked(deadline)
             return self._keys.get(kid)
+
+    async def _fetch_tracked(self, deadline: Deadline) -> None:
+        self._last_failed = True
+        await self._fetch(deadline)
+        self._last_failed = False
 
 
 def bearer_token(headers: dict[str, str]) -> str | None:
