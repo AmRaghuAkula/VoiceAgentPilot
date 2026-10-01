@@ -12,6 +12,7 @@ import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
 
 from sms_notify.core.errors import ConfigError
+from sms_notify.core.messages import REASONS
 from sms_notify.core.service import CoreDeps
 from sms_notify.http.auth import JwksCache
 from sms_notify.http.dispatcher import ROUTE, Dispatcher, Request, Runtime
@@ -107,7 +108,10 @@ class App:
 def envelope(response):
     assert response.status == 200
     data = json.loads(response.body)
-    assert set(data) == {"ok", "code", "retry"} and data["retry"] is False
+    expected_keys = {"ok", "code", "retry"} | ({"reason"} if data.get("code") == "invalid_request" else set())
+    assert set(data) == expected_keys and data["retry"] is False
+    if "reason" in data:
+        assert data["reason"] in REASONS
     return data
 
 
@@ -127,7 +131,7 @@ async def test_leeway_accepts_just_expired_and_just_early_tokens():
     app = App()
     now = int(time.time())
     assert envelope(await app.call(token=mint(exp=now - 30)))["code"] == "sent"
-    assert envelope(await app.call(token=mint(nbf=now + 30), body={"message": "other"}))["code"] in (
+    assert envelope(await app.call(token=mint(nbf=now + 30), body={"message": "Note: other"}))["code"] in (
         "sent",
         "rate_limited",
     )
@@ -174,7 +178,7 @@ async def test_non_bearer_scheme_is_401():
 async def test_jwks_is_cached():
     app = App()
     await app.call()
-    await app.call(body={"message": "second"})
+    await app.call(body={"message": "Note: second"})
     assert app.jwks_server.fetches == 1
 
 
@@ -184,7 +188,7 @@ async def test_unknown_kid_refresh_is_throttled_to_once_per_60s():
     assert app.jwks_server.fetches == 1
     app.clock.advance(61)
     app.jwks_server.keys = [_jwk(KEY_A, "kid-a"), _jwk(KEY_B, "kid-b")]
-    response = await app.call(token=mint(key=KEY_B, kid="kid-b"), body={"message": "rotated"})
+    response = await app.call(token=mint(key=KEY_B, kid="kid-b"), body={"message": "Note: rotated"})
     assert envelope(response)["code"] in ("sent", "rate_limited")
     assert app.jwks_server.fetches == 2
     # A second unknown kid inside 60 s: 401 with no fetch.
@@ -213,7 +217,7 @@ async def test_stale_jwks_still_used_when_refresh_fails():
     await app.call()
     app.clock.advance(25 * 3600)
     app.jwks_server.down = True
-    assert envelope(await app.call(body={"message": "later"}))["code"] == "sent"
+    assert envelope(await app.call(body={"message": "Note: later"}))["code"] == "sent"
 
 
 # --- allowlist and role ----------------------------------------------------------------------
@@ -257,15 +261,53 @@ async def test_require_role_on_with_role_sends():
         json.dumps({"message": "hi", "recipient": "+16135550100"}).encode(),
         json.dumps({"message": "hi", "extra": 1}).encode(),
         b"\xff\xfe",
-        json.dumps({"message": "a" * 5000}).encode(),
     ],
-    ids=["json", "array", "empty", "type", "missing", "to", "recipient", "unknown", "utf8", "huge"],
+    ids=["json", "array", "empty", "type", "missing", "to", "recipient", "unknown", "utf8"],
 )
-async def test_bad_bodies_are_invalid_request(raw):
+async def test_bad_bodies_are_bad_request(raw):
     app = App()
     data = envelope(await app.call(raw=raw))
-    assert data == {"ok": False, "code": "invalid_request", "retry": False}
+    assert data == {"ok": False, "code": "invalid_request", "retry": False, "reason": "bad_request"}
     assert app.notifier.sent == [] and app.state.calls == []
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [json.dumps({"message": "Note: " + "a" * 5000}).encode(), json.dumps({"message": "a" * 9000}).encode()],
+    ids=["over-480", "over-byte-cap"],
+)
+async def test_over_length_is_too_long_not_bad_request(raw):
+    app = App()
+    data = envelope(await app.call(raw=raw))
+    assert data == {"ok": False, "code": "invalid_request", "retry": False, "reason": "too_long"}
+    assert app.notifier.sent == [] and app.state.calls == []
+
+
+# --- T9, T10: template rejections carry only the reason, and claim nothing ------------------------
+
+T9_CASES = [
+    ("Website: zzsecretvalue", "unknown_label"),
+    ("Alpha: zzsecretvalue" + chr(10) + "alpha: x", "duplicate_label"),
+    ("Alpha: zzsecret.value", "bad_character"),
+    ("Alpha zzsecretvalue", "bad_line"),
+]
+
+
+@pytest.mark.parametrize(("text", "reason"), T9_CASES)
+async def test_t9_t10_rejection_has_no_echo_and_no_claim(text, reason):
+    app = App()
+    response = await app.call(body={"message": text})
+    data = envelope(response)
+    assert data == {"ok": False, "code": "invalid_request", "retry": False, "reason": reason}
+    for fragment in ("zzsecret", "Alpha", "alpha", "Website", "Beta", "Gamma", "Note"):
+        assert fragment.encode() not in response.body
+    assert app.state.calls == [] and app.notifier.sent == [] and app.secrets.timeouts == []
+
+
+async def test_invalid_label_config_is_200_unavailable():
+    app = App(env={"SMS_ALLOWED_LABELS": ""})
+    assert envelope(await app.call())["code"] == "unavailable"
+    assert app.notifier.sent == []
 
 
 async def test_config_error_is_200_unavailable_without_a_number():
@@ -309,8 +351,8 @@ def _setup(case, app):
 
 MATRIX = [
     ("sent", {"message": MESSAGE}, True, "sent"),
-    ("invalid", {"message": "a" * 481}, False, "invalid_request"),
-    ("content", {"message": "see example.com"}, False, "content_rejected"),
+    ("invalid", {"message": "Note: " + "a" * 481}, False, "invalid_request"),
+    ("template", {"message": "Note: see example.com"}, False, "invalid_request"),
     ("rate_limited", {"message": MESSAGE}, False, "rate_limited"),
     ("send_failed", {"message": MESSAGE}, False, "send_failed"),
     ("send_unconfirmed", {"message": MESSAGE}, False, "send_unconfirmed"),
@@ -326,7 +368,8 @@ async def test_every_non_401_path_is_http_200(case, body, ok, code):
     _setup(case, app)
     response = await app.call(body=body)
     assert response.status == 200
-    assert envelope(response) == {"ok": ok, "code": code, "retry": False}
+    data = envelope(response)
+    assert (data["ok"], data["code"], data["retry"]) == (ok, code, False)
     assert response.headers["Content-Type"] == "application/json"
 
 
@@ -343,14 +386,18 @@ async def test_already_sent_is_200_ok():
 SECRET_BODY = "Gamma: zzprivatevalue\nDelta: +1 613 555 0177"
 
 
-@pytest.mark.parametrize("case", ["sent", "send_failed", "unavailable", "unexpected", "invalid"])
+@pytest.mark.parametrize("case", ["sent", "send_failed", "unavailable", "unexpected", "invalid", "template"])
 async def test_g3_log_has_no_body_no_full_number_no_secret(case, caplog):
     app = App()
     app.secrets.values["sms-recipients"] = json.dumps({"recipients": [RECIPIENT_1]})
     _setup(case, app)
     token = mint()
     caplog.set_level(logging.DEBUG)
-    body = {"message": SECRET_BODY} if case != "invalid" else {"message": SECRET_BODY, "to": RECIPIENT_1}
+    body = {"message": SECRET_BODY}
+    if case == "invalid":
+        body = {"message": SECRET_BODY, "to": RECIPIENT_1}
+    elif case == "template":
+        body = {"message": SECRET_BODY + chr(10) + "Note: zzprivatevalue.x"}
     await app.call(body=body, token=token)
     text = "\n".join(r.getMessage() for r in caplog.records)
     lines = [r for r in caplog.records if "sms_notify.request" in r.getMessage()]
@@ -377,6 +424,8 @@ async def test_log_line_fields(caplog):
         "request_id",
         "status",
         "code",
+        "reason",
+        "caller_oid",
         "recipients",
         "chars",
         "encoding",
@@ -394,7 +443,18 @@ async def test_log_line_fields(caplog):
 async def test_deeply_nested_json_is_invalid_request_not_500():
     app = App()
     response = await app.call(raw=b"[" * 8000)
-    assert envelope(response)["code"] == "invalid_request"
+    assert envelope(response)["reason"] == "bad_request"
+
+
+async def test_forbidden_logs_the_caller_oid(caplog):
+    app = App()
+    caplog.set_level(logging.INFO, logger="sms_notify")
+    await app.call(token=mint(oid=OTHER_OID))
+    line = json.loads(next(r.getMessage() for r in caplog.records if "sms_notify.request" in r.getMessage()))
+    assert line["code"] == "forbidden" and line["caller_oid"] == OTHER_OID
+    await app.call()
+    lines = [json.loads(r.getMessage()) for r in caplog.records if "sms_notify.request" in r.getMessage()]
+    assert lines[-1]["caller_oid"] is None
 
 
 async def test_unexpected_auth_fault_is_200_unavailable_and_logged_once(caplog):
@@ -433,7 +493,7 @@ async def test_jwks_outage_is_not_amplified():
     assert app.jwks_server.fetches == 1  # second request inside 60 s: no fetch
     app.clock.advance(61)
     app.jwks_server.down = False
-    assert envelope(await app.call(body={"message": "after outage"}))["code"] == "sent"
+    assert envelope(await app.call(body={"message": "Note: after outage"}))["code"] == "sent"
     assert app.jwks_server.fetches == 2
 
 

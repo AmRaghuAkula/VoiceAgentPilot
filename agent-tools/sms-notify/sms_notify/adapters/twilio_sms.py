@@ -6,14 +6,15 @@ One hard-coded host, no SDK, no status callback, no retry. Basic auth with a Sta
 from __future__ import annotations
 
 import asyncio
-import json
 import re
 from typing import ClassVar
 
 import httpx
 
+from sms_notify.core.config import parse_twilio_credentials
 from sms_notify.core.deadline import TWILIO_POST_BUDGET, budget_for
 from sms_notify.core.errors import (
+    ConfigError,
     NotifierAuthError,
     NotifierConfigError,
     NotifierRejected,
@@ -33,9 +34,6 @@ MAX_BODY_CHARS = 480
 SECRET_TIMEOUT_SECONDS = 1.5
 # Backstop beyond httpx's per-phase timeouts, so a connect timeout surfaces as ConnectTimeout.
 _OUTER_GRACE_SECONDS = 0.05
-
-_ACCOUNT_SID = re.compile(r"AC[0-9a-fA-F]{32}")
-_API_KEY_SID = re.compile(r"SK[0-9a-fA-F]{32}")
 
 # Failures where the request can't have reached Twilio.
 _NOT_SENT = (
@@ -81,24 +79,9 @@ class TwilioSmsNotifier:
             cfg.credential_secret_name or "", timeout=budget_for(SECRET_TIMEOUT_SECONDS)
         )
         try:
-            data = json.loads(raw)
-            account_sid, key_sid, key_secret = (
-                data["account_sid"],
-                data["api_key_sid"],
-                data["api_key_secret"],
-            )
-        except (ValueError, KeyError, TypeError):
-            raise NotifierConfigError("credential secret is unreadable") from None
-        if (
-            not isinstance(account_sid, str)
-            or not _ACCOUNT_SID.fullmatch(account_sid)
-            or not isinstance(key_sid, str)
-            or not _API_KEY_SID.fullmatch(key_sid)
-            or not isinstance(key_secret, str)
-            or not key_secret
-        ):
-            raise NotifierConfigError("credential secret has an invalid field")
-        return account_sid, key_sid, key_secret
+            return parse_twilio_credentials(raw)
+        except ConfigError:
+            raise NotifierConfigError("credential secret is invalid") from None
 
     async def send(self, cfg: NotifierConfig, message: OutboundMessage) -> SendResult:
         self.validate_config(cfg)

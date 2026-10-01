@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from sms_notify.core.config import Settings
 from sms_notify.core.deadline import Deadline
 from sms_notify.core.errors import ConfigError
+from sms_notify.core.messages import BAD_REQUEST, TOO_LONG
 from sms_notify.core.service import (
     FORBIDDEN,
     INVALID_REQUEST,
@@ -30,7 +31,6 @@ from sms_notify.ports import Clock
 
 ROUTE = "/api/v1/follow-up-sms"
 MAX_BODY_BYTES = 8_192
-MAX_RAW_MESSAGE_CHARS = 4 * 480  # a loose pre-check; the real limit applies after normalization
 
 logger = logging.getLogger("sms_notify")
 
@@ -57,8 +57,10 @@ class Runtime:
     deps: CoreDeps
 
 
-def _envelope(code: str) -> Response:
-    payload = {"ok": code in OK_CODES, "code": code, "retry": False}
+def _envelope(code: str, reason: str | None = None) -> Response:
+    payload: dict[str, object] = {"ok": code in OK_CODES, "code": code, "retry": False}
+    if code == INVALID_REQUEST:
+        payload["reason"] = reason or BAD_REQUEST
     return Response(
         200,
         json.dumps(payload, separators=(",", ":")).encode("utf-8"),
@@ -69,10 +71,17 @@ def _envelope(code: str) -> Response:
 _UNAUTHORIZED = Response(401, b"", {"WWW-Authenticate": "Bearer"})
 
 
+class _Oversize(Exception):
+    """The body is over the byte cap: reported as ``too_long`` (spec K12 order of checks)."""
+
+
 def _parse_message(body: bytes) -> str | None:
-    """The ``message`` string, or None for anything the schema doesn't allow."""
+    """The ``message`` string, or None for anything the schema doesn't allow (``bad_request``).
+
+    The schema check does not apply ``maxLength``; length is judged after normalization.
+    """
     if len(body) > MAX_BODY_BYTES:
-        return None
+        raise _Oversize
     try:
         data = json.loads(body.decode("utf-8"))
     except (UnicodeDecodeError, ValueError, RecursionError):
@@ -80,7 +89,7 @@ def _parse_message(body: bytes) -> str | None:
     if not isinstance(data, dict) or set(data) != {"message"}:
         return None  # unknown fields, including any "to" or "recipient", are rejected
     message = data["message"]
-    if not isinstance(message, str) or not message or len(message) > MAX_RAW_MESSAGE_CHARS:
+    if not isinstance(message, str) or not message:
         return None
     return message
 
@@ -131,12 +140,17 @@ class Dispatcher:
             return _envelope(UNAVAILABLE)
         if auth.result is AuthResult.FORBIDDEN:
             record.code = FORBIDDEN
+            record.caller_oid = auth.oid
             return _envelope(FORBIDDEN)
 
-        message = _parse_message(request.body)
+        try:
+            message = _parse_message(request.body)
+        except _Oversize:
+            record.code, record.reason = INVALID_REQUEST, TOO_LONG
+            return _envelope(INVALID_REQUEST, TOO_LONG)
         if message is None:
-            record.code = INVALID_REQUEST
-            return _envelope(INVALID_REQUEST)
+            record.code, record.reason = INVALID_REQUEST, BAD_REQUEST
+            return _envelope(INVALID_REQUEST, BAD_REQUEST)
         try:
             code = await notify(
                 message, settings=runtime.settings, deps=runtime.deps, deadline=deadline, record=record
@@ -145,7 +159,7 @@ class Dispatcher:
             logger.error("sms_notify.unexpected_error")
             code = UNAVAILABLE
             record.code = code
-        return _envelope(code)
+        return _envelope(code, record.reason)
 
 
 def _log(record: RequestRecord, response: Response, latency_ms: float) -> None:
@@ -154,6 +168,8 @@ def _log(record: RequestRecord, response: Response, latency_ms: float) -> None:
         "request_id": uuid.uuid4().hex,
         "status": response.status,
         "code": record.code,
+        "reason": record.reason,
+        "caller_oid": record.caller_oid,
         "recipients": record.recipients,
         "chars": record.chars,
         "encoding": record.encoding,

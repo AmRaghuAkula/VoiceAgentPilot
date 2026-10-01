@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 from sms_notify.core.config import DEFAULT_MAX_CHARS
+from sms_notify.core.messages import REASONS
 from sms_notify.core.service import ALL_CODES
 from sms_notify.http.dispatcher import ROUTE
 from tests.test_guard_genericity import phone_hits, word_hits
@@ -49,10 +50,34 @@ def test_no_recipient_field_anywhere():
     assert '"to"' not in text and '"recipient"' not in text
 
 
+SPEC_REV_2_2_DESCRIPTION = (
+    "Sends one short text message to this business's follow-up contact so a team member can reach the "
+    "caller. The recipient is fixed; you supply only the message text. Write only lines of the form "
+    '"Label: value", one per line, using only the labels your instructions give, each at most once. '
+    "Plain text only: letters, digits, spaces and $ # , + - ( ) ' & %, with a period only as a decimal "
+    "point between two digits. Never include a link, web address, email address, social handle or "
+    "anything beyond those lines. At most 480 characters (aim for 320 or fewer). Use it once per call, "
+    "near the end, after the caller has confirmed their callback number and agreed to a follow-up. "
+    "Returns ok true or false. If the code is invalid_request, correct the message as its reason says "
+    "and call once more; otherwise never call it again in the same call."
+)
+
+
+def test_t12_description_is_the_spec_rev_2_2_text():
+    assert _operations()[0][2]["description"] == SPEC_REV_2_2_DESCRIPTION
+
+
+def test_t12_reason_enum_is_the_eight_k12_values():
+    schema = _operations()[0][2]["responses"]["200"]["content"]["application/json"]["schema"]
+    assert schema["properties"]["reason"]["enum"] == list(REASONS)
+    assert "reason" not in schema["required"]
+
+
 def test_response_envelope_and_codes():
     schema = _operations()[0][2]["responses"]["200"]["content"]["application/json"]["schema"]
-    assert set(schema["properties"]) == {"ok", "code", "retry"}
+    assert set(schema["properties"]) == {"ok", "code", "retry", "reason"}
     assert set(schema["properties"]["code"]["enum"]) == ALL_CODES
+    assert "content_rejected" not in schema["properties"]["code"]["enum"]
     assert schema["properties"]["retry"]["enum"] == [False]
     assert set(_operations()[0][2]["responses"]) == {"200"}
 

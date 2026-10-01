@@ -64,9 +64,50 @@ def test_invalid_setting_never_echoes_the_value(name, value):
     assert "555" not in str(err.value)
 
 
-def test_non_guid_audience_has_only_the_uri_form():
-    s = make_settings(SMS_AUTH_AUDIENCE="api://sms-notify-example")
-    assert s.audiences == ("api://sms-notify-example",)
+@pytest.mark.parametrize("audience", ["api://sms-notify-example", "api://", "api:/" + "/x/y"])
+def test_audience_must_be_api_guid_fail_closed(audience):
+    with pytest.raises(ConfigError):
+        make_settings(SMS_AUTH_AUDIENCE=audience)
+
+
+def test_max_per_hour_is_capped():
+    assert make_settings(SMS_MAX_PER_HOUR="20").max_per_hour == 20
+    with pytest.raises(ConfigError):
+        make_settings(SMS_MAX_PER_HOUR="21")
+
+
+def test_allowed_labels_kept_raw_for_the_validator():
+    assert make_settings().allowed_labels == "Alpha,Beta,Gamma,Delta,Note"
+    assert make_settings(SMS_ALLOWED_LABELS="").allowed_labels == ""
+
+
+def test_twilio_credentials_parse():
+    from sms_notify.core.config import parse_twilio_credentials
+    from tests.fakes import TWILIO_SECRET
+
+    assert parse_twilio_credentials(json.dumps(TWILIO_SECRET)) == (
+        TWILIO_SECRET["account_sid"],
+        TWILIO_SECRET["api_key_sid"],
+        TWILIO_SECRET["api_key_secret"],
+    )
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "not json",
+        json.dumps([1]),
+        json.dumps({"account_sid": "AC123"}),
+        json.dumps({"account_sid": "AC" + "0" * 32, "api_key_sid": "SK" + "0" * 32, "api_key_secret": ""}),
+        json.dumps({"account_sid": "AC" + "0" * 31 + "/", "api_key_sid": "SK" + "0" * 32, "api_key_secret": "s"}),
+    ],
+)
+def test_bad_twilio_credentials_raise_without_the_value(raw):
+    from sms_notify.core.config import parse_twilio_credentials
+
+    with pytest.raises(ConfigError) as err:
+        parse_twilio_credentials(raw)
+    assert "AC" not in str(err.value) and "SK" not in str(err.value)
 
 
 def test_require_role_true():

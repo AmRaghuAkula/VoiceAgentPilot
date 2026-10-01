@@ -39,6 +39,7 @@ BASE_ENV = {
     "SMS_ALLOWED_PRINCIPALS": ALLOWED_OID,
     "SMS_AUTH_AUDIENCE": f"api://{APP_ID}",
     "SMS_AUTH_TENANT_ID": TENANT_ID,
+    "SMS_ALLOWED_LABELS": "Alpha,Beta,Gamma,Delta,Note",
     "KEY_VAULT_URI": "https://kv-example.vault.azure.net/",
     "STATE_BLOB_URL": "https://stexample.blob.core.windows.net/sms-state",
 }

@@ -12,6 +12,7 @@ from sms_notify.core.config import (
     TWILIO_SECRET_NAME,
     Settings,
     parse_recipients,
+    parse_twilio_credentials,
 )
 from sms_notify.core.deadline import KEY_VAULT_BUDGET, Deadline, current_deadline
 from sms_notify.core.errors import (
@@ -32,14 +33,18 @@ from sms_notify.core.limits import (
     claim_hourly_slot,
     record_outcome,
 )
-from sms_notify.core.messages import MessageRejected, PrefixInvalid, build_body, segment_info
+from sms_notify.core.messages import (
+    MessageRejected,
+    TemplateConfigInvalid,
+    build_body,
+    segment_info,
+)
 from sms_notify.core.phone import mask
 from sms_notify.ports import Clock, Notifier, NotifierConfig, OutboundMessage, SecretSource, StateStore
 
 SENT = "sent"
 ALREADY_SENT = "already_sent"
 INVALID_REQUEST = "invalid_request"
-CONTENT_REJECTED = "content_rejected"
 RATE_LIMITED = "rate_limited"
 FORBIDDEN = "forbidden"
 SEND_FAILED = "send_failed"
@@ -52,7 +57,6 @@ ALL_CODES = frozenset(
         SENT,
         ALREADY_SENT,
         INVALID_REQUEST,
-        CONTENT_REJECTED,
         RATE_LIMITED,
         FORBIDDEN,
         SEND_FAILED,
@@ -81,6 +85,8 @@ class RequestRecord:
     """What the single log line reports (spec section 8). Never the body or a full number."""
 
     code: str = ""
+    reason: str | None = None  # only for invalid_request (K12)
+    caller_oid: str | None = None  # only for forbidden (audit)
     chars: int | None = None
     encoding: str | None = None
     segments: int | None = None
@@ -121,17 +127,19 @@ async def _notify(
     deadline: Deadline,
     record: RequestRecord,
 ) -> str:
-    # Step 2: normalize, validate the prefix, check the limits, reject links.
+    # Step 2: normalize, config checks, limits, then the K12 template validator (D-064).
     try:
         body = build_body(
             raw_message,
             prefix=settings.prefix,
+            labels_raw=settings.allowed_labels,
             max_chars=settings.max_chars,
             max_lines=settings.max_lines,
         )
     except MessageRejected as rejected:
-        return rejected.code
-    except PrefixInvalid:
+        record.reason = rejected.reason
+        return INVALID_REQUEST
+    except TemplateConfigInvalid:
         return UNAVAILABLE
     info = segment_info(body)
     record.chars, record.encoding, record.segments = len(body), info.encoding, info.segments
@@ -140,11 +148,11 @@ async def _notify(
 
     # Step 3: config and secrets (fail closed before any claim is made).
     try:
-        recipients_raw = await deps.secrets.get_secret(
-            RECIPIENTS_SECRET_NAME, timeout=deadline.budget(KEY_VAULT_BUDGET)
+        recipients_raw, twilio_raw = await _read_secrets(
+            deps.secrets, (RECIPIENTS_SECRET_NAME, TWILIO_SECRET_NAME), deadline
         )
         recipients = parse_recipients(recipients_raw, settings.allowed_countries)
-        await deps.secrets.get_secret(TWILIO_SECRET_NAME, timeout=deadline.budget(KEY_VAULT_BUDGET))
+        parse_twilio_credentials(twilio_raw)  # a malformed secret fails before any claim
         configs = [
             NotifierConfig(
                 notifier=deps.notifier.name,
@@ -179,6 +187,20 @@ async def _notify(
     )
     await record_outcome(deps.state, claim, deps.clock.now(), code, deadline)
     return code
+
+
+async def _read_secrets(
+    secrets: SecretSource, names: tuple[str, ...], deadline: Deadline
+) -> list[str]:
+    """Read the secrets concurrently (cold-cache latency); the first failure is raised."""
+    results = await asyncio.gather(
+        *(secrets.get_secret(name, timeout=deadline.budget(KEY_VAULT_BUDGET)) for name in names),
+        return_exceptions=True,
+    )
+    for result in results:
+        if isinstance(result, BaseException):
+            raise result
+    return list(results)
 
 
 async def _claim_and_send(

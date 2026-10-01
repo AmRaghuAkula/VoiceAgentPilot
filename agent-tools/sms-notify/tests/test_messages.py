@@ -1,24 +1,49 @@
-"""Core: normalization, limits, links, segments (spec K11, section 5 step 2, section 9)."""
+"""Core: K11 normalization, the K12 template validator (plan A1, T1 to T8 and T11), segments.
+
+Labels here are made up (never the founder's). Non-ASCII test inputs are built with chr()
+so this source stays ASCII.
+"""
 
 from __future__ import annotations
 
 import pytest
 
 from sms_notify.core.messages import (
+    REASONS,
     MessageRejected,
-    PrefixInvalid,
+    TemplateConfigInvalid,
     build_body,
-    contains_link,
     normalize,
+    parse_labels,
     segment_info,
 )
 
-# --- normalization ----------------------------------------------------------------------
+LABELS = "Contact,Callback #,Reason,Amount,When,Channel"
+
+ZWSP, SHY, FW_DOT, IDEO_DOT = chr(0x200B), chr(0xAD), chr(0xFF0E), chr(0x3002)
+
+
+def fw(text: str) -> str:
+    """The full-width form of ASCII text."""
+    return "".join(chr(ord(c) + 0xFEE0) if "!" <= c <= "~" else c for c in text)
+
+
+def body(text, *, prefix="", labels=LABELS, max_chars=480, max_lines=8):
+    return build_body(text, prefix=prefix, labels_raw=labels, max_chars=max_chars, max_lines=max_lines)
+
+
+def reason_of(text, **kwargs):
+    with pytest.raises(MessageRejected) as err:
+        body(text, **kwargs)
+    assert err.value.code == "invalid_request"
+    return err.value.reason
+
+
+# --- K11 normalization ---------------------------------------------------------------------
 
 
 def test_nfkc_applied():
-    # Full-width letters and a ligature fold to ASCII under NFKC.
-    assert normalize("Ａｂｃ ﬁne") == "Abc fine"
+    assert normalize(fw("Abc") + " " + chr(0xFB01) + "ne") == "Abc fine"
 
 
 def test_crlf_and_cr_become_lf():
@@ -33,118 +58,234 @@ def test_tab_counts_as_whitespace():
     assert normalize("a\tb") == "a b"
 
 
-def test_bidi_and_zero_width_stripped():
-    text = "ab‮cd⁦ef⁩gh​ij‎kl﻿"
-    assert normalize(text) == "abcdefghijkl"
+def test_bidi_zero_width_and_every_cf_character_stripped():
+    hidden = [0x202E, 0x2066, 0x2069, 0x200B, 0x200E, 0xFEFF, 0xAD, 0x2061, 0x180E]
+    text = "ab" + "".join(chr(c) + "x" for c in hidden)
+    assert normalize(text) == "ab" + "x" * len(hidden)
 
 
 def test_whitespace_collapsed_within_lines_and_blank_lines_dropped():
-    assert normalize("  a   b  \n\n   \n c  d  ") == "a b\nc d"
+    assert normalize("  a   b  \n\n   \n c" + chr(0xA0) * 2 + "d  ") == "a b\nc d"
 
 
 def test_punctuation_mapped_to_ascii():
-    text = "‘q’ “dq” a–b c—d e… `tick`"
+    text = "".join(
+        [chr(0x2018), "q", chr(0x2019), " ", chr(0x201C), "dq", chr(0x201D), " a", chr(0x2013), "b c",
+         chr(0x2014), "d e", chr(0x2026), " `tick`"]
+    )  # fmt: skip
     assert normalize(text) == "'q' \"dq\" a-b c-d e... 'tick'"
 
 
-def test_newlines_preserved():
-    assert normalize("Alpha: 1\nBeta: 2\nGamma: 3") == "Alpha: 1\nBeta: 2\nGamma: 3"
-
-
 def test_unicode_line_separators_become_lf():
-    assert normalize("a b c") == "a\nb\nc"
+    assert normalize("a" + chr(0x2028) + "b" + chr(0x2029) + "c") == "a\nb\nc"
 
 
-# --- build_body: prefix, limits, links, empty ------------------------------------------
+def test_full_stop_variants_become_period():
+    assert normalize("1" + FW_DOT + "5 2" + IDEO_DOT + "5 3" + chr(0xFF61) + "5") == "1.5 2.5 3.5"
 
 
-def _ok(text, prefix="", max_chars=480, max_lines=8):
-    return build_body(text, prefix=prefix, max_chars=max_chars, max_lines=max_lines)
+# --- T1: accepted --------------------------------------------------------------------------
+
+FIXTURE = "\n".join(
+    [
+        "Contact: Zo" + chr(0xEB) + " Example",
+        "Callback #: 416-555-0142",
+        "Reason: Alpha, Beta",
+        "Amount: $650K",
+        "When: 3 months or $1.5M by then",
+        "Channel: Phone & Text (100%)",
+    ]
+)
 
 
-def test_generic_six_line_fixture_passes_unchanged():
-    fixture = (
-        "Field one: Jordan Example\n"
-        "Field two: +1 613 555 0142\n"
-        "Field three: Alpha\n"
-        "Field four: $650,000\n"
-        "Field five: 3 months\n"
-        "Field six: Beta"
-    )
-    assert _ok(fixture) == fixture
+def test_t1_six_line_fixture_passes_unchanged():
+    assert body(FIXTURE) == FIXTURE
 
 
-def test_exactly_480_chars_passes_and_481_fails():
-    assert len(_ok("a" * 480)) == 480
-    with pytest.raises(MessageRejected) as err:
-        _ok("a" * 481)
-    assert err.value.code == "invalid_request"
+def test_t1_label_case_order_and_omission():
+    lines = FIXTURE.split("\n")
+    assert body(FIXTURE.replace("Contact:", "CONTACT:")) == FIXTURE.replace("Contact:", "CONTACT:")
+    reordered = "\n".join(reversed(lines))
+    assert body(reordered) == reordered
+    partial = "\n".join(lines[:3])
+    assert body(partial) == partial
 
 
-def test_exactly_8_lines_passes_and_9_fails():
-    assert _ok("\n".join(["x"] * 8)).count("\n") == 7
-    with pytest.raises(MessageRejected) as err:
-        _ok("\n".join(["x"] * 9))
-    assert err.value.code == "invalid_request"
+@pytest.mark.parametrize("value", ["$1.5M", "2.5", "O'Neil", "#12", "+1 (613) 555-0101", "Ren" + chr(0xE9)])
+def test_t1_allowed_values(value):
+    assert body(f"Contact: {value}") == f"Contact: {value}"
 
 
-def test_prefix_moves_the_boundary_down():
-    prefix = "[P] "
-    body = _ok("a" * 476, prefix=prefix)
-    assert body == prefix + "a" * 476 and len(body) == 480
-    with pytest.raises(MessageRejected) as err:
-        _ok("a" * 477, prefix=prefix)
-    assert err.value.code == "invalid_request"
+# --- T2: rejected values -------------------------------------------------------------------
 
 
-def test_prefix_prepended_to_first_line():
-    assert _ok("one\ntwo", prefix="P: ") == "P: one\ntwo"
+@pytest.mark.parametrize(
+    "value",
+    [
+        "pay-now.top",
+        "evil.ru",
+        "goo.gl/x",
+        "203.0.113.5/x",
+        "203.0.113.5",
+        "1.2.3",
+        "http" + "://x",
+        "a@b.com",
+        "J.Smith",
+        "Jr.",
+        "3 months.",
+        "www" + "example",
+        "x_y",
+        '"quoted"',
+        "a" + chr(0xD7) + "b",
+        "a;b",
+        "50!",
+        ".5",
+    ],
+)
+def test_t2_rejected_values(value):
+    assert reason_of(f"Contact: {value}") == "bad_character"
 
 
-@pytest.mark.parametrize("prefix", ["bad\nprefix", "bad\rprefix"])
-def test_prefix_with_newline_is_invalid(prefix):
-    with pytest.raises(PrefixInvalid):
-        _ok("hello", prefix=prefix)
-
-
-def test_empty_after_stripping_is_content_rejected():
-    with pytest.raises(MessageRejected) as err:
-        _ok(" \n​\x00\t \r\n ")
-    assert err.value.code == "content_rejected"
+# --- T3: bad line shape --------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
     "text",
-    [
-        "see https://example.test/x",
-        "go to www.example",
-        "visit example.com today",
-        "x.ca",
-        "mail me at someone@example.org",
-        "EXAMPLE.COM",
-        "short.ly/abc",
-        "bit.link.",
-    ],
+    ["http" + "://x", "Contact:", "Contact:value", "no colon here", ": value", "Contact: "],
+    ids=["bare-url", "nothing-after", "no-space", "no-colon", "empty-label", "empty-value"],
 )
-def test_links_rejected(text):
-    assert contains_link(text)
-    with pytest.raises(MessageRejected) as err:
-        _ok(text)
-    assert err.value.code == "content_rejected"
+def test_t3_bad_line(text):
+    assert reason_of(text) == "bad_line"
 
 
-@pytest.mark.parametrize("text", ["J.Doe", "$1.5M", "a.m.", "3 p.m. or 9 a.m.", "e.g. later", "v2.0"])
-def test_non_links_pass(text):
-    assert not contains_link(text)
-    assert _ok(text) == text
+# --- T4, T5: labels ------------------------------------------------------------------------
 
 
-def test_link_hidden_by_zero_width_space_still_rejected():
-    with pytest.raises(MessageRejected):
-        _ok("example​.com")
+def test_t4_unknown_label():
+    assert reason_of("Website: x") == "unknown_label"
 
 
-# --- segments ----------------------------------------------------------------------------
+@pytest.mark.parametrize("second", ["Contact: b", "CONTACT: b", "contact: b"])
+def test_t5_duplicate_label(second):
+    assert reason_of(f"Contact: a\n{second}") == "duplicate_label"
+
+
+# --- T6: label config ----------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "labels",
+    [
+        "",
+        "   ",
+        ",,,",
+        "Contact,Re.ason",
+        "Contact,Re:ason",
+        "Contact,Call  back",
+        "Contact,contact",
+        ",".join(f"L{i}" for i in range(9)),
+        "A" * 33,
+        "Contact,",
+        "Con/tact",
+    ],
+    ids=["empty", "blank", "commas", "dot", "colon", "double-space", "duplicate", "too-many", "too-long",
+         "trailing-comma", "slash"],  # fmt: skip
+)
+def test_t6_invalid_label_config_is_config_error(labels):
+    with pytest.raises(TemplateConfigInvalid):
+        body("Contact: a", labels=labels)
+
+
+def test_t6_labels_parse_trimmed_and_case_folded():
+    parsed = parse_labels(" Contact , Callback # ", 8)
+    assert parsed == {"contact": "Contact", "callback #": "Callback #"}
+
+
+# --- T7: SMS_PREFIX ------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("prefix", ["a/b ", "a@b ", "a.b ", "line\nbreak ", "www "])
+def test_t7_bad_prefix_is_config_error(prefix):
+    with pytest.raises(TemplateConfigInvalid):
+        body("Contact: a", prefix=prefix)
+
+
+def test_t7_valid_prefix_moves_the_boundary_down():
+    prefix = "(P) "
+    text = "Contact: " + "a" * (480 - len(prefix) - len("Contact: "))
+    assert body(text, prefix=prefix) == prefix + text
+    assert reason_of(text + "a", prefix=prefix) == "too_long"
+
+
+# --- T8: Unicode tricks --------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "evil" + ZWSP + ".ru",
+        "evil" + SHY + ".ru",
+        "evil" + FW_DOT + "ru",
+        "evil" + IDEO_DOT + "ru",
+        fw("evil.ru"),
+    ],
+    ids=["zero-width", "soft-hyphen", "fullwidth-dot", "ideographic-dot", "fullwidth-all"],
+)
+def test_t8_unicode_tricks_rejected(value):
+    assert reason_of(f"Contact: {value}") == "bad_character"
+
+
+# --- limits and order (T11) ----------------------------------------------------------------
+
+
+def test_empty_after_normalization():
+    assert reason_of(" \n" + ZWSP + "\x00\t \r\n ") == "empty"
+
+
+def test_8_lines_pass_9_fail():
+    labels = ",".join(f"L{i}" for i in range(8))
+    eight = "\n".join(f"L{i}: x" for i in range(8))
+    assert body(eight, labels=labels) == eight
+    assert reason_of(eight + "\nL0: y", labels=labels) == "too_many_lines"
+
+
+def test_480_pass_481_fail():
+    text = "Contact: " + "a" * (480 - len("Contact: "))
+    assert len(body(text)) == 480
+    assert reason_of(text + "a") == "too_long"
+
+
+def test_t11_too_long_wins_over_bad_character():
+    assert reason_of("Contact: " + "a/" * 300) == "too_long"
+
+
+def test_t11_first_line_failure_wins():
+    assert reason_of("Website: x\nContact: a/b") == "unknown_label"
+
+
+def test_t11_too_many_lines_wins_over_too_long():
+    assert reason_of("\n".join(["Contact: " + "a" * 100] * 9)) == "too_many_lines"
+
+
+def test_config_error_wins_over_content_errors():
+    with pytest.raises(TemplateConfigInvalid):
+        body("", labels="")
+
+
+def test_reasons_are_the_eight_k12_values():
+    assert set(REASONS) == {
+        "bad_request",
+        "empty",
+        "too_many_lines",
+        "too_long",
+        "bad_line",
+        "unknown_label",
+        "duplicate_label",
+        "bad_character",
+    }
+
+
+# --- segments ------------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -159,15 +300,15 @@ def test_gsm7_segments(length, segments):
 
 @pytest.mark.parametrize(("length", "segments"), [(70, 1), (71, 2), (134, 2), (135, 3)])
 def test_ucs2_segments(length, segments):
-    info = segment_info("一" * length)
+    info = segment_info(chr(0x4E00) * length)
     assert info.encoding == "UCS-2"
     assert info.segments == segments
 
 
 def test_gsm7_extension_characters_count_as_two():
-    assert segment_info("a" * 158 + "{").segments == 1  # 160 septets
-    assert segment_info("a" * 159 + "{").segments == 2  # 161 septets
-    assert segment_info("a" * 159 + "€").segments == 2
+    assert segment_info("a" * 158 + "{").segments == 1
+    assert segment_info("a" * 159 + "{").segments == 2
+    assert segment_info("a" * 159 + chr(0x20AC)).segments == 2
 
 
 def test_newline_hash_and_dollar_are_gsm7():
@@ -180,17 +321,5 @@ def test_backtick_is_not_gsm7_but_normalization_maps_it():
 
 
 def test_emoji_counts_as_two_utf16_units():
-    info = segment_info("\U0001f600" * 35)
-    assert info.encoding == "UCS-2" and info.segments == 1
-    assert segment_info("\U0001f600" * 36).segments == 2
-
-
-@pytest.mark.parametrize(
-    "text",
-    ["example­.com", "example.c­om", "example⁡.com", "evil。com", "evil．com"],
-    ids=["soft-hyphen-dot", "soft-hyphen-tld", "invisible-op", "ideographic-dot", "fullwidth-dot"],
-)
-def test_hidden_link_tricks_rejected(text):
-    with pytest.raises(MessageRejected) as err:
-        _ok(text)
-    assert err.value.code == "content_rejected"
+    assert segment_info(chr(0x1F600) * 35).segments == 1
+    assert segment_info(chr(0x1F600) * 36).segments == 2

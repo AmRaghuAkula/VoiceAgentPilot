@@ -18,6 +18,8 @@ DEFAULT_MAX_CHARS = 480
 DEFAULT_MAX_LINES = 8
 HARD_MAX_CHARS = 480  # the adapter's max_body_chars; SMS_MAX_CHARS may only lower it
 MAX_RECIPIENTS = 3
+# Hourly slots are probed 1..n with one conditional write each, inside a 5 s deadline.
+MAX_PER_HOUR_CAP = 20
 
 TWILIO_SECRET_NAME = "twilio-api"
 RECIPIENTS_SECRET_NAME = "sms-recipients"
@@ -34,19 +36,20 @@ class Settings:
     max_lines: int
     allowed_principals: frozenset[str]
     auth_audience: str
-    auth_app_id: str | None
+    auth_app_id: str
     auth_tenant_id: str
     require_role: bool
     min_interval_seconds: int
     max_per_hour: int
     dedupe_minutes: int
     prefix: str
+    allowed_labels: str  # raw; validated by the template validator (K12 rule 1) per request
     key_vault_uri: str
     state_blob_url: str
 
     @property
     def audiences(self) -> tuple[str, ...]:
-        return (self.auth_audience, self.auth_app_id) if self.auth_app_id else (self.auth_audience,)
+        return (self.auth_audience, self.auth_app_id)
 
 
 def _required(env: Mapping[str, str], name: str) -> str:
@@ -112,10 +115,11 @@ def load_settings(env: Mapping[str, str]) -> Settings:
         raise ConfigError("SMS_ALLOWED_PRINCIPALS must be a comma-separated list of object IDs")
 
     audience = _required(env, "SMS_AUTH_AUDIENCE")
-    if not audience.startswith("api://") or len(audience) <= len("api://"):
-        raise ConfigError("SMS_AUTH_AUDIENCE must be an api:// application ID URI")
-    tail = audience[len("api://") :]
-    app_id = tail.lower() if _GUID.fullmatch(tail) else None
+    tail = audience[len("api://") :] if audience.startswith("api://") else ""
+    if not _GUID.fullmatch(tail):
+        # Fail closed: both aud forms (K6) need the app ID, so only api://<app id> is accepted.
+        raise ConfigError("SMS_AUTH_AUDIENCE must be api://<application id>")
+    app_id = tail.lower()
 
     tenant = _required(env, "SMS_AUTH_TENANT_ID")
     if not _GUID.fullmatch(tenant):
@@ -140,9 +144,10 @@ def load_settings(env: Mapping[str, str]) -> Settings:
         auth_tenant_id=tenant.lower(),
         require_role=_bool(env, "SMS_REQUIRE_ROLE"),
         min_interval_seconds=_int(env, "SMS_MIN_INTERVAL_SECONDS", 90, 0, 86_400),
-        max_per_hour=_int(env, "SMS_MAX_PER_HOUR", 6, 1, 60),
+        max_per_hour=_int(env, "SMS_MAX_PER_HOUR", 6, 1, MAX_PER_HOUR_CAP),
         dedupe_minutes=_int(env, "SMS_DEDUPE_MINUTES", 30, 1, 1_440),
         prefix=env.get("SMS_PREFIX", ""),
+        allowed_labels=env.get("SMS_ALLOWED_LABELS", ""),
         key_vault_uri=vault.rstrip("/"),
         state_blob_url=state,
     )
@@ -167,3 +172,34 @@ def parse_recipients(raw: str, allowed_countries: frozenset[str]) -> tuple[str, 
     if len(set(recipients)) != len(recipients):
         raise ConfigError("sms-recipients has a duplicate number")
     return tuple(recipients)
+
+
+_ACCOUNT_SID = re.compile(r"AC[0-9a-fA-F]{32}")
+_API_KEY_SID = re.compile(r"SK[0-9a-fA-F]{32}")
+
+
+def parse_twilio_credentials(raw: str) -> tuple[str, str, str]:
+    """Check the shape of the ``twilio-api`` secret; return ``(account_sid, key_sid, key_secret)``.
+
+    Pure, so the core can reject a malformed secret before any claim (spec section 5 step 3)
+    and the adapter can reuse it. Errors never include a value.
+    """
+    try:
+        data = json.loads(raw)
+        account_sid, key_sid, key_secret = (
+            data["account_sid"],
+            data["api_key_sid"],
+            data["api_key_secret"],
+        )
+    except (ValueError, KeyError, TypeError):
+        raise ConfigError("twilio-api is unreadable") from None
+    if (
+        not isinstance(account_sid, str)
+        or not _ACCOUNT_SID.fullmatch(account_sid)
+        or not isinstance(key_sid, str)
+        or not _API_KEY_SID.fullmatch(key_sid)
+        or not isinstance(key_secret, str)
+        or not key_secret
+    ):
+        raise ConfigError("twilio-api has an invalid field")
+    return account_sid, key_sid, key_secret

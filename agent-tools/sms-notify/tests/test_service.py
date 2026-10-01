@@ -71,24 +71,45 @@ async def test_sends_once_and_records_outcome():
 
 
 async def test_prefix_is_sent_but_hash_is_of_the_normalized_text():
-    h = Harness(SMS_PREFIX="[X] ")
+    h = Harness(SMS_PREFIX="(X) ")
     code, _ = await h.run()
     assert code == "sent"
-    assert h.notifier.sent[0][1] == "[X] " + TEXT
+    assert h.notifier.sent[0][1] == "(X) " + TEXT
     assert dedupe_key(_hash(TEXT)) in h.state.items
 
 
 async def test_invalid_message_touches_nothing():
     h = Harness()
-    code, _ = await h.run("a" * 481)
-    assert code == "invalid_request"
+    code, record = await h.run("Note: " + "a" * 481)
+    assert code == "invalid_request" and record.reason == "too_long"
     assert h.state.calls == [] and h.secrets.timeouts == [] and h.notifier.sent == []
 
 
-async def test_link_is_content_rejected_before_any_claim():
+async def test_template_failure_is_invalid_request_before_any_claim():
     h = Harness()
-    code, _ = await h.run("see example.com")
-    assert code == "content_rejected" and h.state.calls == []
+    code, record = await h.run("Note: see example.com")
+    assert code == "invalid_request" and record.reason == "bad_character"
+    assert h.state.calls == [] and h.secrets.timeouts == [] and h.notifier.sent == []
+
+
+@pytest.mark.parametrize("labels", ["", ",,", "Alpha,alpha"])
+async def test_invalid_label_config_is_unavailable_and_nothing_claimed(labels):
+    h = Harness(SMS_ALLOWED_LABELS=labels)
+    code, _ = await h.run()
+    assert code == "unavailable" and h.state.calls == [] and h.notifier.sent == []
+
+
+async def test_malformed_twilio_secret_is_unavailable_before_any_claim():
+    h = Harness()
+    h.secrets.values["twilio-api"] = json.dumps({"account_sid": "bad"})
+    code, _ = await h.run()
+    assert code == "unavailable" and h.state.calls == [] and h.notifier.sent == []
+
+
+async def test_both_secrets_read_before_any_claim():
+    h = Harness()
+    await h.run()
+    assert len(h.secrets.timeouts) == 2
 
 
 async def test_prefix_with_newline_is_unavailable():
@@ -209,27 +230,27 @@ async def test_corrupt_dedupe_blob_is_taken_over():
 
 async def test_cooldown_blocks_a_second_text_and_is_stamped_at_claim_time():
     h = Harness()
-    assert (await h.run("first text"))[0] == "sent"
+    assert (await h.run("Note: first text"))[0] == "sent"
     stamp = h.state.json(COOLDOWN_KEY)["at"]
     h.clock.advance(89)
-    assert (await h.run("second text"))[0] == "rate_limited"
+    assert (await h.run("Note: second text"))[0] == "rate_limited"
     assert h.state.json(COOLDOWN_KEY)["at"] == stamp  # not re-stamped when refused
 
 
 async def test_cooldown_boundary_at_90_seconds():
     h = Harness()
-    await h.run("first text")
+    await h.run("Note: first text")
     h.clock.advance(90)
-    assert (await h.run("second text"))[0] == "sent"
+    assert (await h.run("Note: second text"))[0] == "sent"
 
 
 async def test_cooldown_not_rolled_back_after_a_failed_send():
     h = Harness()
     h.notifier.behavior[RECIPIENT_1] = NotifierRejected(status=500, error_code=20500)
-    assert (await h.run("first text"))[0] == "send_failed"
+    assert (await h.run("Note: first text"))[0] == "send_failed"
     h.notifier.behavior.clear()
     h.clock.advance(10)
-    assert (await h.run("second text"))[0] == "rate_limited"
+    assert (await h.run("Note: second text"))[0] == "rate_limited"
     assert h.notifier.sent == []
 
 
@@ -241,7 +262,7 @@ async def test_hourly_cap_sixth_sends_seventh_refused():
     h.clock._now = h.clock._now.replace(minute=0)
     codes = []
     for i in range(7):
-        codes.append((await h.run(f"text number {i}"))[0])
+        codes.append((await h.run(f"Note: text number {i}"))[0])
         h.clock.advance(1)
     assert codes == ["sent"] * 6 + ["rate_limited"]
     assert len(h.notifier.sent) == 6
@@ -251,10 +272,10 @@ async def test_hourly_cap_rolls_over_with_the_hour():
     h = Harness(SMS_MIN_INTERVAL_SECONDS="0")
     h.clock._now = h.clock._now.replace(minute=59)
     for i in range(6):
-        await h.run(f"text number {i}")
-    assert (await h.run("one more"))[0] == "rate_limited"
+        await h.run(f"Note: text number {i}")
+    assert (await h.run("Note: one more"))[0] == "rate_limited"
     h.clock.advance(60)  # next UTC hour
-    assert (await h.run("next hour text"))[0] == "sent"
+    assert (await h.run("Note: next hour text"))[0] == "sent"
     assert slot_key(h.clock.now(), 1) in h.state.items
 
 
@@ -273,7 +294,7 @@ async def test_concurrent_identical_requests_send_once():
 async def test_concurrent_different_requests_only_one_wins_the_cooldown():
     h = Harness()
     h.state.yield_between = True
-    results = await asyncio.gather(h.run("text one"), h.run("text two"))
+    results = await asyncio.gather(h.run("Note: text one"), h.run("Note: text two"))
     codes = sorted(code for code, _ in results)
     assert codes == ["rate_limited", "sent"]
     assert len(h.notifier.sent) == 1
@@ -286,7 +307,7 @@ async def test_concurrent_different_requests_only_one_wins_the_cooldown():
 async def test_storage_failure_is_unavailable_and_nothing_sent(op):
     h = Harness()
     if op != "create":
-        await h.run("warm up text")  # so the next request reads and replaces existing blobs
+        await h.run("Note: warm up text")  # so the next request reads and replaces existing blobs
         h.clock.advance(120)
         h.notifier.sent.clear()
     h.state.fail_on = {op}
