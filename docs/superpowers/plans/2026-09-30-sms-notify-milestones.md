@@ -34,6 +34,6 @@ Last updated: 2026-09-30 (rev 1, written in USMS00) · Plan: [2026-09-30-sms-not
 - **PR slots:** 1 (USMS01).
 
 ### SM2 — Demo-ready and demo done (USMS02)
-- **DoD:** plan §5 USMS02 (one session that starts before the demo and runs through the detach, holding the only branch; plan §3 timeline): resource list committed first; validated and previewed provision; `live_twilio` passes; copy agent sends exactly one SMS and refuses a repeat; failure drill passes; production test call delivers; tool detached after the demo; redacted evidence recorded; status PR merged.
+- **DoD:** plan §5 USMS02 (one session that starts before the demo and runs through the detach, holding the only branch; plan §3 timeline; a pre-demo code fix goes through the plan §3 USMS02b contingency): resource list committed first; validated and previewed provision; `live_twilio` passes; copy agent sends exactly one SMS and refuses a repeat; failure drill passes; production test call delivers; tool detached after the demo; redacted evidence recorded; status PR merged.
 - **Test coverage:** one opt-in live send; scripted copy-agent checks; one live production call.
 - **PR slots:** 1 status PR (branchless unit).

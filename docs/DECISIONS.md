@@ -786,7 +786,7 @@ TELEPHONY_BRIDGE_SPEC.md §7 ("Do not build") is lifted in two places, **for `ag
 2. **"Storing transcripts or caller data anywhere outside Foundry traces and logs":** lifted to allow **sending** an agent-written text to the fixed follow-up contact. It does not allow storing caller data in our systems.
    - **The data set:** whatever the agent puts in the text. The instructions limit it to six fields: the caller's name, confirmed callback number, purpose, budget, timeline and meeting preference; a field the caller didn't give is written as `not given`. Budget is personal financial information and is covered by this lift.
    - **Where it goes:** Twilio (the processor, which keeps message bodies in its logs; accepted for the demo, Q-092), the carriers, and the recipient's handset.
-   - **Our systems store only:** a SHA-256 hash of the normalized text with its send outcome, used for 30 min of dedupe and deleted within about a day by a storage lifecycle rule, plus timestamps. No body, no number, no transcript; the log line masks numbers as `***1234` and never contains the body.
+   - **Our systems store only:** a SHA-256 hash of the normalized text with its send outcome, used for 30 min of dedupe and deleted within about two days by a storage lifecycle rule (a 1-day rule, plus up to a day for the policy run), plus timestamps. No body, no number, no transcript; the log line masks numbers as `***1234` and never contains the body.
    - **Responsibility afterwards:** the business receiving the text, for retention and follow-up.
    - **Caller notice (Q-089):** the agent tells the caller first and asks; if they decline, it sends nothing. A privacy review is still advised before real callers.
 
