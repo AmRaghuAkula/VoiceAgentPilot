@@ -1,0 +1,23 @@
+{
+  "status": "available",
+  "request_id": "7d1c2b3a4f5e6d7c8b9a0f1e2d3c4b5a",
+  "timezone": "America/Toronto",
+  "now": "2026-09-29T14:03:00-04:00",
+  "today": { "date": "2026-09-29", "weekday": "Tuesday" },
+  "searched": { "from": "2026-10-05T09:00:00-04:00", "to": "2026-10-07T19:00:00-04:00" },
+  "duration_minutes": 30,
+  "slots": [
+    {
+      "slot_id": "v1.k7m2q9x4c1b8n5d3f6h0j2l4p7r9t1v3a5c7e9g",
+      "start": "2026-10-05T10:00:00-04:00",
+      "end": "2026-10-05T10:30:00-04:00",
+      "display": "Monday, October 5 at 10:00 AM"
+    }
+  ],
+  "more_available": true,
+  "appointment_types": [
+    { "id": "phone_call", "label": "Phone call" },
+    { "id": "in_person", "label": "In-person meeting" }
+  ],
+  "allowed_durations_minutes": [30]
+}

@@ -1,0 +1,5 @@
+{
+  "status": "invalid_request",
+  "request_id": "0a4f5e6d7c8b9a0f1e2d3c4b5a6f7e8d",
+  "detail": { "fields": ["duration_minutes"], "allowed_durations_minutes": [30] }
+}

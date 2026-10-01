@@ -1,0 +1,297 @@
+openapi: 3.0.3
+info:
+  title: Calendar tools
+  version: "1.0.0"
+  description: |-
+    Generic appointment tools for one calendar. The calendar, its bookable hours,
+    its appointment types and who may call it are fixed by the URL this document
+    is served at; the caller never chooses them.
+servers:
+  # Placeholder. tools/render_openapi.py produces each binding's copy by changing
+  # this URL only (guard G3).
+  - url: https://example.invalid/api/v1/bindings/BINDING_ID
+paths:
+  /check-availability:
+    post:
+      operationId: check_availability
+      summary: Find open appointment times
+      description: |-
+        Finds open appointment times on the calendar connected to this tool. Returns only times that are actually free now and inside the calendar's bookable hours. Each slot includes a slot_id, which book_appointment requires. Times are in the calendar's timezone and include a UTC offset. Call without from_date to search starting today. The response includes today's date and weekday in the calendar's timezone, which you can use to work out relative dates such as "tomorrow" or "next Tuesday". status "no_availability" means the range was searched and nothing is free; a different range may have openings. status "calendar_unavailable" means availability could not be checked, so no times are known; do not state or guess any times.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CheckAvailabilityRequest"
+      responses:
+        "200":
+          description: Every expected outcome, distinguished by status.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CheckAvailabilityResponse"
+  /book-appointment:
+    post:
+      operationId: book_appointment
+      summary: Book one offered slot
+      description: |-
+        Books one slot returned by check_availability. Send the slot's slot_id and start exactly as returned, an appointment_type id from the check_availability response, and the contact's details. Only status "booked" means an appointment now exists. Every other status means no appointment was made, except "booking_unconfirmed", which means it is unknown whether one was made. Do not describe an appointment as booked unless status is "booked". Retrying with identical inputs is safe; it is designed not to create a duplicate booking.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BookAppointmentRequest"
+      responses:
+        "200":
+          description: Every expected outcome, distinguished by status.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BookAppointmentResponse"
+components:
+  securitySchemes:
+    # Documentation only: the platform calling this tool supplies the token.
+    bearer:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  schemas:
+    CheckAvailabilityRequest:
+      type: object
+      properties:
+        from_date:
+          type: string
+          format: date
+          description: First local date to search, in the calendar's timezone (YYYY-MM-DD). Defaults to today.
+        to_date:
+          type: string
+          format: date
+          description: Last local date to search, inclusive (YYYY-MM-DD).
+        earliest_time:
+          type: string
+          pattern: "^[0-9]{2}:[0-9]{2}$"
+          description: Optional local time of day (HH:MM); only times at or after it are returned. It never widens the bookable hours.
+        latest_time:
+          type: string
+          pattern: "^[0-9]{2}:[0-9]{2}$"
+          description: Optional local time of day (HH:MM); only times ending at or before it are returned. It never widens the bookable hours.
+        duration_minutes:
+          type: integer
+          description: Appointment length in minutes. Must be one of allowed_durations_minutes; defaults to the calendar's default length.
+    LocalDay:
+      type: object
+      properties:
+        date:
+          type: string
+          format: date
+        weekday:
+          type: string
+    SearchedRange:
+      type: object
+      properties:
+        from:
+          type: string
+          format: date-time
+        to:
+          type: string
+          format: date-time
+    Slot:
+      type: object
+      required: [slot_id, start, end, display]
+      properties:
+        slot_id:
+          type: string
+          description: Opaque token from a check_availability slot. Copy it exactly; do not construct or modify it.
+        start:
+          type: string
+          format: date-time
+          description: Slot start, ISO 8601 with a UTC offset.
+        end:
+          type: string
+          format: date-time
+          description: Slot end, ISO 8601 with a UTC offset.
+        display:
+          type: string
+          description: The start formatted for reading aloud, in the calendar's timezone.
+    AppointmentType:
+      type: object
+      required: [id, label]
+      properties:
+        id:
+          type: string
+        label:
+          type: string
+    CheckAvailabilityDetail:
+      type: object
+      properties:
+        reason:
+          type: string
+          enum: [fully_booked, outside_bookable_hours, beyond_booking_horizon]
+          description: Why no_availability was returned.
+        fields:
+          type: array
+          items:
+            type: string
+          description: The request fields that were invalid.
+        allowed_durations_minutes:
+          type: array
+          items:
+            type: integer
+    CheckAvailabilityResponse:
+      type: object
+      required: [status, request_id]
+      properties:
+        status:
+          type: string
+          enum: [available, no_availability, calendar_unavailable, invalid_request]
+          description: The outcome. Only "available" carries slots.
+        request_id:
+          type: string
+          description: Identifies this request in the service's logs.
+        timezone:
+          type: string
+          description: The calendar's IANA timezone.
+        now:
+          type: string
+          format: date-time
+          description: The current time in the calendar's timezone.
+        today:
+          $ref: "#/components/schemas/LocalDay"
+        searched:
+          $ref: "#/components/schemas/SearchedRange"
+        duration_minutes:
+          type: integer
+        slots:
+          type: array
+          items:
+            $ref: "#/components/schemas/Slot"
+        more_available:
+          type: boolean
+          description: True if more free times exist in the searched range than were returned.
+        appointment_types:
+          type: array
+          items:
+            $ref: "#/components/schemas/AppointmentType"
+          description: The appointment types this calendar accepts; book_appointment takes one of these ids.
+        allowed_durations_minutes:
+          type: array
+          items:
+            type: integer
+        retryable:
+          type: boolean
+        detail:
+          $ref: "#/components/schemas/CheckAvailabilityDetail"
+    Contact:
+      type: object
+      properties:
+        name:
+          type: string
+          description: The contact's name.
+        phone:
+          type: string
+          description: The contact's phone number.
+        email:
+          type: string
+          description: The contact's email address.
+    BookAppointmentRequest:
+      type: object
+      required: [slot_id, start, appointment_type, contact]
+      properties:
+        slot_id:
+          type: string
+          description: Opaque token from a check_availability slot. Copy it exactly; do not construct or modify it.
+        start:
+          type: string
+          description: The slot's start, exactly as returned by check_availability.
+        appointment_type:
+          type: string
+          description: One appointment_types id from the check_availability response.
+        contact:
+          $ref: "#/components/schemas/Contact"
+        notes:
+          type: string
+          nullable: true
+          description: Optional short notes. Used only if this calendar accepts notes.
+    BookingTypeRef:
+      type: object
+      properties:
+        id:
+          type: string
+        label:
+          type: string
+    BookingHost:
+      type: object
+      properties:
+        display_name:
+          type: string
+    Booking:
+      type: object
+      required: [booking_ref, start, end, display, timezone, appointment_type]
+      properties:
+        booking_ref:
+          type: string
+          description: A short reference for the booking.
+        start:
+          type: string
+          format: date-time
+        end:
+          type: string
+          format: date-time
+        display:
+          type: string
+          description: The start formatted for reading aloud, in the calendar's timezone.
+        timezone:
+          type: string
+        appointment_type:
+          $ref: "#/components/schemas/BookingTypeRef"
+        host:
+          $ref: "#/components/schemas/BookingHost"
+    BookAppointmentDetail:
+      type: object
+      properties:
+        reason:
+          type: string
+          enum:
+            - taken
+            - too_soon
+            - cancelled
+            - expired
+            - malformed
+            - wrong_binding
+            - start_mismatch
+            - outside_bookable_hours
+            - duration_not_allowed
+          description: Why the slot could not be booked (slot_unavailable or invalid_slot).
+        fields:
+          type: array
+          items:
+            type: string
+          description: The request fields that were invalid.
+    BookAppointmentResponse:
+      type: object
+      required: [status, request_id]
+      properties:
+        status:
+          type: string
+          enum:
+            - booked
+            - slot_unavailable
+            - invalid_slot
+            - limit_reached
+            - invalid_request
+            - calendar_unavailable
+            - booking_unconfirmed
+          description: The outcome. Only "booked" means an appointment exists; "booking_unconfirmed" means it is unknown whether one was made.
+        request_id:
+          type: string
+          description: Identifies this request in the service's logs.
+        replayed:
+          type: boolean
+          description: True if an identical earlier request had already made this booking and nothing new was created.
+        booking:
+          $ref: "#/components/schemas/Booking"
+        retryable:
+          type: boolean
+        detail:
+          $ref: "#/components/schemas/BookAppointmentDetail"
