@@ -1,6 +1,6 @@
 # SMS Follow-up Notification Tool — Milestones
 
-Last updated: 2026-10-01 (rev 1.2: USMS02 DoD annotated for the `live_twilio` and voice-harness deviations, Q-095; rev 1 written in USMS00) · Plan: [2026-09-30-sms-notify-plan.md](2026-09-30-sms-notify-plan.md) · Spec: [../specs/2026-09-30-sms-notify-design.md](../specs/2026-09-30-sms-notify-design.md) · Decisions: D-062, D-063
+Last updated: 2026-10-01 (rev 1.3: SM2 DoD reworded for USMS02's early status-branch merge, D-065; rev 1.2: USMS02 DoD annotated for the `live_twilio` and voice-harness deviations, Q-095; rev 1 written in USMS00) · Plan: [2026-09-30-sms-notify-plan.md](2026-09-30-sms-notify-plan.md) · Spec: [../specs/2026-09-30-sms-notify-design.md](../specs/2026-09-30-sms-notify-design.md) · Decisions: D-062, D-063
 
 **End state of this track:** on the founder's demo call (2026-10-02), near the end of the call and after the caller agrees, the production agent sends one agent-written SMS through `agent-tools/sms-notify/` to the fixed follow-up contact, and the text arrives. After the demo the tool is detached from production (Q-090).
 
@@ -35,6 +35,6 @@ Last updated: 2026-10-01 (rev 1.2: USMS02 DoD annotated for the `live_twilio` an
 - **PR slots:** 1 (USMS01).
 
 ### SM2 — Demo-ready and demo done (USMS02)
-- **DoD:** plan §5 USMS02 (one session that starts before the demo and runs through the detach, holding the only branch; plan §3 timeline; a pre-demo code fix goes through the plan §3 USMS02b contingency): resource list committed first; validated and previewed provision; `live_twilio` passes (plan rev 1.2: replaced by the copy-agent end-to-end send; founder acceptance tracked as Q-095, OPEN); copy agent sends exactly one SMS and refuses a repeat; failure drill passes; production test call delivers; tool detached after the demo; Twilio API key rotated (Q-094, by USMS02 or the contingent USMS03); redacted evidence recorded; status PR merged.
+- **DoD:** plan §5 USMS02 (rev 1.3, D-065: its status branch merged early, before the demo, and each later step is recorded in a status-only PR, D-018; plan §3 timeline; a pre-demo code fix goes through the plan §3 USMS02b contingency; SM2 is DONE only when the detach (Q-096), the key rotation (Q-094) and the founder's Q-095 acknowledgement are all recorded): resource list committed first; validated and previewed provision; `live_twilio` passes (plan rev 1.2: replaced by the copy-agent end-to-end send; founder acceptance tracked as Q-095, OPEN); copy agent sends exactly one SMS and refuses a repeat; failure drill passes; production test call delivers; tool detached after the demo; Twilio API key rotated (Q-094, by USMS02 or the contingent USMS03); redacted evidence recorded; status PR merged.
 - **Test coverage:** one opt-in live send (replaced by the copy-agent send, plan rev 1.2, Q-095); scripted copy-agent checks; one live production call.
-- **PR slots:** 1 status PR (branchless unit).
+- **PR slots:** 1 status PR (branchless unit), merged early (D-065), plus one status-only PR per later session that records a remaining step.
