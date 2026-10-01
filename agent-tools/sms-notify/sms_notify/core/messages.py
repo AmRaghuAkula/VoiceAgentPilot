@@ -4,7 +4,8 @@ The service authors no content (K1): it only normalizes, checks and forwards the
 The validator accepts only ``<label>: <value>`` lines whose labels come from the
 ``SMS_ALLOWED_LABELS`` setting and whose values use a small character allowlist, so no
 link, web address, email address, handle or IP address can be written (D-064).
-Non-ASCII characters are written as ``chr()`` code points so this source stays ASCII.
+The normalization and validator characters are written as ``chr()`` code points (no
+invisible or bidi character appears in this source); the GSM-7 tables are printable literals.
 """
 
 from __future__ import annotations

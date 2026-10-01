@@ -47,7 +47,7 @@ App settings come from the azd environment (`infra/main.parameters.json`). No va
 | `SMS_MAX_PER_HOUR` | `6` | no | Hourly cap (UTC hour), 1 to 20 |
 | `SMS_DEDUPE_MINUTES` | `30` | no | Same normalized text inside the window is not sent again |
 | `SMS_PREFIX` | `""` | no | Optional fixed operational prefix: a single line obeying the K12 value rules (no `/`, `:`, `@`, no `.` except between digits, no `www`), otherwise `unavailable` |
-| `SMS_ALLOWED_LABELS` | `Ref,Callback #,Note` | **yes** | Comma-separated line labels the text may use (K12 rule 1): 1 to `SMS_MAX_LINES` entries, each 1 to 32 characters, no `.` `,` `:` or double spaces, no duplicates (case-insensitive). Unset, empty or invalid means every request gets `unavailable`. Set only in the azd environment; the real labels are never committed |
+| `SMS_ALLOWED_LABELS` | none (required) | **yes** | For example `Ref,Callback #,Note`. Comma-separated line labels the text may use (K12 rule 1): 1 to `SMS_MAX_LINES` entries, each 1 to 32 characters, no `.` `,` `:` or double spaces, no duplicates (case-insensitive). Unset, empty or invalid means every request gets `unavailable`. Set only in the azd environment; the real labels are never committed |
 | `KEY_VAULT_URI` | `https://kv-sms-xxxx.vault.azure.net/` | yes (set by Bicep) | Read with the managed identity |
 | `STATE_BLOB_URL` | `https://stsmsxxxx.blob.core.windows.net/sms-state` | yes (set by Bicep) | Container for dedupe, cooldown and hourly slots |
 | Key Vault secret `twilio-api` | `{"account_sid":"AC…","api_key_sid":"SK…","api_key_secret":"…"}` | yes | Standard API key, not the auth token. Set by the founder |

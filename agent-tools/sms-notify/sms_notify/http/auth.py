@@ -69,7 +69,7 @@ class JwksCache:
             raise
         except Exception as err:  # noqa: BLE001 - any malformed or failed fetch fails closed
             raise JwksUnavailable(type(err).__name__) from None
-        self._keys = {k.key_id: k.key for k in keyset.keys if k.key_id}
+        self._keys = {k.key_id: k.key for k in keyset.keys if k.key_id and k.key_type == "RSA"}
         self._fetched_at = self._clock.monotonic()
 
     def _attempted_recently(self) -> bool:
