@@ -697,3 +697,57 @@ This keeps the tests' underlying intent: a bad config or a timeout must not leav
 - it claimed Twilio has no way to speak before hanging up.
 
 It also found the rewritten tests under-specified (no time bound, no exact end reasons). This text replaces that version in full. Because D-058 had never reached `main`, it was rewritten in place rather than superseded by a new entry.
+
+### D-059 · 2026-09-30 · UC01 feasibility result: GO; OpenAPI attached directly is the calendar tool's primary transport; principal claim, publish, timeout and refusal findings (calendar plan UC01 Step 7, fields a–e)
+
+Evidence: STATUS.md §2, "UC01 evidence", rows E1–E15 (claim **names** only; values stay outside the repo). Field (a) is the partner's decision under D-030; the other fields record what UC01 observed.
+
+**Go/no-go:** **GO.** Both OpenAPI and MCP tools attached to a `prompt`-kind Foundry agent execute server-side inside a Voice Live agent-mode session opened through the bridge's own `VoiceLiveMediaHandler` (E2, E3). Spec §3.1's no-go branch does not apply.
+
+**(a) Primary transport: OpenAPI attached directly to the agent (partner decision under D-030, 2026-09-30). MCP stays a swappable fallback.** The evidence the decision was made on:
+
+| | OpenAPI attached directly (plan as written) | MCP (attached directly; `/mcp` facade per the plan's "Go (MCP only)" branch) |
+| --- | --- | --- |
+| Works through today's bridge unchanged | Yes (E2) | Yes, **only with** the tool's approval set to "Always auto-approve all tools" (`require_approval: never`). Otherwise the caller hears silence (E4) |
+| Principal presented | Foundry **resource**'s system-assigned managed identity: every project and agent on the resource (E6) | Foundry **project**'s managed identity (E6) |
+| Isolation implied (spec §4.2) | Resource-wide. Separating two businesses needs separate Foundry **resources** or option D | Project-wide. Separate **projects** suffice |
+| Bridge watchdog allowance for tool time | 15 s, with the model's own time inside it, because OpenAPI emits no progress events (E12) | 45 s once `mcp_call.in_progress` arrives (E12) |
+| Non-2xx behavior | Fails the whole turn (`agent_tool_user_error`); the model never sees the body (E10) | Not tested with an error response. MCP returns errors inside a successful JSON-RPC result, so this is expected to differ — **unverified** |
+| Plan impact | None | Plan's "Go (MCP only)" revision: an MCP facade over the same core, G3 extended to MCP. A per-agent operator step to set auto-approve |
+| Note | OpenAPI *inside a toolbox* presents the project identity (E5, E6), but toolboxes are offered only on voice-kind agents, which don't work through Voice Live (E1) | — |
+
+Why OpenAPI-direct:
+- It works through today's bridge (E2) and needs no auto-approve setting on each agent. MCP does (E4).
+- Identity does not separate the two. Neither gives a per-agent identity: OpenAPI presents the resource's identity and MCP (or a toolbox) the project's (E6). Either way the in-code `oid` allowlist is the control that takes effect immediately (E13).
+- OpenAPI's 15 s allowance under the bridge watchdog (E12) is enough for a calendar call, provided the service keeps to its own 8 s deadline (d).
+- MCP stays open as a later front end: the service core must keep no transport dependency, so an MCP facade can be added over the same core without a rewrite (spec §3 property 3). Adding one would be its own unit.
+
+**Contract rule confirmed (spec §5 rule 4), no schema change:** on OpenAPI a non-2xx response fails the whole turn, and the model never sees the body (E10). That is exactly why spec §5 rule 4 already returns **every expected outcome** (for example: no availability, slot taken, invalid input) as **HTTP 200 with the flat `status` enum**. UC01 answers the open point that rule left ("UC01 checks it"), and the rule stands as written. Non-2xx stays reserved for protocol and configuration errors only: 401 (missing or invalid token), 403 (unknown or disallowed binding, or a disallowed principal, spec §4.2), 413, 405 and 404. **Consequence for spec §12 F12:** its mitigation ("the agent's instructions treat it like `calendar_unavailable`") cannot work on OpenAPI. A 401/403 never reaches the model; the caller hears the bridge's D-038 retry and then a generic tool-failure reply. The partner revises F12's text (Q-075). No code unit is affected before UC02a, which writes the contract document.
+
+**(b) Principal claim for `CALENDAR_AUTH_PRINCIPAL_CLAIM`: `oid`** (the plan's default). `oid` and `appid` are present on every Foundry token; `azp` and `idtyp` are **absent** (v1 tokens, E7), so `azp` must not be configured. With (a) = OpenAPI-direct, the allowlist entry is the `oid` of the Foundry **resource**'s system-assigned managed identity, which is **resource-wide** (every project and agent on that resource; spec §4.2's isolation note applies).
+
+**(c) Does publishing change the principal?** Not exercised (partner decision, 2026-09-30).
+- In this portal, "publish" means a channel publish (Teams & Microsoft 365 Copilot). `agent_endpoint.publish_approval_status` stays `not_published` otherwise.
+- Every agent already has its own Entra `agentIdentity` and `agentIdentityBlueprint` from creation. No tool call used it while unpublished (E8).
+- **UC11's checklist (Q-075):** do not channel-publish the production agent without re-running this check. If a channel publish is ever needed, re-verify the principal the echo sees before relying on the allowlist.
+- **Separate D-049 finding (E9), refining D-049's account of publish versus unpinned resolution:** the portal's Active-version selector does **not** hold a saved draft back from the bridge's unpinned calls. Unpinned connects always run the latest *saved* version. Any saved edit, including an unfinished one, goes live on the next call. Pinning `agent_version` in the routing is the only way to hold a draft back.
+
+**(d) Foundry tool timeout and budget.** Foundry's own tool timeout is **over 20 s** (not reached, E11). That is ≥ 12 s, so the plan's rule keeps the **8 s** request deadline.
+- The tighter limit in practice is the bridge's D-050 watchdog (E12). For OpenAPI tools, the model's time plus the tool's time must stay under 15 s per response. Observed model time was about 2–4.5 s (E2/E3 end-to-end, minus about 0.2 s at the echo), so 8 s + 4.5 s leaves under 3 s of margin.
+- With (a) = OpenAPI, the 8 s deadline is therefore a hard ceiling the service must keep, not just a target. No bridge change is made by this entry. Raising the watchdog for OpenAPI tool calls would be a separate bridge unit if it is ever needed.
+
+**(e) Refusal test.**
+- Identity type: a throwaway **service principal** using the **client-credentials** flow (scope `api://<echo app>/.default`).
+- Before `appRoleAssignmentRequired=true`: token issued, no `roles`.
+- After: refused with **`AADSTS501051`** (`invalid_grant`, HTTP 400). Same principal, secret and scope, so the refusal is the assignment rule (E14).
+- **Caveat for UC09/UC05 (E13):** Foundry caches managed-identity tokens for up to 24 h. After an assignment is added, or removed, the `roles` claim and Entra's refusal only take effect when Foundry next fetches a token. In-session, the assigned principals' tool calls kept succeeding on pre-assignment tokens, and `roles: ["Calendar.Invoke"]` could not be observed. The in-code allowlist (spec §9.1) is therefore the control that takes effect immediately. The Entra assignment is a second layer with up to a 24 h lag.
+
+**Teardown and residuals (E15).** Verified deleted: the RG and its contents, both app registrations (with their service principals, role assignments and secret), both test agents (with the agent-level OpenAPI tool), and both agents' Foundry-created agent identities. `Microsoft.Storage` is unregistered; `Microsoft.Web` was still `Unregistering` at the last check before merge (an asynchronous Azure operation that needs no action). Known residuals, accepted by the founder (2026-09-30): the project connections `uc01_echo_openapi` (dummy key) and `echo` (the MCP tool), which fail to delete on the production RG's `CanNotDelete` lock (the lock stays), and the project toolbox `uc01-toolbox`, which still exists and holds the OpenAPI tool `uc01_echo_openapi_tb`. All three are inert: no agent uses them, there is no real secret, and they point at a deleted host. Cleanup is tracked as Q-076.
+
+**`roles` claim: deferred to UC09 (founder decision, 2026-09-30; tracked as Q-075).** It was not observed because of the 24 h token cache (E13). UC09's probes must observe `roles: ["Calendar.Invoke"]` on a Foundry-issued token once the assignment is older than the cached token.
+
+**Rules for later units:**
+- **Every test agent (UC10 and any later check) and the production agent MUST be `prompt`-kind.** A voice-kind agent (portal interaction mode "Voice", realtime model) produces empty responses through Voice Live agent mode (E1). The partner adds this to the calendar plan's UC10 and UC11 steps (Q-075).
+- If MCP is ever used, its tool needs `require_approval: never` (portal: "Always auto-approve all tools") for the bridge path (E4).
+
+**Source:** UC01 verification, 2026-09-30, builder on Opus. The founder did the Foundry portal steps. The partner decided not to exercise the channel publish, and chose the transport in (a) under D-030. The founder chose to tear down before the `roles` claim could be observed.
