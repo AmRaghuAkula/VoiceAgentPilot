@@ -54,13 +54,13 @@ The bridge's own code and traffic are unchanged. The only new edges start at the
 | K2 | **Recipients live only in a Key Vault secret** (`sms-recipients`: a JSON list in E.164 format). They never appear in the tool arguments, the OpenAPI document, the prompt, the repo, or logs (masked as `***1234`) | The model can't be talked into sending elsewhere, so there's no prompt-injection path to a new destination. The secret is also the destination allowlist |
 | K3 | **Transport: OpenAPI attached directly** (recommended), with a framework-free core so an MCP facade can be added later without touching it | It's proven through today's bridge with no per-agent approval setting (UC01 E2, versus E4 for MCP; STATUS.md §2), and one ~1 s call fits inside the bridge's 15 s OpenAPI watchdog (E12). This choice **does not decide** calendar's D-059(a) |
 | K4 | **A request with a valid token always gets HTTP 200** with `{ok, code, retry:false}`. Only a missing or invalid token gets `401` with an empty body | E10: on OpenAPI, a non-2xx fails the whole turn and the model never sees the body. Foundry always sends a valid token, so a 401 only ever reaches non-Foundry callers, or a misconfiguration that the rehearsal catches |
-| K5 | **Deadline 5 s end to end**: Twilio timeout 3.5 s, Key Vault read 1.5 s (cached 5 min), storage operations 0.5 s each. A timed-out send returns `send_unconfirmed` and is **never** retried | D-050's 15 s watchdog includes the model's 1–4 s (E12). The calendar plan's 8 s request deadline still stands as the outer bound. Not retrying avoids duplicate texts |
-| K6 | **Auth**: an Entra app `sms-notify-api` with app role `Sms.Send` and assignment required, plus an **in-code principal allowlist** on `oid` (`SMS_ALLOWED_PRINCIPALS`). The code checks the signature, `iss` (v1 and v2 forms for our `tid`), `aud`, `tid`, `exp`/`nbf` and the allowlist. It also checks the `roles` claim, but only when `SMS_REQUIRE_ROLE=true` (off at first) | E6: OpenAPI direct presents the Foundry **resource's** managed identity. E13: role changes take up to 24 h to reach Foundry tokens. So the allowlist is the control that works at once. `SMS_REQUIRE_ROLE` is turned on once `roles` has been seen on a Foundry token (as in UC09) |
+| K5 | **Deadline 5 s end to end**, measured from the request's arrival. Per-operation budgets: Twilio POST 3.5 s, Key Vault read 1.5 s (cached 5 min), JWKS fetch 1.5 s (cached), storage operations 0.5 s each. **Each operation's timeout is the smaller of its budget and the time left before the deadline.** If the deadline runs out before a recipient's POST is sent, that recipient counts as `send_failed` (nothing went out); if it runs out after the POST was sent, it counts as `send_unconfirmed`. A timed-out send is **never** retried | D-050's 15 s OpenAPI watchdog includes the model's own 1–4.5 s (E12), so the tool must stay well inside the remainder; this is the same reasoning as D-059(d) for calendar. Not retrying avoids duplicate texts |
+| K6 | **Auth**: an Entra app `sms-notify-api` with app role `Sms.Send` and assignment required, plus an **in-code principal allowlist** on `oid` (`SMS_ALLOWED_PRINCIPALS`). The code checks the signature (RS256 against the tenant's JWKS, cached and refreshed once on an unknown `kid`), `iss` (v1 and v2 forms for our `tid`), `aud` (the app ID URI or the bare app ID), `tid`, `exp`/`nbf` (60 s leeway) and the allowlist. It also checks the `roles` claim, but only when `SMS_REQUIRE_ROLE=true` (off at first). If the JWKS can't be fetched, the token can't be judged, so the request gets 200 `unavailable` (not 401) | E6: OpenAPI direct presents the Foundry **resource's** managed identity. E13: role changes take up to 24 h to reach Foundry tokens. So the allowlist is the control that works at once. `SMS_REQUIRE_ROLE` is turned on once `roles` has been seen on a Foundry token (as in UC09) |
 | K7 | **Twilio credentials**: a Standard **API key** (SID + secret, not the account auth token) and the Account SID, held in the Key Vault secret `twilio-api` and read through the Function's managed identity over REST (calendar P5). The sender number is an app setting fed from the azd environment, never committed | No secret in the repo or in app settings. The API key can be revoked without rotating the account |
 | K8 | **Twilio is called over raw HTTPS** (`httpx`) to a single hard-coded host, `https://api.twilio.com/2010-04-01/Accounts/{sid}/Messages.json`. There is no status callback URL | No SDK surface. There's no user-controlled URL, so there's no SSRF. No inbound webhook means no second attack surface |
 | K9 | **Hosting**: Azure Functions Flex Consumption, Python 3.12, anonymous route with auth done in code (calendar P4). It gets its own RG `rg-sms-notify-<env>`, Key Vault, and storage account (the Functions storage account, container `sms-state`). The azd environment is `sms-<env>`, guarded by `AGENT_TOOL=sms-notify` (the D-042/P11 analogue; CLAUDE.md §10) | This mirrors the calendar pattern, costs almost nothing at demo volume, and keeps the bridge's infra untouched |
 | K10 | **Region: East US 2, for the demo only** (Q-085, answered by the founder). It moves to Canada with the rest of the agent stack under Q-074 (Canada data residency) | Co-located with the Foundry resource. The move to Canada is a later redeploy of this self-contained azd project |
-| K11 | **Cap of 480 characters, 8 lines** (raised from 320; see the budget below). The agent is told to aim for 320 or fewer. **Newlines are allowed**: CRLF and CR become LF, up to 8 lines, blank lines are dropped, and whitespace is collapsed *within* each line. Curly quotes, dashes and ellipses become their ASCII equivalents so the text stays in the GSM-7 character set | The founder's format is one field per line, so a validator that strips newlines would break it. 320 characters is too tight for the worst case. Mapping punctuation to ASCII avoids a silent switch to UCS-2 encoding, which costs about 2.3 times as many segments |
+| K11 | **Cap of 480 characters, 8 lines** (raised from 320; see the budget below). The agent is told to aim for 320 or fewer. **Newlines are allowed**: CRLF and CR become LF, up to 8 lines, blank lines are dropped, and whitespace is collapsed *within* each line. Curly quotes, dashes, ellipses and the backtick become their ASCII equivalents so the text stays in the GSM-7 character set where it can. **The cap applies to the body as sent**, `SMS_PREFIX` + text, so a non-empty prefix shrinks the room for the text | The founder's format is one field per line, so a validator that strips newlines would break it. 320 characters is too tight for the worst case. Mapping punctuation to ASCII avoids a silent switch to UCS-2 encoding, which costs about 2.3 times as many segments |
 
 **Length budget (K11).**
 - **The labels are fixed at 64 characters:** `Name: ` (6), `Phone #: ` (9), `Purpose: ` (9), `Budget: ` (8), `Timeline: ` (10), `Meet preference: ` (17), plus 5 newlines.
@@ -69,7 +69,7 @@ The bridge's own code and traffic are unchanged. The only new edges start at the
 - **So 320 characters gives no margin,** and a chatty timeline pushes the message past it. That would fail the send (`invalid_request`) in the middle of a demo. 480 characters gives about 60% headroom.
 
 **The cost of 480 characters.** Twilio bills per segment.
-- **In GSM-7** (plain ASCII, including `#`, `$` and newlines), a message of up to 160 characters is 1 segment. A longer one is billed at 153 characters per segment: 320 characters is 3 segments and 480 is 4.
+- **In GSM-7** (letters, digits, newlines and most ASCII punctuation, including `#` and `$`), a message of up to 160 characters is 1 segment. The extension characters `{ } [ ] ~ ^ | \` and `€` are in GSM-7 but count as 2 characters each; the backtick is not in GSM-7, which is why normalization maps it. A longer one is billed at 153 characters per segment: 320 characters is 3 segments and 480 is 4.
 - **In UCS-2,** if any character falls outside GSM-7 (an emoji, or an uncommon accented letter), a message of up to 70 characters is 1 segment and a longer one is billed at 67 per segment. 480 characters would then be 8 segments.
 - **At demo volume, where the hourly cap is 6 sends, that's a few cents per text either way.** The service logs the encoding and the segment count so the cost is visible.
 
@@ -78,7 +78,7 @@ The bridge's own code and traffic are unchanged. The only new edges start at the
 **OpenAPI 3.0 document** (`openapi/sms-notify.json`). The builder generates it and a contract test pins it:
 - `servers[0].url`: `https://<function-host>/api` (filled in at deploy; not in the repo with a real host).
 - One operation: `POST /v1/follow-up-sms`, `operationId: send_follow_up_sms`.
-- Request body: `{ "message": string, minLength 1, maxLength 480 }`, `additionalProperties: false`. **No recipient field and no other fields.** Unknown fields return `invalid_request`.
+- Request body: `{ "message": string, minLength 1, maxLength 480 }`, `additionalProperties: false`. (`maxLength` bounds the message alone; the service then checks prefix + text against the same 480, K11. With the default empty prefix the two are identical.) **No recipient field and no other fields.** Unknown fields return `invalid_request`.
 - Response `200`: `{ "ok": boolean, "code": string, "retry": false }`.
 - Security: Foundry's managed-identity auth, audience `api://<sms-notify-api app id>`.
 
@@ -91,33 +91,35 @@ The bridge's own code and traffic are unchanged. The only new edges start at the
 | --- | --- | --- |
 | true | `sent` | Twilio accepted the message for every recipient (HTTP 201) |
 | true | `already_sent` | The same normalized text was **sent successfully** in the last 30 min (dedupe; §5 step 4) |
-| false | `invalid_request` | Bad JSON, a missing or empty `message`, unknown fields, over 480 characters or over 8 lines after normalization |
+| false | `invalid_request` | Bad JSON, a missing or empty `message`, unknown fields, or over 480 characters (prefix + text) or over 8 lines after normalization |
 | false | `content_rejected` | The text contains a link (§5 step 2), or is left empty after control characters are stripped |
 | false | `rate_limited` | Inside the cooldown, the hourly cap is reached, or the same text was attempted in the last 30 min without a confirmed send (§5 step 4) |
 | false | `forbidden` | A valid token whose `oid` isn't on the allowlist, or whose role is missing when `SMS_REQUIRE_ROLE=true` |
-| false | `send_failed` | Twilio returned a definite error (4xx/5xx, reported with the Twilio error code, never the body) |
+| false | `send_failed` | Nothing was sent: Twilio returned a definite error (4xx/5xx, reported with the Twilio error code, never the body), or the connection failed or the deadline ran out **before** the request was sent (K5) |
 | false | `send_unconfirmed` | Twilio timed out or the connection dropped after the request was sent. It may have been delivered, and it isn't retried |
-| false | `unavailable` | Key Vault or storage is unreachable, or config is missing. **It fails closed: nothing is sent** |
+| false | `unavailable` | Key Vault, storage or the JWKS endpoint is unreachable, or config is missing or invalid. **It fails closed: nothing is sent** |
 
-If several recipients are configured and Twilio accepts some but not all, the result is the worst code of the per-recipient outcomes (`send_unconfirmed` over `send_failed`), `ok:false`, and the log line records each recipient's outcome (masked).
+If several recipients are configured, the core sends to each one separately (plan P6). If Twilio accepts some but not all, the result is `ok:false` with the worst code of the per-recipient failures (`send_unconfirmed` over `send_failed`), and the log line records each recipient's outcome (masked).
 
 ## 5. Processing order (one request)
 
-1. Validate the token (K6). If it's invalid, return `401` and stop.
+1. Validate the token (K6). If it's missing or invalid, return `401` with an empty body and stop. If the JWKS can't be fetched, return 200 `unavailable`. If the token is valid but its `oid` isn't allowlisted (or the role is missing when required), return 200 `forbidden`. Every later outcome is HTTP 200.
 2. Parse the body against the schema, then normalize the text (K11):
    - NFKC;
    - CRLF and CR become LF;
    - strip C0/C1 control characters except LF, and bidi-override characters;
    - collapse whitespace within each line, and drop blank lines;
-   - map curly quotes, dashes and ellipses to ASCII.
+   - map curly quotes, dashes, ellipses and the backtick to ASCII.
 
-   Then check the limits: at most 480 characters and 8 lines. Reject links, meaning any `://`, `www.`, or a token ending in a common TLD from a short fixed list (for example `.com .net .org .ca .io .ly .co .me .info .biz .app .link .xyz .us`, case-insensitive). A bare dotted name (`J.Doe`) or an amount (`$1.5M`) must **not** be rejected.
-3. Load the config and secrets. Key Vault values are cached for 5 min, and a failure returns `unavailable`. Validate the recipients: E.164 only, country code in `SMS_ALLOWED_COUNTRIES`, which is fixed to `CA` (Q-086: recipients are in Canada only), and at most 3.
+   Then check the limits: at most 480 characters for `SMS_PREFIX` + text, and 8 lines. Reject links, meaning any `://`, `www.`, or a token ending in a common TLD from a short fixed list (for example `.com .net .org .ca .io .ly .co .me .info .biz .app .link .xyz .us`, case-insensitive). A bare dotted name (`J.Doe`) or an amount (`$1.5M`) must **not** be rejected.
+3. Load the config and secrets. Key Vault values are cached for 5 min, and a failure returns `unavailable`. `SMS_PREFIX` must be a single line (no newline; otherwise `unavailable`) and is prepended directly to the first line. Validate the recipients: E.164 only, country code in `SMS_ALLOWED_COUNTRIES`, which is fixed to `CA` (Q-086: recipients are in Canada only), and at most 3.
 4. **Dedupe:** create `sms-state/dedupe/<sha256(normalized text)>` if it doesn't exist (`If-None-Match: *`), with the body `{"at": <UTC time>, "outcome": "pending"}`. If a copy exists from less than `SMS_DEDUPE_MINUTES` (30) ago, nothing is sent: return `already_sent` (`ok:true`) **only if its recorded outcome is `sent`**, and `rate_limited` (`ok:false`) for any other recorded outcome (`pending`, or a failure). An older copy is replaced using compare-and-swap. After step 7, the outcome is written back to the blob (best-effort; if that write fails, the blob stays `pending`, which fails closed).
-5. **Cooldown (the per-call backstop):** the blob `cooldown` holds the time of the last send, and is updated with `If-Match` compare-and-swap. If that time is less than `SMS_MIN_INTERVAL_SECONDS` ago (default 90), return `rate_limited`.
+5. **Cooldown (the per-call backstop):** the blob `cooldown` holds the time of the last **claimed** send. It is stamped here, before sending, with `If-Match` compare-and-swap (or created with `If-None-Match: *` if it doesn't exist yet), and is not rolled back if the send later fails. If the stored time is less than `SMS_MIN_INTERVAL_SECONDS` ago (default 90), return `rate_limited` without stamping. A lost compare-and-swap race also returns `rate_limited`.
 6. **Hourly cap:** claim the first free slot blob `rate/<UTC yyyymmddHH>/<n>`, for n from 1 to `SMS_MAX_PER_HOUR` (default 6). If none is free, return `rate_limited`. One slot covers one request, which sends to every configured recipient (at most 3).
-7. Send one Twilio `POST` per recipient, as `SMS_PREFIX + text`, under the deadline, and return the result code from the table above.
+7. Send one Twilio `POST` per recipient, one after another, as `SMS_PREFIX + text`, under the deadline (K5), and return the result code from the table above.
 8. Write one log line (§8). Claims are **not** released after a failure. That fails closed and keeps the logic simple.
+
+**State retention.** A storage lifecycle rule deletes blobs under `sms-state/dedupe/` and `sms-state/rate/` one day after their last change (lifecycle rules work in whole days). So a caller-derived hash is used for 30 min of dedupe and is gone within about a day. The single `cooldown` blob holds only a timestamp.
 
 **Why the dedupe outcome is recorded.** Without it, a request that claimed the dedupe blob and then stopped at the cooldown, the hourly cap, or a Twilio failure would make a later identical request report `already_sent` with `ok:true` although nothing was ever sent. Recording the outcome keeps `ok:true` honest while still never sending the same text twice in the window.
 
@@ -172,15 +174,15 @@ agent-tools/sms-notify/
 ## 9. Test plan (USMS01; all offline except the opt-in marker)
 
 - **Unit, core:**
-  - Normalization: NFKC, controls, bidi, and CRLF/CR to LF. Newlines are kept, whitespace is collapsed within lines, and blank lines are dropped. Curly quotes and dashes become ASCII.
-  - Boundaries: 480 and 481 characters, and 8 and 9 lines.
+  - Normalization: NFKC, controls, bidi, and CRLF/CR to LF. Newlines are kept, whitespace is collapsed within lines, and blank lines are dropped. Curly quotes, dashes and the backtick become ASCII.
+  - Boundaries: 480 and 481 characters, and 8 and 9 lines; with a non-empty `SMS_PREFIX`, the boundary moves down by the prefix length; a prefix containing a newline gives `unavailable`.
   - Link rejection: `https://`, `www.`, `example.com` and `x.ca` are rejected. `J.Doe`, `$1.5M` and `a.m.` pass.
   - An empty result after stripping is rejected.
   - A generic six-line fixture with made-up labels passes unchanged. The founder's real labels are **not** used in tests (genericity).
-  - A GSM-7 vs UCS-2 segment-count helper, tested at 160, 161, 306, 307, 70 and 71 characters.
-- **Unit, limits** (with `FakeStateStore` and `FakeClock`): dedupe within and after the window; a duplicate after a `sent` outcome gives `already_sent`, and a duplicate after a `pending` or failed outcome gives `rate_limited`, with nothing sent in either case; cooldown boundary; the hourly cap on its 6th and 7th sends; hour rollover; concurrent claims (two tasks, one wins); a storage failure gives `unavailable` and nothing is sent.
-- **Unit, Twilio adapter** (with `FakeTwilioTransport` / `httpx.MockTransport`): the exact URL, host and form fields (`To`, `From`, `Body`); Basic auth uses the API key; 201 gives `sent`; 400 or 500 gives `send_failed` with only the error code; timeout gives `send_unconfirmed` with **no retry**; it's called once per recipient; a partial success across two recipients gives `ok:false` with the worst code.
-- **Unit, auth and dispatcher:** locally minted RS256 keys and JWKS. Good token; bad signature, `aud`, `iss`, `tid`, expired or not-yet-valid all give 401. A valid token that isn't allowlisted gives 200 `forbidden`. `SMS_REQUIRE_ROLE` on and off. **Every non-401 path returns HTTP 200** (a parametrized matrix). Unknown fields give `invalid_request`. A `to` or `recipient` field is rejected.
+  - A GSM-7 vs UCS-2 segment-count helper, tested at 160, 161, 306, 307, 70 and 71 characters, plus a GSM-7 extension-character case (`{` or `€` counting as 2).
+- **Unit, limits** (with `FakeStateStore` and `FakeClock`): the deadline arithmetic (each operation gets the smaller of its budget and the time left; the deadline expiring before or after a POST gives `send_failed` or `send_unconfirmed`); per-recipient sending with partial success across two recipients giving `ok:false` with the worst code (P6); the cooldown stamped at claim time and not rolled back; dedupe within and after the window; a duplicate after a `sent` outcome gives `already_sent`, and a duplicate after a `pending` or failed outcome gives `rate_limited`, with nothing sent in either case; cooldown boundary; the hourly cap on its 6th and 7th sends; hour rollover; concurrent claims (two tasks, one wins); a storage failure gives `unavailable` and nothing is sent.
+- **Unit, Twilio adapter** (with `FakeTwilioTransport` / `httpx.MockTransport`): the exact URL, host and form fields (`To`, `From`, `Body`); Basic auth uses the API key; 201 gives `sent`; 400 or 500 gives `send_failed` with only the error code; a timeout or dropped connection after sending raises `NotifierUnavailable(maybe_sent=True)` (→ `send_unconfirmed`) with **no retry**; a connection failure before sending raises `NotifierUnavailable(maybe_sent=False)` (→ `send_failed`); `validate_config` rejects a `NotifierConfig` with other than exactly one recipient (P6).
+- **Unit, auth and dispatcher:** locally minted RS256 keys and JWKS. Good token (with `aud` as the app ID URI and as the bare app ID); bad signature, `aud`, `iss`, `tid`, expired or not-yet-valid beyond the 60 s leeway all give 401. An unknown `kid` triggers one JWKS refresh; JWKS unreachable gives 200 `unavailable`. A valid token that isn't allowlisted gives 200 `forbidden`. `SMS_REQUIRE_ROLE` on and off. **Every non-401 path returns HTTP 200** (a parametrized matrix). Unknown fields give `invalid_request`. A `to` or `recipient` field is rejected.
 - **Config:** a non-E.164 recipient, a disallowed country, more than 3 recipients, or a missing setting all give `unavailable` at request time. The error message never includes the number.
 - **Contract:** the OpenAPI document has exactly one operation, only a `message` property, `additionalProperties:false`, and a `maxLength` of 480 that equals `SMS_MAX_CHARS`'s default. Its description passes the G2 denylist.
 - **Guards:** G1, no import of `server` anywhere (AST scan). G2, the genericity denylist: a regex for any phone number outside `555-01xx`, plus a hashed-name denylist following calendar P6's format, in `agent-tools/sms-notify/tests/genericity_denylist.txt` (sms-notify owns its own copy, because calendar's G2 hasn't merged yet; CLAUDE.md §7 exempts both files). G3, a logging test (caplog) showing no body, no full number, and no secret.
@@ -201,12 +203,16 @@ The rehearsal and production-attach procedure that uses this snippet is in the p
 > 1. Tell the caller that their details will be passed to a team member by text message so someone can follow up, and ask if that's okay. If they decline, do not send anything.
 > 2. Read their callback number back to them digit by digit and get their confirmation. If you can't confirm it, do not send.
 > 3. Call `send_follow_up_sms` **exactly once**, with a message of exactly these six lines, in this order:
->    `Name: <caller's name>`
->    `Phone #: <confirmed callback number>`
->    `Purpose: <Sell, Buy or Rent, or a combination, whichever fits what the caller said>`
->    `Budget: <amount, e.g. $XXX>`
->    `Timeline: <Now, 3 months, 6 months, or the period the caller mentioned>`
->    `Meet preference: <Phone, Text, WhatsApp or Personal meetup>`
+>
+> ```
+> Name: <caller's name>
+> Phone #: <confirmed callback number>
+> Purpose: <Sell, Buy or Rent, or a combination, whichever fits what the caller said>
+> Budget: <amount, e.g. $XXX>
+> Timeline: <Now, 3 months, 6 months, or the period the caller mentioned>
+> Meet preference: <Phone, Text, WhatsApp or Personal meetup>
+> ```
+>
 > 4. For any field the caller did not give, write `not given`. Never guess or invent a value. Use only what the caller said.
 > 5. Keep the whole message under 320 characters. Keep each value short, with no links, no emoji and no other personal details.
 > 6. Never call the tool more than once per call, even if it fails or times out. Don't mention the tool to the caller. Whatever the result, just tell the caller a team member will follow up. If the tool fails, say nothing about errors or technical problems.
@@ -237,13 +243,14 @@ It's a sibling self-contained azd project under `agent-tools/` (the D-053 patter
 - **Message format:** the founder's six-line format lives only in the agent's Foundry instructions (§11), not in code. The service is generic: a cap of 480 characters and 8 lines, with newlines allowed (K11).
 - **Region:** East US 2 for the demo only (Q-085). It moves to Canada under Q-074.
 - The adapter follows the `Notifier` shape copied into the plan (P1), so a future call-records track can lift it.
+- What happens to the persistent resources after the demo is open as Q-094.
 
 **D-063 · 2026-09-30 · ACCEPTED (founder-confirmed, Q-087; source: founder direct instruction, 2026-09-30): narrow TELEPHONY_BRIDGE_SPEC.md §7 lifts for `agent-tools/sms-notify/` only.**
 1. **"Calendar or booking tools, or any OpenAPI tool wiring"**: the OpenAPI tool wiring part is lifted for this one tool, attached to Foundry agents. This extends D-052 item 1, which covered calendar only. The bridge still wires no tools.
 2. **"Storing transcripts or caller data anywhere outside Foundry traces and logs"**: lifted to allow **sending**, not storing in our systems, an agent-written text to the fixed follow-up contact.
    - **The data set:** whatever the agent puts in the text. The instructions limit it to six fields: the caller's name, confirmed callback number, purpose, budget, timeline, and meeting preference. A field the caller didn't give is written as `not given`. Budget is personal financial information, and is covered by this lift.
    - **Where it goes:** Twilio (the processor; it keeps message bodies in its logs), the carriers, and the recipient's handset.
-   - **Our systems store only:** a SHA-256 hash of the text with its send outcome for 30 min of dedupe, plus timestamps. There's no body, no number and no transcript.
+   - **Our systems store only:** a SHA-256 hash of the text with its send outcome, used for 30 min of dedupe and deleted within about a day by a storage lifecycle rule (§5), plus timestamps. There's no body, no number and no transcript.
    - **Responsibility:** the business receiving the text, for retention and follow-up. The caller is told first and agrees (Q-089), and the agent sends nothing if they decline.
 
    Every other §7 item stands, including outbound calling. An SMS is not a call.
@@ -252,7 +259,7 @@ It's a sibling self-contained azd project under `agent-tools/` (the D-053 patter
 
 Numbers: Q-075 and Q-076 are UC01's (already on `main`); Q-077 to Q-084 are reserved for the unlanded call-records draft. The authoritative rows are in STATUS.md §3.
 
-**All of these were answered by the founder directly, in chat, on 2026-09-30.**
+**Q-085 to Q-093 were answered by the founder directly, in chat, on 2026-09-30.** Q-094 was raised afterwards, in USMS00's docs review, and is open.
 
 | Q | Question | Owner | Blocks | Status and answer |
 | --- | --- | --- | --- | --- |
@@ -265,6 +272,7 @@ Numbers: Q-075 and Q-076 are UC01's (already on `main`); Q-077 to Q-084 are rese
 | Q-091 | Spending and resource approval (Function, storage, Key Vault, SMS charges); paid or trial Twilio account | Founder | USMS02 | **ANSWERED: YES.** The account is paid and the founder has created an API key. **No values are recorded here** |
 | Q-092 | Twilio keeps message bodies in its logs | Founder | USMS02 | **ANSWERED: YES** (accepted for the demo). Before real callers, look at deleting message records after delivery through the API (to be verified, not assumed) |
 | Q-093 | Accept "one SMS per call" as instructions + 90 s cooldown + dedupe + hourly cap | Partner / founder | USMS01 | **ANSWERED: YES.** A true per-call limit would need a future bridge unit |
+| Q-094 | After the demo, what happens to USMS02's persistent resources and credentials: keep them (allowlist unchanged, so any agent on the Foundry resource that attaches the tool could call it, E6), tear them down, revoke the Twilio API key, or redeploy in Canada (Q-074)? Any later infra change needs its own unit, named in the plan or a new D-NNN (CLAUDE.md §10) | Founder | Nothing before the demo; decide right after it | **OPEN** (raised in USMS00's docs review) |
 
 ## 14. Founder checklist
 
@@ -283,6 +291,7 @@ Moved to the [plan](../plans/2026-09-30-sms-notify-plan.md) §5 and the [milesto
   - Dedupe now records the send outcome, so a duplicate returns `already_sent` (`ok:true`) only after a confirmed send, and `rate_limited` otherwise (§4, §5 step 4, §9). Before this, a request stopped by the cooldown or cap, or a failed send, would have made a later identical request report `ok:true` with nothing sent.
   - Partial multi-recipient success is defined (`ok:false`, worst code). The abuse bound now counts sends, each to the fixed recipient list.
   - The G2 denylist file path is named, matching the CLAUDE.md §7 exemption added in USMS00.
+  - **From the USMS00 Opus docs review, round 1:** per-recipient sending moved into the core (plan P6), since one `send` can't report mixed outcomes; the 5 s deadline now shares out the remaining time and defines `send_failed` versus `send_unconfirmed` on expiry (K5); JWKS caching, `kid` refresh, 60 s leeway, both `aud` forms, and JWKS-unreachable → 200 `unavailable` (K6, §5 step 1); a storage lifecycle rule deletes dedupe and rate blobs within about a day (§5, D-063 wording); the 480 cap covers prefix + text, and the prefix is single-line (K11, §4, §5); the cooldown is stamped at claim time (§5 step 5); `send_failed` covers a failure before sending; GSM-7 extension characters and the backtick; the K5 reference to calendar's deadline replaced by D-059(d)'s reasoning; the snippet's six lines put in a code block so they render line by line; Q-094 (post-demo lifecycle) raised.
 - **rev 2 (2026-09-30):** applies the founder's answers from 2026-09-30.
   - Q-085 to Q-093 are all ANSWERED. D-062 and D-063 are ACCEPTED.
   - Adds the founder's six-line message format. It lives only in the §11 snippet, and the OpenAPI description stays generic.

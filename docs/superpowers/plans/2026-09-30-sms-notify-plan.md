@@ -15,7 +15,7 @@ Last updated: 2026-09-30 (rev 1, written in USMS00 from spec rev 2.1, after its 
 ## 0. How to use this plan
 
 - **The spec decides behavior; this plan decides files, order, tests and done-ness.** Where a step says "per spec §5 step 4", implement exactly that text; do not re-derive it.
-- **Where this plan had to fill a gap in the spec**, it says so in §2 (P1–P5). None of them changes a spec decision.
+- **Where this plan had to fill a gap in the spec**, it says so in §2 (P1–P6). None of them changes a spec decision.
 - **If a unit finds the spec or this plan wrong** (an SDK or API behaves differently, a test cannot be written as stated), the builder stops and hands back to the partner (CLAUDE.md §5 step 4, §7).
 
 ## 1. Global constraints (every USMS unit)
@@ -40,11 +40,12 @@ Last updated: 2026-09-30 (rev 1, written in USMS00 from spec rev 2.1, after its 
 
 | # | Spec text | Gap | Resolution |
 | --- | --- | --- | --- |
-| P1 | §6: "the Notifier-shaped types mirrored from call-records §6.3" | That draft is not in this repo, so the builder can't read it | The shape is copied here, verbatim apart from the comments, and is the contract USMS01 implements. `JsonValue` is a local alias (`str \| int \| float \| bool \| None \| list[...] \| dict[str, ...]`). |
+| P1 | §6: "the Notifier-shaped types (plan §2, P1)" | The shape comes from a call-records draft that is not in this repo, so the builder can't read it there | The shape is copied here, verbatim apart from the comments, and is the contract USMS01 implements. `JsonValue` is a local alias (`str \| int \| float \| bool \| None \| list[...] \| dict[str, ...]`). |
 | P2 | §5 step 4 (rev 2.1): dedupe records its outcome | Spec rev 2 returned `already_sent` (`ok:true`) for any duplicate, even when nothing had been sent | Implement rev 2.1: the dedupe blob body is `{"at", "outcome"}`; a duplicate inside the window returns `already_sent` only for `outcome == "sent"`, otherwise `rate_limited`. The outcome write-back after the send is best-effort (a failed write leaves `pending`, which fails closed). |
 | P3 | §3 K9: "anonymous route with auth done in code (calendar P4)" | Calendar P4 describes calendar's dispatcher, not this one | Same pattern: `sms_notify/http/dispatcher.py` exposes `Request`/`Response` dataclasses and `async def handle(request) -> Response`; `function_app.py` only adapts `azure.functions.HttpRequest` to it. Every HTTP test goes through `handle()`, not the Functions package. |
 | P4 | §3 K7: Key Vault "over REST (calendar P5)" | — | Same pattern: `GET {vault}/secrets/{name}?api-version=7.4` with `httpx` and an `azure-identity` token, mockable with `httpx.MockTransport`. |
 | P5 | §3 K6: an Entra app `sms-notify-api` with app role `Sms.Send` | The spec's Bicep list (§6, step 7 below) doesn't create tenant objects | The Entra app registration, its app role, `appRoleAssignmentRequired=true`, and the role assignment to the Foundry resource's managed identity are created in **USMS02** with `az ad app` / `az ad sp` / Graph commands, as items on its committed resource list. USMS01 writes those commands into `agent-tools/sms-notify/README.md` (with placeholders only) and does not run them. |
+| P6 | §4: per-recipient outcomes, worst code on partial success | P1's `send` returns one `SendResult` or raises, so a single call can't report "first recipient sent, second failed" | **The core calls `send` once per recipient**, each time with a single-recipient `NotifierConfig` (`recipients` of length 1), one after another under the K5 deadline. It collects each result or exception, logs each outcome (masked), and applies the worst-code rule. The adapter's `validate_config` rejects any config without exactly one recipient. The partial-success test lives in the core tests, not the adapter's. |
 
 **P1, the `Notifier` shape (contract for USMS01):**
 
@@ -81,7 +82,7 @@ class Notifier(Protocol):
     async def send(self, cfg: NotifierConfig, message: OutboundMessage) -> SendResult: ...
 ```
 
-Semantics the adapter tests pin: `send` delivers one message to every recipient in `cfg.recipients`, with the body exactly as given; it never adds recipients, never adds tracking, never follows links, and never retries. Errors: `NotifierUnavailable(maybe_sent: bool)` (timeout or dropped connection after sending → `send_unconfirmed`; before sending → `send_failed`), `NotifierAuthError` and `NotifierRejected` (→ `send_failed`), `NotifierConfigError` and `SecretStoreUnavailable` (→ `unavailable`). The core maps them to the spec §4 result codes; per-recipient results feed the worst-code rule.
+Semantics the adapter tests pin: `send` delivers one message to every recipient in `cfg.recipients` (here always exactly one, P6), with the body exactly as given; it never adds recipients, never adds tracking, never follows links, and never retries. Errors: `NotifierUnavailable(maybe_sent: bool)` (timeout or dropped connection after sending → `send_unconfirmed`; before sending → `send_failed`), `NotifierAuthError` and `NotifierRejected` (→ `send_failed`), `NotifierConfigError` and `SecretStoreUnavailable` (→ `unavailable`). The core maps them to the spec §4 result codes; per-recipient results feed the worst-code rule (P6). If the K5 deadline has run out before a recipient's turn, the core doesn't call `send` for it and counts it as `send_failed`.
 
 ## 3. Units
 
@@ -91,12 +92,12 @@ Semantics the adapter tests pin: `send` delivers one message to every recipient 
 | **USMS01** | Build spec §4–§9: code, tests, `infra/`, the OpenAPI document, and a README with the config table. **It provisions nothing** | Code branch `feat/usms01-sms-notify`, Opus `/code-review` and `cso` on `main...HEAD` | **Opus** | USMS00 merged |
 | **USMS02** | Deploy and rehearse (§4 below): provision and deploy (`-e sms-demo`); the Entra app (P5); the founder loads the Key Vault secrets; the `live_twilio` send; a prompt-kind copy agent; production attach right before the demo; one live test call; detach after the demo | Branchless ops, status branch `docs/status-YYYY-MM-DD` (session date). Resource list committed first. **Resources are persistent** (D-062 carve-out), each founder-approved (Q-091) | Sonnet (ops); Opus for any code fix (a separate unit) | USMS01 merged |
 
-**Timeline:** USMS00 on 2026-09-30. USMS01 on 2026-10-01, in one Opus session. USMS02 on the morning of 2026-10-02, before the demo. Calendar UC02a moves back by about two sessions (Q-088).
+**Timeline:** USMS00 on 2026-09-30. USMS01 on 2026-10-01, in one Opus session. USMS02 **starts** on the morning of 2026-10-02, before the demo, and its session **runs through the demo to the detach** (§4 step 4): its status branch is the only branch for that whole time and is merged and deleted only after the detach evidence is recorded. If the session is interrupted after the demo, the next session resumes that status branch (CLAUDE.md §4 step 1) and finishes the detach first. Calendar UC02a moves back by about two sessions (Q-088).
 
 ### USMS00 — Spec, plan and governance (docs)
 
 - [ ] Land the spec, this plan and the milestone doc.
-- [ ] Append D-062 and D-063 to DECISIONS.md; add STATUS §1c and Q-085 to Q-093 (ANSWERED); apply the CLAUDE.md governance lines (§1, §3, §4 bootstrap, §5 step 5, §7, §9, §10, §11).
+- [ ] Append D-062 and D-063 to DECISIONS.md; add STATUS §1c, Q-085 to Q-093 (ANSWERED) and Q-094 (OPEN); apply the CLAUDE.md governance lines (§1, §3, §4 bootstrap, §5 steps 1, 3 and 5, §7, §9, §10, §11).
 - [ ] Opus docs review on `main...HEAD` until CLEAN; open the PR; status commit (USMS00 `CLOSED`, USMS01 `NEXT`); merge with a merge commit; delete the branch.
 
 ### USMS01 — Build `agent-tools/sms-notify/` (code; provisions nothing)
@@ -105,11 +106,11 @@ Implements spec §4 (contract), §5 (processing order), §6 (layout), §7 (confi
 
 - [ ] **Step 1 — Prerequisites.** USMS00 is `CLOSED`. Run `az functionapp list-flexconsumption-locations` and confirm East US 2 offers Flex Consumption with Python 3.12 (Q-085); if not, stop and hand back. Create the uv project and pin `httpx`, `PyJWT[crypto]`, `azure-identity`, `azure-functions` and `pytest` from what `uv add` installs, not from memory.
 - [ ] **Step 2 — Scaffold and guards first.** `pyproject.toml` (with `addopts = -m "not live_twilio"` and the `live_twilio` marker registered), `.gitignore` covering `local.settings.json`, and the guard tests G1 (no `server` or `calendar_tools` import, AST scan), G2 (the phone regex from calendar P6 and the hashed-name denylist in `tests/genericity_denylist.txt`, including self-tests that pass on their own file) and G3 (caplog: no body, no full number, no secret). They fail first, then pass as code lands.
-- [ ] **Step 3 — Core messages and limits, test-first.** `core/messages.py` (normalization, limits, link rule, GSM-7/UCS-2 segment helper) and `core/limits.py` (dedupe with outcome per P2, cooldown, hourly slots) against `FakeStateStore` and `FakeClock`; all spec §9 "core" and "limits" tests.
-- [ ] **Step 4 — Twilio adapter, test-first.** `adapters/twilio_sms.py` implementing P1 against `httpx.MockTransport`: exact URL and host, form fields `To`/`From`/`Body`, Basic auth with the API key, 201 → sent, 4xx/5xx → `send_failed` with only the Twilio error code, timeout → `send_unconfirmed` with no retry, once per recipient, partial success → worst code. Plus `adapters/blob_state.py` (`If-None-Match`/`If-Match` semantics) and `adapters/keyvault_secrets.py` (P4), each with mocked-transport tests.
-- [ ] **Step 5 — Auth and dispatcher, test-first.** `http/auth.py` and `http/dispatcher.py` (P3): locally minted RS256 keys and JWKS; the 401 cases; `forbidden` as 200; `SMS_REQUIRE_ROLE` on and off; the parametrized always-200 matrix; unknown fields and any `to`/`recipient` field → `invalid_request`; config errors → `unavailable` with no number in the message.
+- [ ] **Step 3 — Core messages and limits, test-first.** `core/messages.py` (normalization, limits, link rule, GSM-7/UCS-2 segment helper) and `core/limits.py` (dedupe with outcome per P2, cooldown stamped at claim time, hourly slots) and `core/service.py` (`notify()`: the processing order of spec §5, the K5 deadline arithmetic, per-recipient sending and the worst-code rule per P6, against a fake `Notifier`) using `FakeStateStore` and `FakeClock`; all spec §9 "core" and "limits" tests.
+- [ ] **Step 4 — Twilio adapter, test-first.** `adapters/twilio_sms.py` implementing P1 against `httpx.MockTransport`: exact URL and host, form fields `To`/`From`/`Body`, Basic auth with the API key, 201 → sent, 4xx/5xx → `send_failed` with only the Twilio error code, timeout or drop after sending → `send_unconfirmed` with no retry, failure before sending → `send_failed`, and `validate_config` rejecting anything but exactly one recipient (P6). Plus `adapters/blob_state.py` (`If-None-Match`/`If-Match` semantics) and `adapters/keyvault_secrets.py` (P4), each with mocked-transport tests.
+- [ ] **Step 5 — Auth and dispatcher, test-first.** `http/auth.py` and `http/dispatcher.py` (P3): locally minted RS256 keys and JWKS; JWKS caching and the single refresh on an unknown `kid`; both `aud` forms; the 60 s leeway; JWKS unreachable → 200 `unavailable`; the 401 cases; `forbidden` as 200; `SMS_REQUIRE_ROLE` on and off; the parametrized always-200 matrix; unknown fields and any `to`/`recipient` field → `invalid_request`; config errors → `unavailable` with no number in the message.
 - [ ] **Step 6 — OpenAPI document and contract test.** `openapi/sms-notify.json` per spec §4 with a placeholder server host; the contract test pins one operation, only `message`, `additionalProperties:false`, `maxLength` 480 equal to `SMS_MAX_CHARS`'s default, and the description passing G2.
-- [ ] **Step 7 — Infra, validated only.** `infra/main.bicep` + `main.parameters.json` + `azure.yaml`: RG `rg-sms-notify-<env>`, Flex app with a system-assigned MI, storage with shared-key access disabled (the MI gets Storage Blob Data Contributor on `sms-state`), Key Vault in RBAC mode (the MI gets Key Vault Secrets User; the founder gets Key Vault Secrets Officer), app settings from spec §7 (no secret values), HTTPS only, TLS 1.2, no CORS. `az bicep build` and `az deployment sub validate` pass. **Nothing is provisioned**, and no azd environment is created.
+- [ ] **Step 7 — Infra, validated only.** `infra/main.bicep` + `main.parameters.json` + `azure.yaml`: RG `rg-sms-notify-<env>`, Flex app with a system-assigned MI, storage with shared-key access disabled (the MI gets Storage Blob Data Contributor on `sms-state`), Key Vault in RBAC mode (the MI gets Key Vault Secrets User; the founder gets Key Vault Secrets Officer), app settings from spec §7 (no secret values), HTTPS only, TLS 1.2, no CORS, and a storage lifecycle rule that deletes blobs under `sms-state/dedupe/` and `sms-state/rate/` one day after last modification (spec §5 "State retention"). `az bicep build` and `az deployment sub validate` pass. **Nothing is provisioned**, and no azd environment is created.
 - [ ] **Step 8 — README.** The configuration table (every spec §7 setting and secret, fictional examples only), the P5 Entra commands with placeholders, and the local test command.
 - [ ] **Step 9 — Close.** The whole suite (bridge, calendar if present, sms-notify) passes; Opus `/code-review` and `cso` until clean; open the PR `USMS01: SMS follow-up notification tool`; partner status commit; merge with a merge commit; delete the branch.
 
@@ -123,7 +124,7 @@ See §4 for the procedure. Steps in order:
 - [ ] The founder loads `twilio-api` and `sms-recipients` with `az keyvault secret set` personally (§6 item 4).
 - [ ] Run `-m live_twilio` once (fictional body, no personal data).
 - [ ] §4 steps 1–4 (copy agent, failure drill, production attach, detach after the demo).
-- [ ] Record redacted evidence (codes, latencies, segment counts; no numbers, bodies, SIDs, `oid`s or GUIDs); open, merge and delete the status branch in the same session. If the PR adds a D-NNN or revises this plan or the spec, it gets the Opus docs review first.
+- [ ] Record redacted evidence (codes, latencies, segment counts; no numbers, bodies, SIDs, `oid`s or GUIDs), including the detach after the demo; then open, merge and delete the status branch in the same session (which runs through the demo; see the timeline above). Bring Q-094 (post-demo lifecycle) to the founder in the daily email. If the PR adds a D-NNN or revises this plan or the spec, it gets the Opus docs review first.
 
 ## 4. USMS02 rehearsal and production attach (D-049-safe)
 
@@ -158,6 +159,7 @@ D-049 and UC01 E9 mean any **saved** edit to the production agent goes live on t
 - **D-050 / D-059:** the 5 s deadline keeps model time plus tool time inside the 15 s OpenAPI watchdog; OpenAPI-direct here does not decide calendar's D-059(a).
 - **D-052 / D-057 / D-063:** the §7 lifts are narrow and per tool; the bridge still wires no tools; outbound calling stays banned.
 - **TELEPHONY_BRIDGE_SPEC.md:** unchanged; D-063 records the lifts, as D-052 did for calendar.
+- **Post-demo lifecycle:** the persistent resources outlive USMS02; keeping, tearing down, revoking the Twilio key or moving to Canada is Q-094 (OPEN). Any such infra change is its own unit, named in this plan or a new D-NNN (CLAUDE.md §10).
 
 ## 8. Review history
 

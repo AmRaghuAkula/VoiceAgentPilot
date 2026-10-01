@@ -23,17 +23,17 @@ Last updated: 2026-09-30 (rev 1, written in USMS00) · Plan: [2026-09-30-sms-not
 ## Milestones
 
 ### SM0 — Spec landed (USMS00)
-- **DoD:** spec rev 2.1, this doc and the plan merged; D-062 and D-063 ACCEPTED in DECISIONS.md; STATUS §1c and Q-085 to Q-093 (ANSWERED); CLAUDE.md governance lines applied; Opus docs review CLEAN.
+- **DoD:** spec rev 2.1, this doc and the plan merged; D-062 and D-063 ACCEPTED in DECISIONS.md; STATUS §1c, Q-085 to Q-093 (ANSWERED) and Q-094 (OPEN, post-demo lifecycle); CLAUDE.md governance lines applied; Opus docs review CLEAN.
 - **Test coverage:** none (docs only). Both existing suites unaffected.
 - **PR slots:** 1 (USMS00).
 
 ### SM1 — Built and validated offline (USMS01)
 - **DoD:** plan §5 USMS01 and the CLAUDE.md §9 universal DoD; Bicep validates; nothing provisioned.
-- **Test coverage (spec §9):** core normalization and limits; dedupe with recorded outcome, cooldown, hourly cap, concurrency; Twilio adapter over `httpx.MockTransport`; auth and the always-200 matrix; config; OpenAPI contract; guards G1–G3. `live_twilio` exists but is excluded by default.
+- **Test coverage (spec §9):** core normalization and limits; deadline arithmetic and per-recipient sending (P6); dedupe with recorded outcome, cooldown, hourly cap, concurrency; Twilio adapter over `httpx.MockTransport`; auth and the always-200 matrix; config; OpenAPI contract; guards G1–G3. `live_twilio` exists but is excluded by default.
 - **Test readiness:** all offline, runnable on any clone after `cd agent-tools/sms-notify && python -m uv sync --group dev`.
 - **PR slots:** 1 (USMS01).
 
 ### SM2 — Demo-ready and demo done (USMS02)
-- **DoD:** plan §5 USMS02: resource list committed first; validated and previewed provision; `live_twilio` passes; copy agent sends exactly one SMS and refuses a repeat; failure drill passes; production test call delivers; tool detached after the demo; redacted evidence recorded; status PR merged.
+- **DoD:** plan §5 USMS02 (one session that starts before the demo and runs through the detach, holding the only branch; plan §3 timeline): resource list committed first; validated and previewed provision; `live_twilio` passes; copy agent sends exactly one SMS and refuses a repeat; failure drill passes; production test call delivers; tool detached after the demo; redacted evidence recorded; status PR merged.
 - **Test coverage:** one opt-in live send; scripted copy-agent checks; one live production call.
 - **PR slots:** 1 status PR (branchless unit).
