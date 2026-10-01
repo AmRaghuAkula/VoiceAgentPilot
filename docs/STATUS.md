@@ -141,7 +141,7 @@ The SMS follow-up tool in `agent-tools/sms-notify/` (D-062, D-063). Definitions 
 
 | # | Resource | Created by | Notes |
 | --- | --- | --- | --- |
-| 1 | Resource group `rg-sms-notify-sms-demo` | Bicep (main) | Subscription-scope deployment; the same tenant and subscription as the Foundry project |
+| 1 | Resource group `rg-sms-notify-sms-demo` | Bicep (main) | Subscription-scope deployment into "Azure - Voice Pilot Subscription" (the bridge's subscription, partner decision 2026-10-01), same tenant as the Foundry project; Microsoft.Web and Microsoft.Storage re-registered there first |
 | 2 | Log Analytics workspace | Bicep (resources) | Logs |
 | 3 | Application Insights component | Bicep (resources) | Telemetry; Monitoring Metrics Publisher role assignment for the app identity |
 | 4 | Storage account `stsms...` with containers `app-package` and `sms-state`, plus a lifecycle management policy | Bicep (resources) | Function host storage and dedupe/cooldown state; Storage Blob Data Owner role for the app identity |
@@ -153,6 +153,8 @@ The SMS follow-up tool in `agent-tools/sms-notify/` (D-062, D-063). Definitions 
 | 10 | Prompt-kind copy agent in the existing Foundry project, plus the Foundry agent identity it creates | Founder, in the Foundry portal | Deleted after the demo (plan section 4 step 4) |
 
 Not created: no second resource group, no Event Grid, no ACS or bridge resources. Resource provider registrations may be (re)registered as needed (read-only check first).
+
+**USMS02 part 1 evidence (2026-10-01, redacted; no IDs, numbers or secrets).** Read-only checks: Foundry resource and Voice Pilot subscription share one tenant; the Flex Consumption region check lists East US 2; the signed-in user is Owner and Global Administrator (Graph app creation works). `az deployment sub validate`: Succeeded. `azd provision --preview -e sms-demo`: 7 creates only (resource group, Application Insights, Key Vault, Log Analytics, storage, plan, function app). Entra: `sms-notify-api` with app role `Sms.Send`, service principal with `appRoleAssignmentRequired=true`, role assigned to the Foundry resource managed identity (1 assignment confirmed). `azd provision -e sms-demo`: SUCCESS in 1m30s, all 7 resources Done. `azd deploy -e sms-demo`: **blocked by the auto-mode classifier (Protected-Scope IaC Apply); not worked around.** The founder runs deploy; until then the function app holds no code, and `SMS_FROM_NUMBER` is a fictional placeholder in the azd env. Secrets are not loaded. `SMS_REQUIRE_ROLE` stays `false` (E13).
 
 ---
 
