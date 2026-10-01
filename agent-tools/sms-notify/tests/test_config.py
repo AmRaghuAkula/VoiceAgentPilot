@@ -98,6 +98,28 @@ def test_bad_recipients_raise_without_the_number(raw):
     assert "555" not in str(err.value) and "613" not in str(err.value)
 
 
+CURRENT_CANADIAN_GEOGRAPHIC_AREA_CODES = {
+    "204", "226", "236", "249", "250", "257", "263", "289", "306", "343", "354", "365",
+    "367", "368", "382", "403", "416", "418", "428", "431", "437", "438", "450", "468",
+    "474", "506", "514", "519", "548", "579", "581", "584", "587", "604", "613", "639",
+    "647", "672", "683", "705", "709", "742", "753", "778", "780", "782", "807", "819",
+    "825", "867", "873", "879", "902", "905", "942",
+}  # fmt: skip
+
+
+def test_canadian_area_code_list_is_complete():
+    from sms_notify.core.phone import CANADIAN_AREA_CODES
+
+    assert "226" in CANADIAN_AREA_CODES
+    assert CURRENT_CANADIAN_GEOGRAPHIC_AREA_CODES <= CANADIAN_AREA_CODES
+    assert country_of("+12265550142") == "CA"
+
+
+@pytest.mark.parametrize("npa", sorted(CURRENT_CANADIAN_GEOGRAPHIC_AREA_CODES))
+def test_every_canadian_area_code_is_accepted(npa):
+    assert country_of(f"+1{npa}5550123") == "CA"
+
+
 def test_phone_helpers():
     assert is_e164("+16135550199") and not is_e164("16135550199") and not is_e164(None)
     assert country_of("+16135550199") == "CA"
