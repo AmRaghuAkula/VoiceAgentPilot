@@ -2,7 +2,7 @@
 
 > Claude Code reads this file automatically at the start of every session. It is the **startup guide**: the rules every agent follows, in every session, with no exceptions. Do not delete or rename it.
 > Modeled on HireAstra's session protocol (see D-010 in [docs/DECISIONS.md](docs/DECISIONS.md)).
-> Last updated: 2026-09-29 (UC00: `agent-tools/` governance, D-053)
+> Last updated: 2026-09-30 (USMS00: `agent-tools/sms-notify/` governance, D-062)
 
 ---
 
@@ -62,7 +62,7 @@ This repo is a telephony bridge that connects a real inbound phone call (Azure C
 - **Detailed design:** [docs/superpowers/specs/](docs/superpowers/specs/).
 - **Task-by-task plan:** [docs/superpowers/plans/](docs/superpowers/plans/).
 
-The repo also hosts **`agent-tools/`**, a library of agent tools that any Foundry agent can call, separate from the bridge (D-051, D-053). The first is `agent-tools/calendar/`, the calendar tool service ([spec](docs/superpowers/specs/2026-09-29-calendar-booking-design.md), [plan](docs/superpowers/plans/2026-09-29-calendar-booking-plan.md)), built as the **UC** track. Each tool is self-contained: its own `pyproject.toml`, lockfile, tests, `infra/` and `azure.yaml`. It never imports from `server/`, and `server/` never imports from it.
+The repo also hosts **`agent-tools/`**, a library of agent tools that any Foundry agent can call, separate from the bridge (D-051, D-053). The first is `agent-tools/calendar/`, the calendar tool service ([spec](docs/superpowers/specs/2026-09-29-calendar-booking-design.md), [plan](docs/superpowers/plans/2026-09-29-calendar-booking-plan.md)), built as the **UC** track. The second is `agent-tools/sms-notify/`, a minimal SMS follow-up tool ([spec](docs/superpowers/specs/2026-09-30-sms-notify-design.md), [plan](docs/superpowers/plans/2026-09-30-sms-notify-plan.md)), built as the **USMS** track (D-062). Each tool is self-contained: its own `pyproject.toml`, lockfile, tests, `infra/` and `azure.yaml`. It never imports from `server/`, and `server/` never imports from it.
 
 We build this over **many short sessions**. Nothing important may live only in someone's head or in a chat: status goes in [docs/STATUS.md](docs/STATUS.md), decisions go in [docs/DECISIONS.md](docs/DECISIONS.md), and design goes in the spec and plan.
 
@@ -81,7 +81,7 @@ When a single Claude session plays both roles, it still follows both sets of rul
 
 **One unit = one plan task = one session = one branch = one PR.** There is no bundling, and no "while I'm here, let me also…". A session ends when its unit's PR has merged and the branch has been deleted.
 
-**Only one non-`main` branch may exist at any time, locally and on the remote.** Branch names come from the units tables in [docs/STATUS.md](docs/STATUS.md) §1 (bridge) and §1b (calendar tools, UC). Both tracks share this one-branch rule.
+**Only one non-`main` branch may exist at any time, locally and on the remote.** Branch names come from the units tables in [docs/STATUS.md](docs/STATUS.md) §1 (bridge), §1b (calendar tools, UC) and §1c (SMS follow-up tool, USMS). All tracks share this one-branch rule.
 
 **Branchless verification and ops units (D-053).** Some plan tasks produce evidence, not code: UC01 (feasibility), UC08a (Google setup), UC10 (test-agent checks), UC11 (production attach) and UC12 (live rehearsal) in the calendar plan, like UT02 before them. Such a unit cuts **no code branch**. Its only branch is its status branch.
 - Any throwaway code it needs lives only in the session scratchpad, never in the repo.
@@ -89,6 +89,7 @@ When a single Claude session plays both roles, it still follows both sets of rul
 - Its evidence, and any new D-NNN, go on that same branch, which is merged and deleted in the same session. Evidence is redacted: artifacts with personal data or identifiers (screenshots, traces, token claim values) stay outside this public repo.
 - If that status PR adds a D-NNN or revises a plan or spec, it gets the Opus docs review (D-013) before merging. A plain status-only PR still needs no review.
 - If it finds something that needs a code fix, the fix is a separate branch unit, sequenced by the partner.
+- **USMS02** (deploy and rehearsal of `agent-tools/sms-notify/`) is also a branchless ops unit, with one narrow carve-out (D-062): its Azure resources are **persistent**, so the same-session deletion rule above does not apply to them. Everything else above still applies: the status branch is cut first, the resource list is committed and pushed before anything is created, each resource needs the founder's go (Q-091), and evidence is redacted. The carve-out covers only the resources on that committed list; any other throwaway resource it creates is still deleted in the same session.
 
 **Status updates ride inside the unit's own PR (D-017).** Before the PR merges, the partner commits the STATUS.md and DECISIONS.md updates to the unit's branch, so `main` is always accurate the moment it merges.
 
@@ -141,17 +142,20 @@ Once UT01a has merged (Twilio pilot work, D-037), the ACS-only sync above no lon
 
 Once UC02a has merged (after that, `agent-tools/calendar/` exists), also run: `cd agent-tools/calendar && python -m uv sync --group dev`. It is a separate uv project with its own lockfile; never sync it from `server/` or the other way round.
 
+Once USMS01 has merged (after that, `agent-tools/sms-notify/` exists), also run: `cd agent-tools/sms-notify && python -m uv sync --group dev`. It is another separate uv project with its own lockfile, under the same rule.
+
 ## 5. Per-unit execution loop
 
-1. **Builder — verify prerequisites.** Every earlier unit this one depends on is `CLOSED` in STATUS.md §1 or §1b. If not, stop.
+1. **Builder — verify prerequisites.** Every earlier unit this one depends on is `CLOSED` in STATUS.md §1, §1b or §1c. If not, stop.
 2. **Builder — verify the plan's claims** (files, functions, signatures) with a quick grep or read before editing.
-3. **Builder — cut the branch** from the latest `main`, using the name from STATUS.md §1 or §1b.
+3. **Builder — cut the branch** from the latest `main`, using the name from STATUS.md §1, §1b or §1c.
 4. **Builder — implement test-first**, exactly as the plan task specifies. If the plan is wrong or ambiguous, stop and hand it back to the partner. Do not redesign on the fly.
 5. **Builder — run the whole test suite.** "The whole suite" means **both** suites, on every code unit, whichever directory the unit touches (D-053):
    - `cd server && python -m uv run pytest -q`
    - `cd agent-tools/calendar && python -m uv run pytest -q` (once UC02a has merged; before that it does not exist)
+   - `cd agent-tools/sms-notify && python -m uv run pytest -q` (once USMS01 has merged; USMS01 itself runs it as part of its own suite)
 
-   Both must all pass. Opt-in live markers (`-m live_google`, `-m live_azure`) run only where the calendar plan's unit says so.
+   Every suite that exists must pass. Opt-in live markers (`-m live_google`, `-m live_azure`, `-m live_twilio`) run only where the calendar or sms-notify plan's unit says so.
 6. **Builder — review pipeline (D-013).** Fix and re-run each step until it's clean.
    1. `/code-review` **on Opus** on our diff.
    2. `cso` **on Opus** on the same diff. This step is skipped for docs-only PRs.
@@ -201,12 +205,12 @@ Never skip the email because "not much happened". Send a short one instead.
 - A stray branch exists, or the working tree isn't clean (§4 step 1).
 - The plan or spec contradicts the actual code or the installed SDK.
 - The work would contradict an entry in DECISIONS.md.
-- The work touches anything in TELEPHONY_BRIDGE_SPEC.md §7 "Do not build".
+- The work touches anything in TELEPHONY_BRIDGE_SPEC.md §7 "Do not build". The only lifts are narrow and per tool: D-052/D-057 for `agent-tools/calendar/` and D-063 for `agent-tools/sms-notify/`. Each applies only inside its own tool and only as worded in its entry; none applies to the bridge, and anything outside those words is still a stop.
 - The work needs a HANDOFF.md §5 prerequisite that isn't done (ACS number, region, `az login`).
 - The work would change agent behavior from the bridge (instructions, voice, VAD), or use `"latest"` as an agent version.
 - The task turns out more complex than planned: ask the founder to switch to Opus or Fable (D-014), and never switch silently.
-- Any real-estate words, agent names, project names, person names or real phone numbers would end up in application code, or anywhere under `agent-tools/` (tests included; fictional NANP `555-01xx` numbers are fine). The single exemption is `agent-tools/calendar/tests/genericity_denylist.txt`, the list the G2 test enforces; it holds sensitive names only as hashes (calendar plan P6), so no real name is ever committed in plaintext.
-- Calendar-track work would change or bypass the telephony bridge (`server/`), or make `agent-tools/` import from `server/` (or the reverse).
+- Any real-estate words, agent names, project names, person names or real phone numbers would end up in application code, or anywhere under `agent-tools/` (tests included; fictional NANP `555-01xx` numbers are fine). The only exemptions are each tool's own G2 denylist file, `agent-tools/calendar/tests/genericity_denylist.txt` and `agent-tools/sms-notify/tests/genericity_denylist.txt`; they hold sensitive names only as hashes (calendar plan P6 format), so no real name is ever committed in plaintext.
+- Calendar-track or SMS-track work (any `agent-tools/` tool) would change or bypass the telephony bridge (`server/`), or make `agent-tools/` import from `server/` (or the reverse), or make one `agent-tools/` tool import from another.
 
 ## 8. Code Verification Protocol (mandatory)
 
@@ -228,9 +232,9 @@ Modeled on HireAstra's rule, which was written after a real incident: code was r
 
 ## 9. Universal Definition of Done (every unit, on top of the task's own DoD)
 
-- [ ] Every test the task specifies exists, and **the whole suite passes**: both the bridge suite and, once UC02a has merged, the calendar suite (§5 step 5).
+- [ ] Every test the task specifies exists, and **the whole suite passes**: the bridge suite, the calendar suite once UC02a has merged, and the sms-notify suite once USMS01 has merged (§5 step 5).
 - [ ] No real-estate words, agent names or phone numbers in `server/app/` or `server/server.py`. No real-estate words, agent names, person names or real phone numbers anywhere under `agent-tools/`, tests included (fictional numbers only, NANP `555-0100`–`555-0199`), except the hashed denylist (§7).
-- [ ] No secrets or `.env` files committed. New bridge env vars are added to `server/.env.sample`; new calendar settings are added to the configuration table in `agent-tools/calendar/README.md`. `local.settings.json`, real bindings files and OAuth client downloads are never committed.
+- [ ] No secrets or `.env` files committed. New bridge env vars are added to `server/.env.sample`; new calendar settings are added to the configuration table in `agent-tools/calendar/README.md`, and new sms-notify settings to the one in `agent-tools/sms-notify/README.md`. `local.settings.json`, real bindings files and OAuth client downloads are never committed.
 - [ ] The Opus code review is clean. `cso` is clean (for code PRs). Both are scoped to our changes (D-016).
 - [ ] STATUS.md and DECISIONS.md are updated **inside the unit's PR** (§5 step 8), or in a status-only PR (§3) when no unit is in flight.
 - [ ] The PR is merged with a merge commit, and the branch is deleted locally and on the remote. `git branch -a` shows `main` only.
@@ -245,6 +249,7 @@ Modeled on HireAstra's rule, which was written after a real incident: code was r
 - **Upstream:** changes go in new files where possible; upstream files get small hooks only. `git merge upstream/main` must stay clean (D-002). PRs are merged with merge commits, never squashed (D-016).
 - **Bridge infra:** don't touch the **bridge's** root `infra/`, `hooks/` or root `azure.yaml`, and don't run `azd` against the bridge's azd project, outside an approved M6-style unit that says to (M6 plan, D-042 standing deploy rules).
 - **Calendar infra (D-053):** `agent-tools/calendar/infra/` and `agent-tools/calendar/azure.yaml` are a separate azd project. They are changed only in the calendar plan's IaC units (UC05, UC09), and `azd` runs only from `agent-tools/calendar/`, under D-042's rules applied by analogy: `-e cal-<env>` on every command; first `azd env get-value AGENT_TOOL -e <env>` must print `calendar`; `az deployment sub validate` and `--preview` before any provision; provision immediately followed by deploy once an app exists; never `azd down` on an adopted resource group; never during a live call. No calendar unit ever touches the bridge's infra, and no bridge unit touches the calendar's.
+- **SMS-notify infra (D-062):** `agent-tools/sms-notify/infra/` and `agent-tools/sms-notify/azure.yaml` are another separate azd project, changed only in USMS01 (written and validated, nothing provisioned) and provisioned and deployed only in USMS02. `azd` runs only from `agent-tools/sms-notify/`, under the same D-042-by-analogy rules as the calendar's: `-e sms-<env>` on every command; first `azd env get-value AGENT_TOOL -e sms-<env>` must print `sms-notify`; `az deployment sub validate` and `--preview` before any provision; provision immediately followed by deploy once an app exists; never `azd down` on an adopted resource group; never during a live call. No sms-notify unit touches the bridge's or the calendar's infra, and neither of their units touches sms-notify's.
 - **Commits:** author `Raghu Akula` (repo-local git config, see §4 bootstrap). Every commit message, including merge commits, ends with the `Co-Authored-By:` trailer of the model doing the work.
 - **Model routing:** see §0 above (D-034) — build/review/spec-drafting work is Opus-only, unconditionally.
 
@@ -264,5 +269,9 @@ Modeled on HireAstra's rule, which was written after a real incident: code was r
 | `docs/superpowers/plans/2026-09-29-calendar-booking-plan.md` | Calendar track (UC) implementation plan |
 | `docs/superpowers/plans/2026-09-29-calendar-booking-milestones.md` | Calendar track milestones C0–C5 |
 | `agent-tools/calendar/` | The calendar tool service (self-contained uv project, its own `infra/` and `azure.yaml`); created from UC02a |
+| `docs/superpowers/specs/2026-09-30-sms-notify-design.md` | SMS follow-up tool design (accepted rev 2.1, D-062, D-063) |
+| `docs/superpowers/plans/2026-09-30-sms-notify-plan.md` | SMS follow-up track (USMS) implementation plan |
+| `docs/superpowers/plans/2026-09-30-sms-notify-milestones.md` | SMS follow-up track milestones SM0–SM2 |
+| `agent-tools/sms-notify/` | The SMS follow-up tool (self-contained uv project, its own `infra/` and `azure.yaml`); created from USMS01 |
 | `.claude/agents/voice-agent-partner.md` | Partner role |
 | `.claude/agents/voice-agent-builder.md` | Builder role |
