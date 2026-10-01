@@ -137,6 +137,23 @@ The SMS follow-up tool in `agent-tools/sms-notify/` (D-062, D-063). Definitions 
 
 **SMS tests passing:** 0 / ~90 planned (no sms-notify code yet).
 
+**USMS02 persistent-resource list (D-062, Q-091 ANSWERED YES 2026-10-01; committed before anything is created; no IDs).** Azure env `sms-demo`, region East US 2 (Q-085, demo only). All persistent; the carve-out in CLAUDE.md section 3 applies. Created by `infra/` Bicep unless marked Entra or Foundry:
+
+| # | Resource | Created by | Notes |
+| --- | --- | --- | --- |
+| 1 | Resource group `rg-sms-notify-sms-demo` | Bicep (main) | Subscription-scope deployment; the same tenant and subscription as the Foundry project |
+| 2 | Log Analytics workspace | Bicep (resources) | Logs |
+| 3 | Application Insights component | Bicep (resources) | Telemetry; Monitoring Metrics Publisher role assignment for the app identity |
+| 4 | Storage account `stsms...` with containers `app-package` and `sms-state`, plus a lifecycle management policy | Bicep (resources) | Function host storage and dedupe/cooldown state; Storage Blob Data Owner role for the app identity |
+| 5 | Key Vault `kv-sms-...` (RBAC) | Bicep (resources) | Holds `twilio-api` and `sms-recipients` (founder loads); Secrets User role for the app identity, optional Secrets Officer for the founder |
+| 6 | Flex Consumption plan `plan-sms-...` | Bicep (resources) | |
+| 7 | Function app `func-sms-...` (system-assigned identity; FTP/SCM basic publishing credentials disabled) | Bicep (resources) | The tool service |
+| 8 | Role assignments (host storage, vault reader, optional vault officer, insights) | Bicep (resources) | As in resources.bicep |
+| 9 | Entra app registration `sms-notify-api` with app role `Sms.Send`, its service principal (`appRoleAssignmentRequired=true`), and the app role assignment to the Foundry resource managed identity | Entra, `az ad` / Graph (plan P5) | Tenant-level objects |
+| 10 | Prompt-kind copy agent in the existing Foundry project, plus the Foundry agent identity it creates | Founder, in the Foundry portal | Deleted after the demo (plan section 4 step 4) |
+
+Not created: no second resource group, no Event Grid, no ACS or bridge resources. Resource provider registrations may be (re)registered as needed (read-only check first).
+
 ---
 
 ## §2 Audit log (append-only, newest last)
