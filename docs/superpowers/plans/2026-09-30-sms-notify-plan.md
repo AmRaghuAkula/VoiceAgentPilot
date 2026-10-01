@@ -1,6 +1,6 @@
 # SMS Follow-up Notification Tool — Implementation Plan (USMS00–USMS02)
 
-Last updated: 2026-10-01 (rev 1.1: amendment A1 for spec rev 2.2 / D-064, the positive template validator, and Q-094's answer; rev 1 was written in USMS00 from spec rev 2.1, after its Opus docs review) · Spec: [../specs/2026-09-30-sms-notify-design.md](../specs/2026-09-30-sms-notify-design.md) · Milestones: [2026-09-30-sms-notify-milestones.md](2026-09-30-sms-notify-milestones.md) · Decisions: D-062, D-063
+Last updated: 2026-10-01 (rev 1.2: USMS02 rehearsal lessons: §6 item 4 inline-value secret loading with shape checks, §4 step 1 snippet integration and a new chat per retest, for spec rev 2.3; rev 1.1: amendment A1 for spec rev 2.2 / D-064, the positive template validator, and Q-094's answer; rev 1 was written in USMS00 from spec rev 2.1, after its Opus docs review) · Spec: [../specs/2026-09-30-sms-notify-design.md](../specs/2026-09-30-sms-notify-design.md) · Milestones: [2026-09-30-sms-notify-milestones.md](2026-09-30-sms-notify-milestones.md) · Decisions: D-062, D-063
 
 > **For agentic workers:** REQUIRED SUB-SKILL: use superpowers:executing-plans (one task = one unit = one session). Steps use checkbox (`- [ ]`) syntax. [CLAUDE.md](../../../CLAUDE.md) §4–§6 is the authoritative lifecycle around every task; the steps below cover only the unit's own work.
 
@@ -154,11 +154,11 @@ See §4 for the procedure. Steps in order:
 ## 4. USMS02 rehearsal and production attach (D-049-safe)
 
 D-049 and UC01 E9 mean any **saved** edit to the production agent goes live on the next call, and the Active-version selector doesn't hold it back.
-1. **Copy agent first.** The founder duplicates the production agent as a new **prompt-kind** agent (a voice-kind agent returns empty responses, E1), attaches the tool (OpenAPI, managed identity, audience `api://…`), and pastes the spec §11 snippet. Test it in the playground with text, then with voice through a UC01-style harness kept in the session scratchpad (calendar P7 approach). The SMS should arrive, and a second attempt should get `already_sent` or `rate_limited`.
+1. **Copy agent first.** The founder duplicates the production agent as a new **prompt-kind** agent (a voice-kind agent returns empty responses, E1), attaches the tool (OpenAPI, managed identity, audience `api://…`), and integrates the spec §11 snippet into the copy's wrap-up flow (spec §11: never appended blindly; consent, number confirmation and the tool call are separate turns). Test it in the playground with text, then with voice through a UC01-style harness kept in the session scratchpad (calendar P7 approach). The SMS should arrive, and a second attempt should get `already_sent` or `rate_limited`. **Start a new chat for each retest:** the snippet tells the agent never to call the tool twice in one call, so a second attempt in the same conversation tests the instructions, not the service. If the service returns `unavailable`, check the loaded secrets' shapes first (§6 item 4).
 2. **Failure drill** on the copy agent: temporarily set `SMS_ALLOWED_PRINCIPALS` to a dummy value. The agent should get `forbidden` and say nothing alarming. Then restore it.
 3. **Production attach** 30 to 60 min before the demo (Q-090, answered). Attach the tool and paste the snippet in **one save**. Make one test call from the founder's mobile and confirm the SMS arrives.
 4. **After the demo:** detach the tool and remove the snippet in one save (Q-090, answered). Delete the copy agent and its Foundry agent identity.
-5. **Rotate the Twilio API key (Q-094, answered).** The founder creates a new Standard API key in the Twilio console, loads it personally with `az keyvault secret set` on `twilio-api`, and then revokes the old key. No values pass through an agent or the repo. The service stays deployed, with the tool detached. If USMS02's session ends before this step, it runs as **USMS03** (branchless, its own `docs/status-YYYY-MM-DD` branch). USMS03 is named here so CLAUDE.md §10 allows it, and it changes no infra.
+5. **Rotate the Twilio API key (Q-094, answered).** The founder creates a new Standard API key in the Twilio console, loads it personally with `az keyvault secret set` on `twilio-api` (the §6 item 4 inline-value method, with both shape checks), and then revokes the old key. No values pass through an agent or the repo. The service stays deployed, with the tool detached. If USMS02's session ends before this step, it runs as **USMS03** (branchless, its own `docs/status-YYYY-MM-DD` branch). USMS03 is named here so CLAUDE.md §10 allows it, and it changes no infra.
 
 ## 5. Definition of Done
 
@@ -171,11 +171,17 @@ D-049 and UC01 E9 mean any **saved** edit to the production agent goes live on t
 1. ~~Answer Q-085 to Q-093~~: **done on 2026-09-30.**
 2. ~~Paid account and Standard API key~~: **done.** Keep the SID and secret out of chat.
 3. **Before USMS02:** in the Twilio console, set Messaging **Geo Permissions** to Canada only. Send one test SMS from the existing number to the recipient, and confirm it arrives.
-4. After USMS02 provisions the service: `az keyvault secret set` for `twilio-api` and `sms-recipients`. The founder runs this personally, so the values never pass through an agent.
+4. After USMS02 provisions the service: `az keyvault secret set` for `twilio-api` and `sms-recipients`. The founder runs this personally, so the values never pass through an agent. **Use the inline-value method** (USMS02 rehearsal, 2026-10-01: both secrets were first saved **empty**, because `Read-Host` lines pasted with a trailing newline took an empty answer, and the service returned `unavailable`):
+   1. In a fresh PowerShell window, run `Set-PSReadLineOption -HistorySaveStyle SaveNothing` first, so the values never reach the PSReadLine history file. Don't run this in a recorded transcript.
+   2. Put each value inline, **single-quoted**, in a variable (single quotes keep the JSON's double quotes and any `$` literal). The JSON formats are exactly the ones in the `agent-tools/sms-notify/README.md` configuration table (`twilio-api`: `account_sid`, `api_key_sid`, `api_key_secret`; `sms-recipients`: a `recipients` list of 1 to 3 Canadian E.164 numbers).
+   3. **Before saving**, check the shape without printing any value: non-zero length, parses as JSON, SIDs start `AC` / `SK`, each recipient is 12 characters starting `+1`. Print only `True`/`False` and lengths.
+   4. Save with `az keyvault secret set --vault-name <kv> --name <secret> --value <variable>`.
+   5. **After saving**, read the secret back with `az keyvault secret show --query value -o tsv` into a variable and repeat the same shape check (all `True`); this is what proves the quoting survived the `az` call. Never echo the value.
+   6. Never paste `Read-Host` prompts (or multi-line blocks that answer them) with a trailing newline: the newline answers the prompt with an empty string. Close the window afterwards.
 5. Create the **prompt-kind copy agent**, attach the tool, paste the spec §11 snippet, and run the copy-agent tests.
 6. 30 to 60 min before the demo (Q-090): attach the tool to production and paste the snippet in **one save**. Make one test call from your mobile, and check that the six-line SMS arrives.
 7. After the demo: **detach** the tool and remove the snippet from the production agent in one save (Q-090), then delete the copy agent.
-8. Then rotate the Twilio API key (Q-094): create a new key, run `az keyvault secret set` on `twilio-api` yourself, and revoke the old key.
+8. Then rotate the Twilio API key (Q-094): create a new key, run `az keyvault secret set` on `twilio-api` yourself with the item 4 inline-value method (including both shape checks), and revoke the old key.
 
 ## 7. Consistency with DECISIONS.md (checked in USMS00)
 
@@ -197,3 +203,4 @@ D-049 and UC01 E9 mean any **saved** edit to the production agent goes live on t
   - Round 3: CLEAN from two reviewers, with their optional nits applied.
   - Every finding was fixed on Opus. Details are in STATUS.md §2 and the spec §16 changelog.
 - **D-064 amendment (2026-10-01, mid-USMS01):** after USMS01's code review round 1, the founder ruled that the message holds nothing beyond the six fields. Spec rev 2.2 (K12) and amendment A1 above were written by the partner on Opus and got an Opus docs review on the amendment's own commit (STATUS.md §2).
+- **Rev 1.2 (2026-10-01, mid-USMS02, on its status branch):** rehearsal lessons folded in with spec rev 2.3 (§11 snippet items 1 to 3). Written by the partner on Opus; Opus docs review on its own commits (STATUS.md §2).
