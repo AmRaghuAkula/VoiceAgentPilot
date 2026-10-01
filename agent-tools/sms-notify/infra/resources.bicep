@@ -2,6 +2,8 @@
 param location string
 param tags object
 param vaultOfficerPrincipalId string
+@allowed(['User', 'Group', 'ServicePrincipal'])
+param vaultOfficerPrincipalType string = 'User'
 @description('Non-secret SMS_* app settings (spec section 7).')
 param appSettings object
 
@@ -15,7 +17,6 @@ var stateContainer = 'sms-state'
 
 // Built-in role definition IDs.
 var roleStorageBlobDataOwner = 'b7e6dc6d-f1e8-4753-8033-0f276bb0955b'
-var roleStorageBlobDataContributor = 'ba92f5b4-2d11-453d-a403-e96b0029c9fe'
 var roleKeyVaultSecretsUser = '4633458b-17de-408a-b874-0445c86b69e6'
 var roleKeyVaultSecretsOfficer = 'b86a8fe4-44ce-4948-aee5-eccb2c155cd7'
 var roleMonitoringMetricsPublisher = '3913510d-42f4-4e42-8a64-420c390055eb'
@@ -162,7 +163,8 @@ resource site 'Microsoft.Web/sites@2024-04-01' = {
         }
       }
       scaleAndConcurrency: {
-        maximumInstanceCount: 40
+        // Demo cap: an anonymous route (auth in code, K9) can't scale the bill past 5 instances.
+        maximumInstanceCount: 5
         instanceMemoryMB: 2048
       }
       runtime: { name: 'python', version: '3.12' }
@@ -182,9 +184,10 @@ resource scmPolicy 'Microsoft.Web/sites/basicPublishingCredentialsPolicies@2024-
   properties: { allow: false }
 }
 
-// The Functions host itself (AzureWebJobsStorage, identity-based) and the Flex deployment
-// package need Blob Data Owner on the account; the spec's container-scoped grant on sms-state
-// is kept as well so the state access is explicit.
+// The Functions host itself (identity-based AzureWebJobsStorage, which creates its own
+// containers at runtime) and the Flex deployment package need Blob Data Owner at account
+// scope (Microsoft's documented role for identity-based host storage). It also covers the
+// sms-state container, so no separate container-scoped grant is made.
 resource hostStorageRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   name: guid(storage.id, site.id, roleStorageBlobDataOwner)
   scope: storage
@@ -192,16 +195,6 @@ resource hostStorageRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = 
     principalId: site.identity.principalId
     principalType: 'ServicePrincipal'
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', roleStorageBlobDataOwner)
-  }
-}
-
-resource stateRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(smsStateContainer.id, site.id, roleStorageBlobDataContributor)
-  scope: smsStateContainer
-  properties: {
-    principalId: site.identity.principalId
-    principalType: 'ServicePrincipal'
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', roleStorageBlobDataContributor)
   }
 }
 
@@ -220,7 +213,7 @@ resource vaultOfficerRole 'Microsoft.Authorization/roleAssignments@2022-04-01' =
   scope: vault
   properties: {
     principalId: vaultOfficerPrincipalId
-    principalType: 'User'
+    principalType: vaultOfficerPrincipalType
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', roleKeyVaultSecretsOfficer)
   }
 }

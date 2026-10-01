@@ -2,13 +2,13 @@
 
 A minimal HTTP tool that lets a Foundry agent send **one** agent-written text message to a fixed follow-up contact near the end of a call. Design: [spec](../../docs/superpowers/specs/2026-09-30-sms-notify-design.md) (rev 2.1). Plan: [plan](../../docs/superpowers/plans/2026-09-30-sms-notify-plan.md). Decisions: D-062, D-063.
 
-The service is generic. It authors no content: it normalizes the text, checks it, applies limits, and forwards it through Twilio Programmable SMS. The message format lives only in the agent's Foundry instructions, never here.
+The service is generic. It authors no content: it normalizes the text, checks it against a positive template (spec K12, D-064), applies limits, and forwards it through Twilio Programmable SMS. The text may hold only `Label: value` lines, with labels from `SMS_ALLOWED_LABELS` and values from a small character allowlist, so no link, web address, email address, handle or IP address can be sent. The message format and its labels live only in the agent's Foundry instructions and the azd environment, never here.
 
 ## Layout
 
 | Path | What |
 | --- | --- |
-| `sms_notify/core/` | Framework-free core: `messages.py` (normalize, limits, links, segments), `limits.py` (dedupe with outcome, cooldown, hourly slots), `service.py` (`notify()`), `config.py`, `deadline.py`, `phone.py`, `errors.py` |
+| `sms_notify/core/` | Framework-free core: `messages.py` (K11 normalization, the K12 template validator, segments), `limits.py` (dedupe with outcome, cooldown, hourly slots), `service.py` (`notify()`), `config.py`, `deadline.py`, `phone.py`, `errors.py` |
 | `sms_notify/ports.py` | `StateStore`, `SecretSource`, `Clock`, and the `Notifier` shape (plan P1) |
 | `sms_notify/adapters/` | `twilio_sms.py` (`TwilioSmsNotifier`), `blob_state.py`, `keyvault_secrets.py`, `azure_token.py` (all raw `httpx`) |
 | `sms_notify/http/` | `auth.py` (Entra JWT in code) and `dispatcher.py` (always-200 envelope) |
@@ -40,19 +40,20 @@ App settings come from the azd environment (`infra/main.parameters.json`). No va
 | `SMS_MAX_CHARS` | `480` | no (default `480`) | Cap on prefix + text after normalization. May only be lowered; the OpenAPI `maxLength` is 480 |
 | `SMS_MAX_LINES` | `8` | no (default `8`) | |
 | `SMS_ALLOWED_PRINCIPALS` | `<oid>` | yes | Comma-separated object IDs; the Foundry resource managed identity's `oid` (E6) |
-| `SMS_AUTH_AUDIENCE` | `api://<app id>` | yes | The `sms-notify-api` app ID URI. The bare app ID is also accepted as `aud` |
+| `SMS_AUTH_AUDIENCE` | `api://<app id>` | yes | Must be exactly `api://<application id GUID>`, otherwise `unavailable`. Both it and the bare app ID are accepted as `aud` |
 | `SMS_AUTH_TENANT_ID` | `<tid>` | yes | |
 | `SMS_REQUIRE_ROLE` | `false` | no (default `false`) | Set `true` once `roles: ["Sms.Send"]` has been seen on a Foundry token (E13) |
 | `SMS_MIN_INTERVAL_SECONDS` | `90` | no | Cooldown between claimed sends |
-| `SMS_MAX_PER_HOUR` | `6` | no | Hourly cap (UTC hour) |
+| `SMS_MAX_PER_HOUR` | `6` | no | Hourly cap (UTC hour), 1 to 20 |
 | `SMS_DEDUPE_MINUTES` | `30` | no | Same normalized text inside the window is not sent again |
-| `SMS_PREFIX` | `""` | no | Optional fixed operational prefix, a single line |
+| `SMS_PREFIX` | `""` | no | Optional fixed operational prefix: a single line obeying the K12 value rules (no `/`, `:`, `@`, no `.` except between digits, no `www`), otherwise `unavailable` |
+| `SMS_ALLOWED_LABELS` | `Ref,Callback #,Note` | **yes** | Comma-separated line labels the text may use (K12 rule 1): 1 to `SMS_MAX_LINES` entries, each 1 to 32 characters, no `.` `,` `:` or double spaces, no duplicates (case-insensitive). Unset, empty or invalid means every request gets `unavailable`. Set only in the azd environment; the real labels are never committed |
 | `KEY_VAULT_URI` | `https://kv-sms-xxxx.vault.azure.net/` | yes (set by Bicep) | Read with the managed identity |
 | `STATE_BLOB_URL` | `https://stsmsxxxx.blob.core.windows.net/sms-state` | yes (set by Bicep) | Container for dedupe, cooldown and hourly slots |
 | Key Vault secret `twilio-api` | `{"account_sid":"AC…","api_key_sid":"SK…","api_key_secret":"…"}` | yes | Standard API key, not the auth token. Set by the founder |
 | Key Vault secret `sms-recipients` | `{"recipients":["+1XXX5550199"]}` | yes | 1 to 3 E.164 numbers in Canada. Set by the founder |
 
-azd environment values used by `infra/main.parameters.json`: `AGENT_TOOL` (must be `sms-notify`; the Bicep rejects anything else), `SMS_FROM_NUMBER`, `SMS_ALLOWED_PRINCIPALS`, `SMS_AUTH_AUDIENCE`, optional `SMS_VAULT_OFFICER_PRINCIPAL_ID` (gets Key Vault Secrets Officer), `SMS_ALLOWED_COUNTRIES`, `SMS_REQUIRE_ROLE`, `SMS_PREFIX`.
+azd environment values used by `infra/main.parameters.json`: `AGENT_TOOL` (must be `sms-notify`; the Bicep rejects anything else), `SMS_FROM_NUMBER`, `SMS_ALLOWED_PRINCIPALS`, `SMS_AUTH_AUDIENCE`, `SMS_ALLOWED_LABELS` (required, no default), optional `SMS_VAULT_OFFICER_PRINCIPAL_ID` (gets Key Vault Secrets Officer) with `SMS_VAULT_OFFICER_PRINCIPAL_TYPE` (`User` by default; `ServicePrincipal` or `Group` otherwise), `SMS_ALLOWED_COUNTRIES`, `SMS_REQUIRE_ROLE`, `SMS_PREFIX`.
 
 `local.settings.json` is git-ignored and must never be committed.
 
@@ -82,4 +83,4 @@ azd env set SMS_ALLOWED_PRINCIPALS <foundry-mi-object-id> -e sms-<env>
 From `agent-tools/sms-notify/` only, with `-e sms-<env>` on every command. First run `azd env get-value AGENT_TOOL -e sms-<env>`, which must print `sms-notify`. Then run `az deployment sub validate` and `azd provision --preview`, then `azd provision` immediately followed by `azd deploy`. Never during a live call (CLAUDE.md section 10).
 
 `requirements.txt` is exported from `uv.lock` for the Functions remote build:
-`python -m uv export --no-dev --no-hashes --no-emit-project --format requirements-txt -o requirements.txt`.
+`python -m uv export --no-dev --no-emit-project --format requirements-txt -o requirements.txt` (with hashes, so the remote build checks package integrity).

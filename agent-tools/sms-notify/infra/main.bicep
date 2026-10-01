@@ -27,6 +27,13 @@ param smsAllowedPrincipals string
 @description('Application ID URI of the sms-notify-api Entra app (api://<app id>).')
 param smsAuthAudience string
 
+@description('Comma-separated line labels the text may use (K12, D-064). Required, no default: set only in the azd environment, never committed.')
+param smsAllowedLabels string
+
+@allowed(['User', 'Group', 'ServicePrincipal'])
+@description('Principal type of vaultOfficerPrincipalId (a user by default; a service principal for an automated deployer).')
+param vaultOfficerPrincipalType string = 'User'
+
 param smsAuthTenantId string = tenant().tenantId
 param smsAllowedCountries string = 'CA'
 param smsRequireRole string = 'false'
@@ -55,6 +62,7 @@ module resources 'resources.bicep' = {
     location: location
     tags: tags
     vaultOfficerPrincipalId: vaultOfficerPrincipalId
+    vaultOfficerPrincipalType: vaultOfficerPrincipalType
     appSettings: {
       SMS_FROM_NUMBER: smsFromNumber
       SMS_ALLOWED_COUNTRIES: smsAllowedCountries
@@ -63,6 +71,7 @@ module resources 'resources.bicep' = {
       SMS_AUTH_TENANT_ID: smsAuthTenantId
       SMS_REQUIRE_ROLE: smsRequireRole
       SMS_PREFIX: smsPrefix
+      SMS_ALLOWED_LABELS: smsAllowedLabels
       SMS_MAX_CHARS: smsMaxChars
       SMS_MAX_LINES: smsMaxLines
       SMS_MIN_INTERVAL_SECONDS: smsMinIntervalSeconds

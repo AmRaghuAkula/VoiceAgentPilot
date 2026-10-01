@@ -11,6 +11,8 @@
     "smsAuthAudience": { "value": "${SMS_AUTH_AUDIENCE}" },
     "smsAllowedCountries": { "value": "${SMS_ALLOWED_COUNTRIES=CA}" },
     "smsRequireRole": { "value": "${SMS_REQUIRE_ROLE=false}" },
-    "smsPrefix": { "value": "${SMS_PREFIX=}" }
+    "smsPrefix": { "value": "${SMS_PREFIX=}" },
+    "smsAllowedLabels": { "value": "${SMS_ALLOWED_LABELS}" },
+    "vaultOfficerPrincipalType": { "value": "${SMS_VAULT_OFFICER_PRINCIPAL_TYPE=User}" }
   }
 }

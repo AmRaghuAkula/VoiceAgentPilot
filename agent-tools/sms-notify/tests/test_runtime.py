@@ -86,3 +86,18 @@ def test_requirements_txt_covers_every_runtime_dependency():
 def test_local_settings_is_ignored():
     ignored = (ROOT / ".gitignore").read_text("utf-8").splitlines()
     assert "local.settings.json" in ignored
+
+
+def test_requirements_txt_is_hash_pinned():
+    lines = (ROOT / "requirements.txt").read_text("utf-8").splitlines()
+    pins = [line for line in lines if re.match(r"^[A-Za-z0-9_.-]+==", line)]
+    assert pins and all(line.rstrip().endswith("\\") for line in pins)
+    assert sum("--hash=sha256:" in line for line in lines) >= len(pins)
+
+
+def test_bicep_has_the_labels_setting_without_a_default():
+    main = (ROOT / "infra" / "main.bicep").read_text("utf-8")
+    assert "param smsAllowedLabels string\n" in main
+    assert "SMS_ALLOWED_LABELS: smsAllowedLabels" in main
+    params = json.loads((ROOT / "infra" / "main.parameters.json").read_text("utf-8"))["parameters"]
+    assert params["smsAllowedLabels"]["value"] == "${SMS_ALLOWED_LABELS}"
