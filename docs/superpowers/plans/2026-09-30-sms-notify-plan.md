@@ -165,4 +165,8 @@ D-049 and UC01 E9 mean any **saved** edit to the production agent goes live on t
 
 ## 8. Review history
 
-- **USMS00 Opus docs review:** recorded in STATUS.md §2 and the USMS00 PR.
+- **USMS00 Opus docs review (PR #53):**
+  - Round 1: NEEDS-FIXES (1 blocking: per-recipient outcomes, leading to P6; 6 should-fix; 7 nits).
+  - Round 2: NEEDS-FIXES from two independent reviewers (0 blocking, 3 should-fix, 6 nits).
+  - Round 3: CLEAN from two reviewers, with their optional nits applied.
+  - Every finding was fixed on Opus. Details are in STATUS.md §2 and the spec §16 changelog.
