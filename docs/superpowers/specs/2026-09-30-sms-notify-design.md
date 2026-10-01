@@ -99,7 +99,7 @@ The bridge's own code and traffic are unchanged. The only new edges start at the
 | false | `send_unconfirmed` | Twilio timed out or the connection dropped after the request was sent. It may have been delivered, and it isn't retried |
 | false | `unavailable` | Key Vault, storage or the JWKS endpoint is unreachable, or config is missing or invalid. **It fails closed: nothing is sent** |
 
-If several recipients are configured, the core sends to each one separately (plan P6). If Twilio accepts some but not all, or any recipient fails, the result is `ok:false` with the worst code of the per-recipient failures, in the order `send_unconfirmed` > `unavailable` > `send_failed`. The log line records each recipient's outcome (masked). The outcome written back to the dedupe blob (§5 step 4) is this final code, so it is `sent` only when every recipient was sent.
+If several recipients are configured, the core sends to each one separately (plan P6). If Twilio accepts some but not all, or any recipient fails, the result is `ok:false` with the worst code of the per-recipient failures, in the order `send_unconfirmed` > `unavailable` > `send_failed`. The log line records each recipient's outcome (masked). The outcome written back to the dedupe blob (§5 step 4) is this final code, so it is `sent` only when every recipient was sent. On a partial multi-recipient send, the code describes the worst failed recipient, and other recipients may already have been sent (so "nothing is sent" in the table holds per recipient). The demo has one recipient.
 
 ## 5. Processing order (one request)
 
