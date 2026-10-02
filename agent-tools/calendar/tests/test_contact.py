@@ -289,3 +289,16 @@ def test_contact_is_frozen():
     c = ok(CA, {"phone": "6135550123"})
     with pytest.raises(AttributeError):
         c.phone = "+16135550199"  # type: ignore[misc]
+
+
+def test_raw_name_is_capped_before_it_is_scanned(monkeypatch) -> None:
+    """UC04a cso r2 follow-up (UC04b): an oversized raw name is refused without
+    a per-character scan."""
+    import calendar_tools.core.contact as contact_module
+
+    scanned: list[str] = []
+    real = contact_module.unicodedata.category
+    monkeypatch.setattr(contact_module.unicodedata, "category", lambda ch: scanned.append(ch) or real(ch))
+    result = normalize(make_binding(), {"name": "a" * 5000, "phone": "+16135550123"})
+    assert result == InvalidFields(("contact.name",))
+    assert scanned == []
