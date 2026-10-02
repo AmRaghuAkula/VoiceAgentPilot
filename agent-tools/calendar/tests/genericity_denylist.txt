@@ -1,0 +1,51 @@
+# G2 genericity denylist for agent-tools/calendar/ (calendar plan P6 format).
+# This file is the only file under agent-tools/calendar/ exempt from G2 (CLAUDE.md section 7).
+# Extraction note (spec section 15.2): it contains the very words it bans; review it
+# before any `git subtree split` into a separate or public repo.
+#
+# Matching: text is lowercased and split on [^a-z0-9]+; every 1-, 2- and 3-token window
+# is compared with the [plain] entries (tokens joined by one space) and, hashed with
+# SHA-256 (lowercase hex, UTF-8), with the [sha256] entries.
+#
+# [plain] holds non-sensitive category words (the pilot's business-line vocabulary).
+# [sha256] holds sensitive names as hashes only, so no name is ever committed in plaintext.
+# A name that is also a common English word is listed only as a multi-token entry.
+# The hashes below are the ones already committed for agent-tools/sms-notify/ (no new
+# disclosure). The partner appends further hashes, computed from the private source
+# documents, at hand-off; the plaintext never enters the repo, a commit, the PR or the email.
+
+[plain]
+realtor
+realtors
+realty
+real estate
+mortgage
+mortgages
+brokerage
+homebuyer
+homebuyers
+home buyer
+condo
+condominium
+open house
+mls
+escrow
+landlord
+buyer agent
+listing agent
+square feet
+sqft
+bedroom
+bedrooms
+
+[sha256]
+# synthetic canary used by the self-test (assembled at runtime in the test)
+0abcfb03919200623366c1bfd0b5bb253e83c71d277fb3673fb4bf4ee9862cb4
+# company and project names
+3e04d7261a03194ca05d0e6f4222cd065a3ef264fbeae9b7177bddd88cd3ee6c
+349c89b05fbfeb1fdc55b2ec2dfd794e84164bdc313e512f62c8548e542f447f
+5dc1248b6e68190183e02fda0e5395b1509134ec8d51bca31610f2f940fa2373
+# person names
+736d9941cf60fbcaea60d1ac94865b152552b8026044318f08d7fec937371666
+f90e9f3755b06a989d4ea78790aeccc647b1a21c573c1679c41bbccf99bc510b
+1c192e8d211e53209d9113998cef707da6142589099d4fe4374887aff61fb290

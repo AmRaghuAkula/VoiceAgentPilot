@@ -1,0 +1,38 @@
+[project]
+name = "agent-tools-calendar"
+version = "0.1.0"
+description = "Agent-agnostic, provider-agnostic calendar tool service (check_availability, book_appointment)."
+requires-python = ">=3.12"
+dependencies = [
+    "aiohttp>=3.12",
+    "azure-functions>=1.25.0",
+    "azure-identity>=1.25.3",
+    "cryptography>=45.0",
+    "httpx>=0.28.1",
+    "phonenumbers>=9.0",
+    "pyjwt[crypto]>=2.15.1",
+    "pyyaml>=6.0.2",
+    "tzdata>=2025.2",
+]
+
+[dependency-groups]
+dev = [
+    "jsonschema>=4.25",
+    "openapi-spec-validator>=0.7.2",
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+    "respx>=0.22.0",
+]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = "--import-mode=importlib -m 'not live_google and not live_azure'"
+markers = [
+    "live_google: opt-in live checks against a throwaway Google test calendar (UC08b only)",
+    "live_azure: opt-in live checks against the real claims container (UC06 only)",
+]

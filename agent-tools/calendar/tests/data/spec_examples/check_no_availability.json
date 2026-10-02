@@ -1,0 +1,12 @@
+{
+  "status": "no_availability",
+  "request_id": "8e2d3c4b5a6f7e8d9c0b1a2f3e4d5c6b",
+  "timezone": "America/Toronto",
+  "now": "2026-09-29T14:03:00-04:00",
+  "today": { "date": "2026-09-29", "weekday": "Tuesday" },
+  "searched": { "from": "2026-10-05T09:00:00-04:00", "to": "2026-10-07T19:00:00-04:00" },
+  "duration_minutes": 30,
+  "slots": [],
+  "more_available": false,
+  "detail": { "reason": "fully_booked" }
+}

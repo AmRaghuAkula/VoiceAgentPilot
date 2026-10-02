@@ -1,0 +1,14 @@
+{
+  "status": "booked",
+  "request_id": "1b5a6f7e8d9c0b1a2f3e4d5c6b7a8f9e",
+  "replayed": false,
+  "booking": {
+    "booking_ref": "B7K2Q9",
+    "start": "2026-10-05T10:00:00-04:00",
+    "end": "2026-10-05T10:30:00-04:00",
+    "display": "Monday, October 5 at 10:00 AM",
+    "timezone": "America/Toronto",
+    "appointment_type": { "id": "phone_call", "label": "Phone call" },
+    "host": { "display_name": "Sam Sample" }
+  }
+}
