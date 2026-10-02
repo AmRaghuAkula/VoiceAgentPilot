@@ -311,7 +311,8 @@ def _binding(binding_id: str, raw: Any, provider_names: frozenset[str]) -> Bindi
         raise r.fail("provider")
     calendar_id = r.text("calendar_id")
     secret_name = r.text("credential_secret_name")
-    if not _SECRET_NAME.fullmatch(secret_name):
+    # The name reaches logs as part of a secret_invalid reason: no phone-like run.
+    if not _SECRET_NAME.fullmatch(secret_name) or _PHONE_LIKE_RUN.search(secret_name.replace("-", "")):
         raise r.fail("credential_secret_name")
     timezone = _timezone(r)
     locale = r.text("locale", max_len=35)

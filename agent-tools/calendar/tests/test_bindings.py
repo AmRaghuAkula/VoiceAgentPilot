@@ -102,6 +102,7 @@ FIELD_CASES = [
     ("provider-not-str", _set("provider", 7), "provider", None),
     ("calendar-id-empty", _set("calendar_id", ""), "calendar_id", None),
     ("secret-name-bad", _set("credential_secret_name", SENTINEL + " x"), "credential_secret_name", SENTINEL),
+    ("secret-name-phone-like", _set("credential_secret_name", "cal-" + "613-555-0123"), "credential_secret_name", None),
     ("timezone-unknown", _set("timezone", "Mars/" + SENTINEL), "timezone", SENTINEL),
     ("timezone-traversal", _set("timezone", "../" + SENTINEL), "timezone", SENTINEL),
     ("timezone-empty", _set("timezone", ""), "timezone", None),

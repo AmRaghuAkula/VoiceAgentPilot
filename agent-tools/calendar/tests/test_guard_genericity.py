@@ -12,16 +12,18 @@ from __future__ import annotations
 import fnmatch
 import hashlib
 import re
+import subprocess
 from pathlib import Path
 
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 DENYLIST = ROOT / "tests" / "genericity_denylist.txt"
-SKIP_DIRS = {".venv", "__pycache__", ".pytest_cache", ".python_packages", ".azure"}
+SKIP_DIRS = {".git", ".venv", "__pycache__", ".pytest_cache", ".python_packages", ".azure"}
 EXCLUDED = {DENYLIST.resolve()}
-# Git-ignored local config (see .gitignore): never committed, so not scanned,
-# letting a developer keep real settings locally without a red G2.
+# Git-ignored local config (mirrors .gitignore): skipped only while untracked, so a
+# developer can keep real settings locally without a red G2, but a force-added
+# copy is still scanned.
 LOCAL_ONLY = ("local.settings.json", ".env", ".env.*", "bindings.json", "bindings.*.json", "*.client.json", "client_secret*.json")
 KEEP = {"bindings.sample.json"}
 
@@ -92,7 +94,20 @@ def _text_or_none(path: Path) -> str | None:
         return None
 
 
+def _tracked(root: Path) -> set[Path]:
+    """Files git tracks under `root` (empty outside a work tree). A tracked file
+    is always scanned, even one force-added despite .gitignore."""
+    try:
+        out = subprocess.run(
+            ["git", "ls-files", "-z"], cwd=root, capture_output=True, timeout=30, check=True
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return set()
+    return {(root / name).resolve() for name in out.decode("utf-8").split("\0") if name}
+
+
 def scanned_files(root: Path = ROOT) -> list[Path]:
+    tracked = _tracked(root)
     files = []
     for path in root.rglob("*"):
         if not path.is_file():
@@ -101,7 +116,8 @@ def scanned_files(root: Path = ROOT) -> list[Path]:
             continue
         if path.resolve() in EXCLUDED or path.name == "uv.lock":
             continue
-        if path.name not in KEEP and any(fnmatch.fnmatch(path.name, pat) for pat in LOCAL_ONLY):
+        local_only = path.name not in KEEP and any(fnmatch.fnmatch(path.name, pat) for pat in LOCAL_ONLY)
+        if local_only and path.resolve() not in tracked:
             continue
         if _text_or_none(path) is not None:
             files.append(path)
@@ -156,6 +172,21 @@ def test_git_ignored_local_config_is_not_scanned(tmp_path):
     (tmp_path / "bindings.sample.json").write_text("{}", encoding="utf-8")
     names = {p.name for p in scanned_files(tmp_path)}
     assert names == {"bindings.sample.json"}
+
+
+def test_force_added_local_config_is_scanned(tmp_path):
+    def git(*args):
+        subprocess.run(["git", *args], cwd=tmp_path, capture_output=True, timeout=30, check=True)
+
+    try:
+        git("init", "-q")
+    except (OSError, subprocess.SubprocessError):
+        pytest.skip("git not available")
+    (tmp_path / "bindings.json").write_text("{}", encoding="utf-8")
+    (tmp_path / ".env").write_text("X=1", encoding="utf-8")
+    git("add", "-f", "bindings.json")
+    names = {p.name for p in scanned_files(tmp_path)}
+    assert names == {"bindings.json"}
 
 
 def test_a_hit_in_an_unlisted_suffix_is_reported(tmp_path):

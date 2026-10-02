@@ -12,7 +12,7 @@ import json
 import logging
 import re
 
-from calendar_tools.core.ports import INVALID_REASON, REASON_PATTERN
+from calendar_tools.core.ports import INVALID_REASON, is_reason_code
 
 # Set True by tests/conftest.py for the whole suite. In production it stays
 # False: the guard then never raises, because it runs after the operation may
@@ -64,11 +64,14 @@ def log_request(
     diagnostic `unclassified` (alerted in UC09) plus one WARNING. Under `STRICT`
     a non-OK outcome passed in as `unclassified` also raises.
     """
-    if reason is not None and not (isinstance(reason, str) and REASON_PATTERN.fullmatch(reason)):
+    if reason is not None and not is_reason_code(reason):
         # A reason is a code, never a value, token, contact field or vendor text.
         if STRICT:
             raise ValueError(f"reason of {operation} is not a reason code")
         reason = INVALID_REASON
+    elif STRICT and reason == INVALID_REASON:
+        # An exception replaced a non-code reason: a programming error.
+        raise ValueError(f"reason of {operation} was replaced as invalid_reason")
     non_ok = not is_ok_outcome(status)
     if STRICT and non_ok and diagnostic == UNCLASSIFIED:
         # e.g. a bare `ProviderError` copied into the line: a missed path, so the

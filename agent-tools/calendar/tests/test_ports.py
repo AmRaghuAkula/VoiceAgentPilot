@@ -121,11 +121,17 @@ def test_exception_reason_optional_and_carried():
     assert ports.ProviderTimeout(maybe_committed=True, reason="create").reason == "create"
 
 
-@pytest.mark.parametrize("bad", ["vendor said: calendar x@example.com not found", "", "a" * 129, "+16135550123"])
+@pytest.mark.parametrize("bad", ["vendor said: calendar x@example.com not found", "", "a" * 257, "+16135550123", "613" + "5550123", "-".join(["613", "555", "0123"])])
 def test_non_code_reason_replaced(bad):
     err = ports.ProviderConfigError(reason=bad)
     assert err.reason == "invalid_reason"
     assert bad not in str(err) or bad == ""
+
+
+def test_longest_secret_invalid_reason_kept():
+    err = ports.SecretInvalid("a" * 127, "wrong_length")
+    assert err.reason == "a" * 127 + ".wrong_length"
+    assert ports.is_reason_code(err.reason)
 
 
 def test_code_shaped_reasons_kept():

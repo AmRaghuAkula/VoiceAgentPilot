@@ -155,6 +155,22 @@ def test_non_code_reason_raises_under_strict(caplog):
         _log(status="invalid_request", diagnostic="invalid_request", reason="Jordan Example")
 
 
+@pytest.mark.parametrize("reason", ["invalid_reason", "613" + "5550123", "id." + "613-555-0123"])
+def test_replaced_or_phone_like_reason_raises_under_strict(reason, caplog):
+    caplog.set_level(logging.INFO, logger=LOGGER.name)
+    with pytest.raises(ValueError):
+        _log(status="calendar_unavailable", diagnostic="provider_config_error", reason=reason)
+
+
+def test_exception_with_bad_reason_fails_the_suite_when_logged(caplog):
+    from calendar_tools.core.ports import ProviderConfigError
+
+    caplog.set_level(logging.INFO, logger=LOGGER.name)
+    exc = ProviderConfigError(reason="vendor text: not found")
+    with pytest.raises(ValueError):
+        _log(status="calendar_unavailable", diagnostic=exc.diagnostic, reason=exc.reason)
+
+
 def test_non_code_reason_replaced_in_production(caplog, monkeypatch):
     monkeypatch.setattr(obs, "STRICT", False)
     caplog.set_level(logging.INFO, logger=LOGGER.name)

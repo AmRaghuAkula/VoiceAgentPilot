@@ -121,8 +121,19 @@ class CalendarProvider(Protocol):
 
 # A reason code: short, code-shaped (closed lists are defined where each code is
 # raised). Secret names (`<name>.<check>`) and comma-joined field names fit.
-REASON_PATTERN = re.compile(r"[A-Za-z0-9_.,-]{1,128}")
+# 256 fits the longest secret reason (127-character Key Vault name + "." + check)
+# and comma-joined schema field names.
+REASON_PATTERN = re.compile(r"[A-Za-z0-9_.,-]{1,256}")
 INVALID_REASON = "invalid_reason"
+_DIGIT_RUN = re.compile(r"\d{7,}")
+
+
+def is_reason_code(value: object) -> bool:
+    """A reason is a code-shaped string with no phone-like digit run (D-006);
+    separators are ignored for the digit-run check."""
+    if not isinstance(value, str) or not REASON_PATTERN.fullmatch(value):
+        return False
+    return _DIGIT_RUN.search(re.sub(r"[-.,]", "", value)) is None
 
 
 class ProviderError(Exception):
@@ -134,9 +145,10 @@ class ProviderError(Exception):
     def __init__(self, reason: str | None = None) -> None:
         if reason is not None and not isinstance(reason, str):
             raise TypeError("reason must be a str or None")
-        if reason is not None and not REASON_PATTERN.fullmatch(reason):
+        if reason is not None and not is_reason_code(reason):
             # A reason is a code, never a value or vendor text: anything else is
-            # replaced, so it can't reach str() or the log line.
+            # replaced, so it can't reach str() or the log line. obs.log_request
+            # fails the test suite (STRICT) when it sees the replacement.
             reason = INVALID_REASON
         self.reason = reason
         super().__init__(self._text())
