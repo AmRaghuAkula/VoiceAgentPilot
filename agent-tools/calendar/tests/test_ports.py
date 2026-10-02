@@ -121,6 +121,18 @@ def test_exception_reason_optional_and_carried():
     assert ports.ProviderTimeout(maybe_committed=True, reason="create").reason == "create"
 
 
+@pytest.mark.parametrize("bad", ["vendor said: calendar x@example.com not found", "", "a" * 129, "+16135550123"])
+def test_non_code_reason_replaced(bad):
+    err = ports.ProviderConfigError(reason=bad)
+    assert err.reason == "invalid_reason"
+    assert bad not in str(err) or bad == ""
+
+
+def test_code_shaped_reasons_kept():
+    for good in ("calendar_not_found", "cal-binding-test-alpha-google.bad_json", "contact.phone,slot_id"):
+        assert ports.ProviderConfigError(reason=good).reason == good
+
+
 def test_reason_must_be_a_string_or_none():
     with pytest.raises(TypeError):
         ports.ProviderUnavailable(reason=503)  # type: ignore[arg-type]

@@ -9,6 +9,7 @@ the file and line are printed, never the matched text.
 
 from __future__ import annotations
 
+import fnmatch
 import hashlib
 import re
 from pathlib import Path
@@ -19,6 +20,10 @@ ROOT = Path(__file__).resolve().parents[1]
 DENYLIST = ROOT / "tests" / "genericity_denylist.txt"
 SKIP_DIRS = {".venv", "__pycache__", ".pytest_cache", ".python_packages", ".azure"}
 EXCLUDED = {DENYLIST.resolve()}
+# Git-ignored local config (see .gitignore): never committed, so not scanned,
+# letting a developer keep real settings locally without a red G2.
+LOCAL_ONLY = ("local.settings.json", ".env", ".env.*", "bindings.json", "bindings.*.json", "*.client.json", "client_secret*.json")
+KEEP = {"bindings.sample.json"}
 
 PHONE_PATTERNS = (
     re.compile(r"\+\d[\d ().-]{9,18}\d"),
@@ -96,6 +101,8 @@ def scanned_files(root: Path = ROOT) -> list[Path]:
             continue
         if path.resolve() in EXCLUDED or path.name == "uv.lock":
             continue
+        if path.name not in KEEP and any(fnmatch.fnmatch(path.name, pat) for pat in LOCAL_ONLY):
+            continue
         if _text_or_none(path) is not None:
             files.append(path)
     return files
@@ -134,13 +141,21 @@ def test_scanned_files_cover_the_project():
 
 
 def test_any_text_suffix_is_scanned_and_binary_skipped(tmp_path):
-    for name in ("main.bicepparam", "deploy.ps1", "Dockerfile", ".env.sample", "notes.csv"):
+    for name in ("main.bicepparam", "deploy.ps1", "Dockerfile", "app.sample.env", "notes.csv"):
         (tmp_path / name).write_text("plain text\n", encoding="utf-8")
     (tmp_path / "logo.png").write_bytes(b"\x89PNG\x00\x01\xff")
     (tmp_path / ".venv").mkdir()
     (tmp_path / ".venv" / "skip.py").write_text("x\n", encoding="utf-8")
     names = {p.relative_to(tmp_path).as_posix() for p in scanned_files(tmp_path)}
-    assert names == {"main.bicepparam", "deploy.ps1", "Dockerfile", ".env.sample", "notes.csv"}
+    assert names == {"main.bicepparam", "deploy.ps1", "Dockerfile", "app.sample.env", "notes.csv"}
+
+
+def test_git_ignored_local_config_is_not_scanned(tmp_path):
+    for name in ("local.settings.json", ".env", ".env.local", "bindings.json", "bindings.prod.json", "x.client.json"):
+        (tmp_path / name).write_text("{}", encoding="utf-8")
+    (tmp_path / "bindings.sample.json").write_text("{}", encoding="utf-8")
+    names = {p.name for p in scanned_files(tmp_path)}
+    assert names == {"bindings.sample.json"}
 
 
 def test_a_hit_in_an_unlisted_suffix_is_reported(tmp_path):

@@ -75,6 +75,8 @@ def test_port_allowed(doc_text):
         "https://cal-host.example.net/api/v1/bindings/test-alpha\n- url: x",
         " https://cal-host.example.net/api/v1/bindings/test-alpha",
         "",
+        "https://cal-host.example.net:99999/api/v1/bindings/test-alpha",
+        "https://cal-host.example.net:0/api/v1/bindings/test-alpha",
     ],
     ids=[
         "http",
@@ -91,6 +93,8 @@ def test_port_allowed(doc_text):
         "newline-injection",
         "leading-space",
         "empty",
+        "port-too-high",
+        "port-zero",
     ],
 )
 def test_rejects_bad_base_url(doc_text, bad):

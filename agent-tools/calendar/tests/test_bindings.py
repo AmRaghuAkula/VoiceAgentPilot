@@ -392,6 +392,26 @@ def test_misspelt_binding_field_rejected_by_name(caplog):
     _assert_safe(info.value, SENTINEL, caplog)
 
 
+def test_unknown_key_with_phone_like_run_not_echoed(caplog):
+    binding = copy.deepcopy(BASE)
+    key = "x" + "613" + "5550123"
+    binding[key] = 1
+    with pytest.raises(BindingConfigError) as info:
+        _load(_doc(binding))
+    assert info.value.field == "$"
+    assert key not in str(info.value)
+
+
+def test_binding_repr_hides_calendar_id_principals_and_templates():
+    binding = copy.deepcopy(BASE)
+    binding["calendar_id"] = SENTINEL
+    binding["allowed_principals"] = [OTHER_SENTINEL]
+    text = repr(_load(_doc(binding))["test-alpha"])
+    assert SENTINEL not in text
+    assert OTHER_SENTINEL not in text
+    assert "Phone:" not in text
+
+
 def test_unknown_non_identifier_key_not_echoed(caplog):
     binding = copy.deepcopy(BASE)
     binding[SENTINEL] = 1

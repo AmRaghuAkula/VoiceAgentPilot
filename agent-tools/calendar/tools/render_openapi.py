@@ -38,6 +38,9 @@ def validate_base_url(base_url: str) -> str:
     match = _BASE_URL.fullmatch(base_url)
     if not match or not is_valid_binding_id(match.group("binding")):
         raise ValueError("base URL must be https://<host>/api/v1/bindings/<binding_id>")
+    port = match.group("port")
+    if port is not None and not 1 <= int(port) <= 65535:
+        raise ValueError("base URL port must be 1-65535")
     parts = urlsplit(base_url)
     if parts.query or parts.fragment or parts.username or parts.password:
         raise ValueError("base URL must not carry a query, fragment or user info")

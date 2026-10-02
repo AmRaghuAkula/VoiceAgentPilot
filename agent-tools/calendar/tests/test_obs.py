@@ -149,6 +149,20 @@ def test_bare_provider_error_diagnostic_fails_under_strict(caplog):
         _log(status="calendar_unavailable", diagnostic=exc.diagnostic, reason=exc.reason)
 
 
+def test_non_code_reason_raises_under_strict(caplog):
+    caplog.set_level(logging.INFO, logger=LOGGER.name)
+    with pytest.raises(ValueError):
+        _log(status="invalid_request", diagnostic="invalid_request", reason="Jordan Example")
+
+
+def test_non_code_reason_replaced_in_production(caplog, monkeypatch):
+    monkeypatch.setattr(obs, "STRICT", False)
+    caplog.set_level(logging.INFO, logger=LOGGER.name)
+    _log(status="invalid_request", diagnostic="invalid_request", reason="Jordan Example")
+    assert "Jordan" not in caplog.text
+    assert json.loads(_lines(caplog)[0].getMessage())["reason"] == "invalid_reason"
+
+
 def test_unclassified_passed_in_production_is_logged(caplog, monkeypatch):
     monkeypatch.setattr(obs, "STRICT", False)
     caplog.set_level(logging.INFO, logger=LOGGER.name)

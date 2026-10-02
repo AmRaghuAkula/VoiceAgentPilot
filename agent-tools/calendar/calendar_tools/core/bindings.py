@@ -13,6 +13,7 @@ import re
 import string
 from collections.abc import Mapping
 from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from dataclasses import fields as dataclass_fields
 from datetime import time
 from types import MappingProxyType
@@ -82,7 +83,7 @@ class Binding:
     binding_id: str
     enabled: bool
     provider: str
-    calendar_id: str
+    calendar_id: str = dataclass_field(repr=False)  # often an email address; never logged
     credential_secret_name: str
     timezone: ZoneInfo
     locale: str
@@ -103,9 +104,9 @@ class Binding:
     accept_notes: bool
     max_active_bookings_per_contact: int
     host_display_name: str | None
-    event_title_template: str
-    event_description_template: str
-    allowed_principals: frozenset[str]
+    event_title_template: str = dataclass_field(repr=False)
+    event_description_template: str = dataclass_field(repr=False)
+    allowed_principals: frozenset[str] = dataclass_field(repr=False)
 
     @property
     def calendar_ref(self) -> CalendarRef:
@@ -407,7 +408,9 @@ def _check_known_fields(binding_id: str, raw: Mapping[str, Any]) -> None:
     for key in raw:
         if key not in _BINDING_FIELDS:
             # Name the key only when it is identifier-shaped; otherwise "$".
-            shown = key if isinstance(key, str) and _FIELD_NAME.fullmatch(key) else "$"
+            # A key with a phone-like digit run is data, not a field name (D-006).
+            named = isinstance(key, str) and _FIELD_NAME.fullmatch(key) and not _PHONE_LIKE_RUN.search(key)
+            shown = key if named else "$"
             raise BindingConfigError(binding_id, shown)
 
 

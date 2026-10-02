@@ -119,6 +119,12 @@ class CalendarProvider(Protocol):
 # vendor free text, and `str()` holds only the diagnostic and the reason.
 
 
+# A reason code: short, code-shaped (closed lists are defined where each code is
+# raised). Secret names (`<name>.<check>`) and comma-joined field names fit.
+REASON_PATTERN = re.compile(r"[A-Za-z0-9_.,-]{1,128}")
+INVALID_REASON = "invalid_reason"
+
+
 class ProviderError(Exception):
     """Base class. Raising it directly is a programming error, so its
     diagnostic is the alerted `unclassified`."""
@@ -128,6 +134,10 @@ class ProviderError(Exception):
     def __init__(self, reason: str | None = None) -> None:
         if reason is not None and not isinstance(reason, str):
             raise TypeError("reason must be a str or None")
+        if reason is not None and not REASON_PATTERN.fullmatch(reason):
+            # A reason is a code, never a value or vendor text: anything else is
+            # replaced, so it can't reach str() or the log line.
+            reason = INVALID_REASON
         self.reason = reason
         super().__init__(self._text())
 

@@ -326,6 +326,8 @@ async def test_error_mapping(provider_under_test, method, failure):
         elif method in READ_METHODS:
             assert info.value.maybe_committed is False
         else:
+            # Either value is allowed for a delete; the constructor already
+            # guarantees a bool, so this documents the rule rather than tests it.
             assert isinstance(info.value.maybe_committed, bool)
     # The failure is one-shot: the next call succeeds.
     await _call(h, method)

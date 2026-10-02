@@ -12,6 +12,8 @@ import json
 import logging
 import re
 
+from calendar_tools.core.ports import INVALID_REASON, REASON_PATTERN
+
 # Set True by tests/conftest.py for the whole suite. In production it stays
 # False: the guard then never raises, because it runs after the operation may
 # already have created a booking.
@@ -62,6 +64,11 @@ def log_request(
     diagnostic `unclassified` (alerted in UC09) plus one WARNING. Under `STRICT`
     a non-OK outcome passed in as `unclassified` also raises.
     """
+    if reason is not None and not (isinstance(reason, str) and REASON_PATTERN.fullmatch(reason)):
+        # A reason is a code, never a value, token, contact field or vendor text.
+        if STRICT:
+            raise ValueError(f"reason of {operation} is not a reason code")
+        reason = INVALID_REASON
     non_ok = not is_ok_outcome(status)
     if STRICT and non_ok and diagnostic == UNCLASSIFIED:
         # e.g. a bare `ProviderError` copied into the line: a missed path, so the
