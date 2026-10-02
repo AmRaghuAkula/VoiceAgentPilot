@@ -6,18 +6,14 @@ request's log line (plan section 1, "Reason codes")."""
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta
+from datetime import timedelta
 
 import pytest
 
 from calendar_tools.core import booking
 from calendar_tools.core.booking import CLAIM_TTL, SERVICE_TAG
-from calendar_tools.core.claims import ClaimRecord, ClaimStoreUnavailable
-from calendar_tools.core.identity import contact_tag, fingerprint
-from calendar_tools.core.contact import Contact
+from calendar_tools.core.claims import ClaimStoreUnavailable
 from calendar_tools.core.ports import (
-    BookingMeta,
-    NewEvent,
     ProviderAuthError,
     ProviderConfigError,
     ProviderTimeout,
@@ -26,7 +22,7 @@ from calendar_tools.core.ports import (
     SecretStoreUnavailable,
 )
 from tests.booking_world import NAME, OTHER_PHONE, PHONE, SLOT, World, created_event, our_fingerprint, plant
-from tests.fakes.keyring import FINGERPRINT_KEY, SLOT_KEY_2, SLOT_KEY_3, make_keys
+from tests.fakes.keyring import SLOT_KEY_2, SLOT_KEY_3, make_keys
 
 FIVE = timedelta(minutes=5)
 STALE = CLAIM_TTL.total_seconds() + 1

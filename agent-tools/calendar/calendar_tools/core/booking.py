@@ -79,7 +79,6 @@ from calendar_tools.core.deadline import (
 )
 from calendar_tools.core.display import format_slot
 from calendar_tools.core.identity import (
-    CELL_MINUTES,
     CalendarIdentityCache,
     CellKey,
     booking_ref,
