@@ -179,6 +179,8 @@ async def test_buffer_config_change_after_booking_does_not_disturb_it() -> None:
     assert (await w.book(body))["replayed"] is True
     resp = await w.book(w.body(start=SLOT + timedelta(minutes=30), phone=OTHER_PHONE))
     assert resp["detail"]["reason"] == "taken"
+    # The stamped-buffer claim cell, not calendar busy time, protects the tail.
+    assert (w.last_ctx.diagnostic, w.last_ctx.reason) == ("claim_conflict", "claim_held")
     assert {r.buffer_minutes for r in w.records().values()} == {15}
     assert len(w.events()) == 1
 

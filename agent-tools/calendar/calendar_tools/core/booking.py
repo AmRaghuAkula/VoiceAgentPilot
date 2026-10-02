@@ -114,7 +114,9 @@ ATTEMPT_ID_BYTES = 16  # 32 hex characters (the record allows 16 to 64)
 # turns up; bounded so two of our own attempts can never loop each other.
 MAX_ROUNDS = 3
 # A best-effort release still gets this long once the deadline is spent, so a
-# failed attempt does not leave its cells pending until `claim_ttl`.
+# failed attempt does not leave its cells pending until `claim_ttl`. A request
+# can therefore overrun the 8 s budget by about one grace per best-effort phase
+# (the `cancelled` path has two: a read and a release); UC09 measures it.
 RELEASE_GRACE = 0.5
 
 # Accepted `start` spellings: ISO 8601 date and time, optional seconds and
@@ -167,6 +169,10 @@ class _Request:
     contact_tag: str
     fingerprint: str
     booking_ref: str
+    # Set once our own fingerprint was seen at step 5 or 6 (an attempt of ours
+    # may be in flight): from then on no failure may answer
+    # `calendar_unavailable` ("nothing was created"); it is `booking_unconfirmed`.
+    seen_own: bool = False
 
     @property
     def deadline(self) -> Deadline:
@@ -319,11 +325,13 @@ class BookingService:
                 return outcome
             cells = await self._step5_recheck(req)
             if cells is _AGAIN:
+                req.seen_own = True
                 continue
             if isinstance(cells, dict):
                 return cells
             claimed = await self._step6_claim(req, cells)
             if claimed is _AGAIN:
+                req.seen_own = True
                 continue
             if isinstance(claimed, dict):
                 return claimed
@@ -496,6 +504,8 @@ class BookingService:
         try:
             held = await self._claim_call(req, lambda: self._store.read(req.first_cell))
         except (ClaimStoreUnavailable, DeadlineExceeded) as err:
+            if req.seen_own:
+                return _unconfirmed(req.ctx, err.diagnostic, getattr(err, "reason", None))
             return _unavailable(req.ctx, err)  # nothing claimed or created yet
         if held is None or held.record.fingerprint != req.fingerprint:
             return None  # empty or another fingerprint: decided at step 6
@@ -523,10 +533,13 @@ class BookingService:
 
     async def _poll_own_pending(self, req: _Request, record: ClaimRecord) -> Outcome | None:
         """Another attempt of ours is in flight (the retry-during-create case).
-        Poll until only the SF-7 lookup and one compare-and-swap still fit (S3).
+        Poll until only the SF-7 lookup, one read and one compare-and-swap of
+        the attempt's cells still fit (S3).
         Having seen our own pending claim, no failure here may answer
         `calendar_unavailable` ("nothing was created"): it is `booking_unconfirmed`."""
-        reserve = PROVIDER_TIMEOUT + CLAIM_TIMEOUT
+        # The SF-7 path needs one lookup, one parallel read of the attempt's
+        # cells and one parallel compare-and-swap.
+        reserve = PROVIDER_TIMEOUT + 2 * CLAIM_TIMEOUT
         ctx = req.ctx
         while req.deadline.remaining() - POLL_INTERVAL >= reserve:
             await self._clock.sleep(POLL_INTERVAL)
@@ -547,7 +560,7 @@ class BookingService:
         try:
             found = await self._provider_call(
                 req,
-                lambda: req.provider.find_bookings(req.cal, req.slot.start, req.slot.end, req.binding.binding_id),
+                lambda: req.provider.find_bookings(req.cal, req.slot.start, req.slot.end, record.binding_id),
             )
         except (ProviderError, DeadlineExceeded):
             return _unconfirmed(ctx, "replay_poll_timeout", "lookup_failed")
@@ -629,7 +642,8 @@ class BookingService:
             try:
                 held = await self._claim_call(req, lambda: self._store.read(req.first_cell))
             except (ClaimStoreUnavailable, DeadlineExceeded) as err:
-                return _unavailable(req.ctx, err)
+                # The busy time may be our own concurrent booking: unknown.
+                return _unconfirmed(req.ctx, err.diagnostic, getattr(err, "reason", None))
             if held is not None and held.record.fingerprint == req.fingerprint:
                 return _AGAIN
             return _taken(req.ctx, "busy")
@@ -661,7 +675,12 @@ class BookingService:
         acquired: list[tuple[CellKey, str]] = []
         for index, key in enumerate(cells):
             try:
-                result = await self._claim_call(req, lambda key=key: self._store.try_claim(key, record))
+                # Each claim keeps the create's and the finalize's budget in
+                # reserve, so a slow store cannot starve the create (the step-5
+                # guard's invariant, held at run time).
+                result = await self._claim_call(
+                    req, lambda key=key: self._store.try_claim(key, record), PROVIDER_TIMEOUT + CLAIM_TIMEOUT
+                )
             except (ClaimStoreUnavailable, DeadlineExceeded) as err:
                 await self._release_all(req, acquired)
                 return _unavailable(req.ctx, err)

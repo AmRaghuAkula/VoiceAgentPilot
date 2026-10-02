@@ -359,9 +359,9 @@ async def test_poll_stops_at_the_s3_boundary(w, monkeypatch) -> None:
     resp = await w.book()
     assert resp["status"] == "booking_unconfirmed"
     assert logged(w) == ("replay_poll_timeout", None)
-    # The SF-7 lookup still has a provider call and one compare-and-swap of budget.
-    assert 4.0 <= seen[0] < 4.0 + 0.25 + 1e-9
-    assert len(w.clock.sleeps) == 16  # 8 s - 16 x 0.25 s = exactly the 4 s reserve
+    # The SF-7 lookup still has a provider call, a read and one compare-and-swap of budget.
+    assert 5.0 <= seen[0] < 5.0 + 0.25 + 1e-9
+    assert len(w.clock.sleeps) == 12  # 8 s - 12 x 0.25 s = exactly the 5 s reserve
 
 
 async def test_own_pending_lookup_failure_is_unconfirmed(w) -> None:
@@ -580,7 +580,8 @@ async def test_busy_but_first_cell_ours_goes_back_to_step_2(w, monkeypatch) -> N
     monkeypatch.setattr(w.provider, "get_busy", busy_then_ours)
     resp = await w.book()
     assert resp["status"] == "booked" and resp["replayed"] is True
-    assert record is not None
+    assert record.fingerprint != our_fingerprint(w)
+    assert "create_event" not in w.provider.calls  # the planted event is not counted (created_event clears calls)
 
 
 async def test_get_busy_failure_is_calendar_unavailable(w) -> None:
@@ -798,12 +799,69 @@ async def test_deadline_spent_before_finalize_is_still_booked(w, monkeypatch) ->
     assert logged(w) == ("claim_finalize_failed", None)
 
 
-async def test_provider_ms_accumulates(w) -> None:
+async def test_provider_ms_accumulates(w, monkeypatch) -> None:
+    for method in ("find_bookings", "get_busy", "create_event"):
+        real = getattr(w.provider, method)
+
+        def slow(real=real):
+            async def call(*args):
+                w.clock.advance(0.05)
+                return await real(*args)
+
+            return call
+
+        monkeypatch.setattr(w.provider, method, slow())
     await w.book()
-    assert isinstance(w.last_ctx.provider_ms, int)
+    assert w.last_ctx.provider_ms == 150
 
 
 async def test_step_methods_exist_per_spec_step() -> None:
     names = [f"_step{i}_" for i in range(1, 9)]
     methods = [m for m in dir(booking.BookingService) if m.startswith("_step")]
     assert [m[:7] for m in sorted(methods)] == names
+
+
+async def test_claim_store_failure_after_own_cell_seen_is_unconfirmed(w, monkeypatch) -> None:
+    """Review r1: once our own fingerprint turned up at step 6 (an attempt of
+    ours may be creating), a failed re-read is `booking_unconfirmed`, never
+    `calendar_unavailable`."""
+    real = w.provider.get_busy
+
+    async def claim_first(*args):
+        result = await real(*args)
+        plant(w, cells=[SLOT])
+        w.store.fail_next("read")  # step 2's re-read, round 2
+        return result
+
+    monkeypatch.setattr(w.provider, "get_busy", claim_first)
+    resp = await w.book()
+    assert resp == {"status": "booking_unconfirmed"}
+    assert logged(w) == ("claim_store_unreachable", "injected")
+
+
+async def test_busy_reread_failure_is_unconfirmed(w) -> None:
+    """Review r1: the busy time may be our own concurrent booking."""
+    w.provider.add_external_event(w.binding.calendar_ref, SLOT, SLOT + timedelta(minutes=30))
+    gate = w.hooks.gate("before", "read", occurrence=2)
+    task = asyncio.create_task(w.book())
+    await gate.reached.wait()
+    w.store.fail_next("read")
+    gate.open()
+    resp = await task
+    assert resp == {"status": "booking_unconfirmed"}
+    assert logged(w) == ("claim_store_unreachable", "injected")
+
+
+async def test_slow_claims_cannot_starve_the_create(w) -> None:
+    """Review r1: each claim keeps the create's and finalize's budget in
+    reserve; a claim that would eat it is `deadline_exceeded`, released, and
+    no event is created."""
+    gate = w.hooks.gate("after", "try_claim", w.cell(SLOT + 2 * FIVE))
+    task = asyncio.create_task(w.book())
+    await gate.reached.wait()
+    w.clock.advance(8.0 - 4.0 + 0.001)  # less than create + finalize remains
+    gate.open()
+    resp = await task
+    assert resp == {"status": "calendar_unavailable", "retryable": True}
+    assert logged(w) == ("deadline_exceeded", None)
+    assert w.records() == {} and "create_event" not in w.provider.calls
