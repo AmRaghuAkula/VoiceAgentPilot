@@ -24,6 +24,11 @@ def encode_time(value: datetime) -> str:
     return f"{value.year:04d}-{value.month:02d}-{value.day:02d}T{value.hour:02d}:{value.minute:02d}Z"
 
 
+def iso_utc_minute(value: datetime) -> str:
+    """`2026-10-05T14:00Z`: the plan's UC04a name for `encode_time` (same rules)."""
+    return encode_time(value)
+
+
 def _field_bytes(value: object) -> bytes:
     if isinstance(value, bytes):
         return value

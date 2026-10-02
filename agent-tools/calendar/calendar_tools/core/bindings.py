@@ -46,6 +46,7 @@ MAX_DURATION_PLUS_BUFFER = 240
 CELL_MINUTES = 5
 
 _BINDING_ID = re.compile(r"[a-z0-9][a-z0-9-]{2,39}")
+BINDING_ID_PATTERN = _BINDING_ID  # shared with the claim record (UC04a)
 _PHONE_LIKE_RUN = re.compile(r"\d{7,}")
 _TYPE_ID = re.compile(r"[a-z][a-z0-9_]{1,31}")
 _HHMM = re.compile(r"([01]\d|2[0-3]):([0-5]\d)")
