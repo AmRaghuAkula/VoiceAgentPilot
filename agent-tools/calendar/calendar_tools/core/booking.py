@@ -572,7 +572,7 @@ class BookingService:
                 outcome = await self._recoverer(req).recover_cell(req.first_cell, held, req.verify_cache)
                 if outcome.action == "failed":
                     # That attempt of ours may have created: never "nothing was created".
-                    return self._unconfirmed_by(req, outcome.error)
+                    return self._own_recovery_failed(req, outcome.error)
                 self._note_recovery(req, outcome)
                 continue
             polled = await self._poll_own_pending(req, record, req.first_cell)
@@ -586,11 +586,22 @@ class BookingService:
         diagnostic = getattr(err, "diagnostic", None) or "create_unconfirmed"
         return _unconfirmed(req.ctx, diagnostic, getattr(err, "reason", None))
 
+    @staticmethod
+    def _own_recovery_failed(req: _Request, err: BaseException | None) -> Outcome:
+        """Recovery of an earlier attempt of ours failed: whether it created is
+        unknown. Logged with the alerted `create_unconfirmed` (spec F7, F15)
+        and the cause's diagnostic as the reason (review r1 S2)."""
+        return _unconfirmed(req.ctx, "create_unconfirmed", getattr(err, "diagnostic", None))
+
     async def _replay_booked(self, req: _Request, record: ClaimRecord) -> Outcome:
         event_id = record.event_id
         assert event_id is not None  # a booked record always has one
         try:
-            event = await self._provider_call(req, lambda: req.provider.get_event(req.cal, event_id))
+            if event_id in req.verify_cache:  # once per distinct event ID per request
+                event = req.verify_cache[event_id]
+            else:
+                event = await self._provider_call(req, lambda: req.provider.get_event(req.cal, event_id))
+                req.verify_cache[event_id] = event
         except (ProviderError, DeadlineExceeded) as err:
             # Partner ruling F1: an event of ours exists or existed, so this is
             # "unknown", never `calendar_unavailable` ("no event was created").
@@ -657,6 +668,9 @@ class BookingService:
                 req, lambda: req.provider.find_bookings(req.cal, now, until, req.binding.binding_id)
             )
         except (ProviderError, DeadlineExceeded) as err:
+            if req.seen_own:
+                # An attempt of ours was seen and may have created (review r1 N4).
+                return _unconfirmed(req.ctx, err.diagnostic, getattr(err, "reason", None))
             return _unavailable(req.ctx, err)
         for found in records:
             if found.meta.fingerprint == req.fingerprint:
@@ -798,19 +812,23 @@ class BookingService:
             key, held, req.verify_cache
         )
         self._note_recovery(req, outcome)
-        if outcome.freed:
+        if outcome.freed or outcome.rechecked:
+            # Freed: claim it once more. Rechecked: recovery judged a re-read
+            # record that may have another holder, so `try_claim` once more and
+            # classify the cell afresh (review r1 B1); `retried` bounds it.
             return _RETRY
         await self._release_all(req, acquired)
         if outcome.action == "failed":
             if ours:
                 # An earlier attempt of ours may have created: unknown.
-                return self._unconfirmed_by(req, outcome.error)
+                return self._own_recovery_failed(req, outcome.error)
             return _unavailable(req.ctx, outcome.error)  # treated as held; nothing created
         if ours:
-            if outcome.event is not None:
+            event = outcome.event
+            if event is not None and event.meta.fingerprint == req.fingerprint:
                 # That attempt of ours did create (finalized), or its booking is
                 # verified (kept): it is this booking.
-                return _booked(req, outcome.event.start, outcome.event.end, replayed=True)
+                return _booked(req, event.start, event.end, replayed=True)
             req.seen_own = True
             return _AGAIN
         return _taken(req.ctx, "claim_held")

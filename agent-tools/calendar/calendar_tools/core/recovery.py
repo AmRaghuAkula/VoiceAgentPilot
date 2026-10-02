@@ -29,6 +29,7 @@ here (F4: untrusted).
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -85,6 +86,10 @@ class RecoveryOutcome:
     error: Exception | None = None
     acted: bool = False
     reason: str | None = None  # what was recovered, for the log line's `reason`
+    # True when a lost compare-and-swap made recovery judge a re-read record,
+    # which may belong to a different holder than the one the caller met: the
+    # caller must re-classify the cell rather than act on its first reading.
+    rechecked: bool = False
 
     @property
     def freed(self) -> bool:
@@ -145,21 +150,24 @@ class Recoverer:
         if not isinstance(cell, CellKey) or not isinstance(held, Held) or not held.record.covers(cell):
             raise ValueError("held must be the record read from this cell")
         current: Held | None = held
+        rechecked = False
         for _ in range(MAX_CAS_ROUNDS):
             assert current is not None
             try:
-                return await self._evaluate(cell, current, verify_cache)
+                outcome = await self._evaluate(cell, current, verify_cache)
+                return dataclasses.replace(outcome, rechecked=rechecked)
             except _LostCas:
                 pass
             except (ProviderError, ClaimStoreUnavailable, DeadlineExceeded) as err:
-                return RecoveryOutcome("failed", held=current, error=err)
+                return RecoveryOutcome("failed", held=current, error=err, rechecked=rechecked)
+            rechecked = True
             try:
                 current = await self._claim_call(lambda: self._store.read(cell))
             except (ClaimStoreUnavailable, DeadlineExceeded) as err:
-                return RecoveryOutcome("failed", held=current, error=err)
+                return RecoveryOutcome("failed", held=current, error=err, rechecked=True)
             if current is None:
-                return RecoveryOutcome("released")  # someone else freed it
-        return RecoveryOutcome("held", held=current)
+                return RecoveryOutcome("released", rechecked=True)  # someone else freed it
+        return RecoveryOutcome("held", held=current, rechecked=True)
 
     # --- the table -------------------------------------------------------------------
 
