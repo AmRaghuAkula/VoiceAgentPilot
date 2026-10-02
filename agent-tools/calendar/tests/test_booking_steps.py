@@ -48,13 +48,13 @@ def our_fingerprint(w: World, start: datetime = SLOT, duration: int = 30, phone:
 
 def plant(w: World, *, fp: str | None = None, state: str = "pending", start: datetime = SLOT,
           duration: int = 30, attempt: str = "ab" * 8, event_id: str | None = None,
-          cells: list[datetime] | None = None, phone: str = PHONE) -> ClaimRecord:
+          cells: list[datetime] | None = None, phone: str = PHONE, binding_id: str = "test-alpha") -> ClaimRecord:
     """Write a claim record directly into the fake store (as another attempt would)."""
     tag = contact_tag(FINGERPRINT_KEY, Contact(name=None, phone=phone, email=None))
     record = ClaimRecord.pending(
         calendar_key=w.cal_key(), start=start, end=start + timedelta(minutes=duration), buffer_minutes=0,
         fingerprint=fp or our_fingerprint(w, start, duration), attempt_id=attempt, contact_tag=tag,
-        binding_id="test-alpha",
+        binding_id=binding_id,
     )
     if state == "booked":
         record = record.booked(event_id or "evt-x")
@@ -64,9 +64,9 @@ def plant(w: World, *, fp: str | None = None, state: str = "pending", start: dat
 
 
 async def created_event(w: World, *, fp: str | None = None, start: datetime = SLOT,
-                        end: datetime | None = None, phone: str = PHONE) -> str:
+                        end: datetime | None = None, phone: str = PHONE, binding_id: str = "test-alpha") -> str:
     tag = contact_tag(FINGERPRINT_KEY, Contact(name=None, phone=phone, email=None))
-    meta = BookingMeta(SERVICE_TAG, "test-alpha", fp or our_fingerprint(w, start, phone=phone), tag, "REF001")
+    meta = BookingMeta(SERVICE_TAG, binding_id, fp or our_fingerprint(w, start, phone=phone), tag, "REF001")
     event = NewEvent(start, end or start + timedelta(minutes=30), "America/Toronto", "t", "d", meta, meta.fingerprint)
     record = await w.provider.create_event(w.binding.calendar_ref, event)
     w.provider.calls.clear()
@@ -865,3 +865,43 @@ async def test_slow_claims_cannot_starve_the_create(w) -> None:
     assert resp == {"status": "calendar_unavailable", "retryable": True}
     assert logged(w) == ("deadline_exceeded", None)
     assert w.records() == {} and "create_event" not in w.provider.calls
+
+
+async def test_sf7_lookup_uses_the_records_binding_on_a_shared_calendar() -> None:
+    """Review r2: the original ran through test-beta (same physical calendar),
+    created the event and never finalized; a retry through test-alpha finds it
+    with the record's own binding_id."""
+    w = World()
+    w.provider.canonical_ids["primary"] = "cal-explicit-0001"
+    w.add_binding("test-beta", calendar_id="cal-explicit-0001", credential_secret_name="cal-binding-test-beta-fake")
+    record = plant(w, binding_id="test-beta")
+    event_id = await created_event(w, binding_id="test-beta")
+    resp = await w.book()
+    assert resp["status"] == "booked" and resp["replayed"] is True
+    assert {(r.state, r.event_id, r.attempt_id) for r in w.records().values()} == {("booked", event_id, record.attempt_id)}
+    assert "create_event" not in w.provider.calls
+
+
+async def test_own_attempt_flickering_is_bounded_and_unconfirmed(w, monkeypatch) -> None:
+    """Review r2: our own first cell appears at every step 6 and is gone at
+    every step 2; after MAX_ROUNDS the answer is unknown, never taken."""
+    real_claim, real_read = w.store.try_claim, w.store.read
+    first = w.cell(SLOT)
+
+    async def claim(key, record):
+        if key == first:
+            plant(w, cells=[SLOT])
+        return await real_claim(key, record)
+
+    async def read(key):
+        if key == first:
+            w.store._cells.pop(first, None)
+        return await real_read(key)
+
+    monkeypatch.setattr(w.store, "try_claim", claim)
+    monkeypatch.setattr(w.store, "read", read)
+    resp = await w.book()
+    assert resp == {"status": "booking_unconfirmed"}
+    assert logged(w) == ("replay_poll_timeout", "replay_loop")
+    assert w.provider.calls.count("get_busy") == booking.MAX_ROUNDS
+    assert "create_event" not in w.provider.calls

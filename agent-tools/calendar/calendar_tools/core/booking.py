@@ -30,7 +30,7 @@ so the code reads against the spec:
 - an own-fingerprint cell on a later cell releases the acquired cells and
   answers `booking_unconfirmed`;
 - an uncertain create (`ProviderTimeout`, `ProviderUnavailable`, or any other
-  failure that may have reached the vendor) leaves the claims `pending` and
+  `ProviderError` but the definitive refusals) leaves the claims `pending` and
   answers `booking_unconfirmed`, with no lookup or retry.
 Each can refuse a bookable slot; none can double-book or report a booking
 that does not exist.

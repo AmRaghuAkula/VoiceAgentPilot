@@ -91,6 +91,7 @@ async def test_each_binding_answers_with_its_own_types_and_hours(g4) -> None:
     _, b = await g4.post("test-beta", "check-availability", {"from_date": "2026-10-06", "to_date": "2026-10-06"}, jt.PRINCIPAL_B)
     assert [t["id"] for t in a["appointment_types"]] == ["phone_call", "in_person"]
     assert [t["id"] for t in b["appointment_types"]] == ["video_call"]
+    assert a["slots"] and b["slots"]
     assert {s["start"][11:13] for s in a["slots"]} <= {"14", "15", "16", "17", "18"}
     assert {s["start"][11:13] for s in b["slots"]} <= {"09", "10"}
     assert g4.providers["fake-a"].calls == ["get_busy"] and g4.providers["fake-b"].calls == ["get_busy"]
