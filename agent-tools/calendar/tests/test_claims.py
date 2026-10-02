@@ -178,8 +178,40 @@ def test_from_json_rejects_anything_not_exactly_a_record(raw):
 
 
 def test_record_repr_is_safe():
-    # Every field is an HMAC, a nonce, a time or a binding ID: nothing personal.
-    assert "test-alpha" in repr(pending())
+    # No contact tag (a stable pseudonym), fingerprint, calendar key or event ID.
+    rec = pending().booked("evt-0001")
+    for text in (repr(rec), str(rec), repr(Held(rec, '"e"', timedelta(0)))):
+        assert "test-alpha" in text and "booked" in text and "2026-10-05T14:00Z" in text
+        for hidden in (TAG, FP, CAL, "evt-0001"):
+            assert hidden not in text
+
+
+def test_pending_at_the_end_of_the_calendar_is_invalid_not_overflow():
+    end_of_time = datetime(9999, 12, 31, 23, 50, tzinfo=UTC)
+    with pytest.raises(ClaimRecordInvalid):
+        pending(start=end_of_time, end=end_of_time + timedelta(minutes=5), buffer_minutes=5)
+
+
+def test_largest_valid_record_fits_the_size_cap():
+    from calendar_tools.core.claims import MAX_RECORD_BYTES
+
+    widest = chr(0x1F600) * 1024  # a non-BMP character escapes to 12 bytes
+    rec = pending(binding_id="a" * 40).booked(widest)
+    raw = rec.to_json()
+    assert len(raw) <= MAX_RECORD_BYTES
+    assert ClaimRecord.from_json(raw) == rec
+    assert ClaimRecord.from_json(raw.decode("utf-8")) == rec
+
+
+def test_str_input_is_capped_in_utf8_bytes():
+    from calendar_tools.core.claims import MAX_RECORD_BYTES
+
+    # Under the cap in characters, over it in UTF-8 bytes.
+    text = '{"pad": "' + chr(0x20AC) * (MAX_RECORD_BYTES // 2) + '"}'
+    assert len(text) <= MAX_RECORD_BYTES < len(text.encode("utf-8"))
+    with pytest.raises(ClaimRecordInvalid) as info:
+        ClaimRecord.from_json(text)
+    assert str(info.value) == "too_large"
 
 
 # --- ClaimStoreUnavailable ---------------------------------------------------------

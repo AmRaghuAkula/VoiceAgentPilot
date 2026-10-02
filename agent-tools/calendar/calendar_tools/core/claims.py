@@ -224,10 +224,14 @@ class ClaimRecord:
             raise TypeError("start and end must be datetimes")
         # Bounded before `last_cell`'s arithmetic, as `__post_init__` does.
         _check(0 <= buffer_minutes <= MAX_DURATION_PLUS_BUFFER, "buffer_minutes")
+        try:
+            last = last_cell(start, end, buffer_minutes)
+        except OverflowError:  # a range at the very end of the calendar
+            raise ClaimRecordInvalid("last_cell") from None
         return cls(
             calendar_key=calendar_key,
             first_cell=floor5(start),
-            last_cell=last_cell(start, end, buffer_minutes),
+            last_cell=last,
             start=start,
             end=end,
             buffer_minutes=buffer_minutes,
@@ -237,6 +241,16 @@ class ClaimRecord:
             binding_id=binding_id,
             state="pending",
         )
+
+    def __repr__(self) -> str:
+        # No contact_tag (a stable per-contact pseudonym), fingerprint, calendar
+        # key or event ID: a logged repr can't link one contact across requests.
+        return (
+            f"ClaimRecord(state={self.state}, binding_id={self.binding_id}, "
+            f"cells={encode_time(self.first_cell)}..{encode_time(self.last_cell)})"
+        )
+
+    __str__ = __repr__
 
     def booked(self, event_id: str) -> ClaimRecord:
         """The same record, finalized with the created event's ID (step 8)."""
@@ -259,11 +273,15 @@ class ClaimRecord:
         """Parse a stored record strictly: exactly the v1 fields, nothing else."""
         if not isinstance(raw, (bytes, str)):
             raise ClaimRecordInvalid("not_json")
-        # A v1 record is well under 8 KB; the cap also bounds parsing work.
+        # The largest valid v1 record is ~12.6 KiB (a 1024-character non-BMP
+        # event_id, \u-escaped by json.dumps); the cap leaves headroom and bounds
+        # parsing work. A str is measured as UTF-8 bytes, like stored content.
+        if isinstance(raw, str):
+            _check(len(raw) <= MAX_RECORD_BYTES, "too_large")  # cheap pre-check before encoding
+            raw = raw.encode("utf-8", "surrogatepass")
         _check(len(raw) <= MAX_RECORD_BYTES, "too_large")
         try:
-            text = raw.decode("utf-8") if isinstance(raw, bytes) else raw
-            doc = json.loads(text)
+            doc = json.loads(raw.decode("utf-8"))
         except (UnicodeDecodeError, ValueError, RecursionError):
             raise ClaimRecordInvalid("not_json") from None
         _check(isinstance(doc, dict), "not_object")

@@ -58,6 +58,16 @@ def test_zero_offset_zone_is_normalized_to_utc():
     assert CellKey(_cal_key(), london) == CellKey(_cal_key(), datetime(2026, 12, 7, 14, 0, tzinfo=UTC))
 
 
+@pytest.mark.parametrize(
+    ("minutes", "buffer"),
+    [(245, 0), (235, 10), (5, 245), (60 * 24 * 365, 0)],
+    ids=["duration", "duration-plus-buffer", "buffer", "a-year"],
+)
+def test_cell_range_refuses_more_than_the_bindings_limit(minutes, buffer):
+    with pytest.raises(ValueError):
+        cell_range(T0, T0 + timedelta(minutes=minutes), buffer)
+
+
 def test_cell_range_240_minutes_is_48_cells():
     assert len(cell_range(T0, T0 + timedelta(minutes=240), 0)) == 48
     assert len(cell_range(T0, T0 + timedelta(minutes=210), 30)) == 48

@@ -193,6 +193,20 @@ def test_absent_name_is_none():
     assert ok(CA, {"name": None, "phone": "6135550123"}).name is None
 
 
+@pytest.mark.parametrize(
+    "raw",
+    [chr(0x3164) * 2, chr(0x2800), chr(0x115F) + chr(0x1160), "...", "- -", chr(0xFFA0) + " ."],
+    ids=["hangul-filler", "braille-blank", "jamo-fillers", "dots", "dashes", "halfwidth-filler"],
+)
+def test_visibly_blank_name_rejected(raw):
+    assert bad(CA, {"name": raw, "phone": "6135550123"}) == ["contact.name"]
+
+
+def test_name_with_one_letter_or_digit_accepted():
+    assert ok(CA, {"name": "J.", "phone": "6135550123"}).name == "J."
+    assert ok(CA, {"name": "7", "phone": "6135550123"}).name == "7"
+
+
 def test_name_keeps_letters_from_other_scripts():
     assert ok(CA, {"name": "Zoë Ñame", "phone": "6135550123"}).name == "Zoë Ñame"
 

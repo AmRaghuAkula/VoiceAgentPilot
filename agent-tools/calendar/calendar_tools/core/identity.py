@@ -19,6 +19,7 @@ import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
+from calendar_tools.core.bindings import MAX_DURATION_PLUS_BUFFER
 from calendar_tools.core.contact import Contact
 from calendar_tools.core.deadline import PROVIDER_TIMEOUT, Deadline, DeadlineExceeded
 from calendar_tools.core.encoding import canonical_encode, encode_time
@@ -164,6 +165,11 @@ def cell_range(start: datetime, end: datetime, buffer_minutes: int) -> list[date
         raise ValueError("buffer_minutes must not be negative")
     if end <= start:
         raise ValueError("end must be after start")
+    # Spec 4.1 caps duration + buffer, so no booking ever needs more cells.
+    if buffer_minutes > MAX_DURATION_PLUS_BUFFER or end - start > timedelta(
+        minutes=MAX_DURATION_PLUS_BUFFER - buffer_minutes
+    ):
+        raise ValueError("duration plus buffer exceeds the bindings limit")
     first = floor5(start)
     stop = ceil5(end + timedelta(minutes=buffer_minutes))
     count = (stop - first) // _CELL

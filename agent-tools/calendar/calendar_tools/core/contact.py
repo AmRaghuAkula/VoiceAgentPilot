@@ -83,7 +83,19 @@ def _clean_name(value: Any) -> str | None:
     stripped = _WHITESPACE_RUN.sub(" ", kept).strip()
     if not stripped or len(stripped) > MAX_NAME_CHARS:
         return None
+    if not any(_is_visible_letter_or_digit(ch) for ch in stripped):
+        # A visibly blank name (fillers, braille blank, punctuation only) would
+        # put an empty-looking name into the host's event; refuse it.
+        return None
     return stripped
+
+
+# Letters that render as blank space (Hangul fillers) and the braille blank.
+_BLANK_LOOKING = frozenset(map(chr, (0x115F, 0x1160, 0x3164, 0xFFA0, 0x2800)))
+
+
+def _is_visible_letter_or_digit(ch: str) -> bool:
+    return unicodedata.category(ch)[0] in ("L", "N") and ch not in _BLANK_LOOKING
 
 
 def _clean_phone(value: Any, region: str) -> str | None:
