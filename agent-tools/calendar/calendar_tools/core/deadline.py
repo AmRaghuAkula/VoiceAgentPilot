@@ -15,6 +15,7 @@ TOTAL_BUDGET = 8.0  # seconds per request
 RESERVE = 3.0  # seconds kept back for one provider call already in flight (P17)
 PROVIDER_TIMEOUT = 3.0
 CLAIM_TIMEOUT = 1.0
+SECRET_TIMEOUT = 3.0  # Key Vault (plan section 1, "Engineering rules")
 EXPECTED_CLAIM_LATENCY = 0.1
 
 
