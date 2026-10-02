@@ -1183,3 +1183,34 @@ async def test_step3_failure_after_our_own_attempt_was_seen_is_unconfirmed(w, mo
     assert resp == {"status": "booking_unconfirmed"}
     assert logged(w) == ("provider_unavailable", "http_503")
     assert "create_event" not in w.provider.calls
+
+
+# --- UC04c review r2 ------------------------------------------------------------------
+
+
+async def test_recovery_failure_after_a_lost_cas_on_a_foreign_cell_is_unavailable(w, monkeypatch) -> None:
+    """Review r2 S-r2-1: recovery of another contact's stale claim loses its
+    CAS (the cell was rewritten, still foreign and stale) and the re-evaluation's
+    lookup fails: `calendar_unavailable`, as without the lost CAS; never `taken`."""
+    cell = SLOT + 2 * FIVE
+    plant(w, fp="e" * 64, cells=[cell], age=STALE, phone=OTHER_PHONE)
+
+    async def rewrite_and_break():
+        plant(w, fp="e" * 64, attempt="cd" * 8, cells=[cell], age=STALE, phone=OTHER_PHONE)
+        w.provider.fail_next("find_bookings", ProviderUnavailable("http_503"))
+
+    _on_recovery_lookup(w, monkeypatch, rewrite_and_break)
+    resp = await w.book()
+    assert resp == {"status": "calendar_unavailable", "retryable": True}
+    assert logged(w) == ("provider_unavailable", "http_503")
+    assert [k.start for k in w.records()] == [cell]  # acquired released, foreign cell untouched
+    assert "create_event" not in w.provider.calls
+
+
+async def test_step2_finalize_replays_from_the_recovery_lookup(w) -> None:
+    """Review r2 N-r2-1: no second `get_event` after recovery found the event."""
+    plant(w, age=STALE)
+    await created_event(w)
+    resp = await w.book()
+    assert resp["status"] == "booked" and resp["replayed"] is True
+    assert "get_event" not in w.provider.calls

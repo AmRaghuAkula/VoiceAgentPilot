@@ -571,9 +571,15 @@ class BookingService:
                 recovered_once = True
                 outcome = await self._recoverer(req).recover_cell(req.first_cell, held, req.verify_cache)
                 if outcome.action == "failed":
-                    # That attempt of ours may have created: never "nothing was created".
+                    # That attempt of ours may have created: never "nothing was
+                    # created". (After a lost CAS the record judged may be
+                    # another contact's; "unknown" stays the conservative answer.)
                     return self._own_recovery_failed(req, outcome.error)
                 self._note_recovery(req, outcome)
+                if outcome.action == "finalized" and outcome.event is not None:
+                    # The re-read replays from this lookup, not a second call
+                    # that could run out of budget (review r2 N-r2-1).
+                    req.verify_cache[outcome.event.event_id] = outcome.event
                 continue
             polled = await self._poll_own_pending(req, record, req.first_cell)
             if polled is _STALE:
@@ -812,10 +818,24 @@ class BookingService:
             key, held, req.verify_cache
         )
         self._note_recovery(req, outcome)
-        if outcome.freed or outcome.rechecked:
-            # Freed: claim it once more. Rechecked: recovery judged a re-read
-            # record that may have another holder, so `try_claim` once more and
-            # classify the cell afresh (review r1 B1); `retried` bounds it.
+        if outcome.freed:
+            return _RETRY  # claim it once more
+        if outcome.rechecked:
+            # Recovery judged a re-read record that may have another holder.
+            judged = outcome.held.record if outcome.held is not None else None
+            if (
+                outcome.action == "failed"
+                and not ours
+                and judged is not None
+                and judged.fingerprint != req.fingerprint
+            ):
+                # Still another contact's claim and recovery could not decide
+                # it: treated as held, surfaced as `calendar_unavailable` like
+                # the same failure without a lost CAS (review r2 S-r2-1).
+                await self._release_all(req, acquired)
+                return _unavailable(req.ctx, outcome.error)
+            # Otherwise `try_claim` once more and classify the cell afresh
+            # (review r1 B1); `retried` bounds it.
             return _RETRY
         await self._release_all(req, acquired)
         if outcome.action == "failed":
