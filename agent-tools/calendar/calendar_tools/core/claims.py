@@ -40,7 +40,7 @@ import json
 import re
 from collections import defaultdict, deque
 from dataclasses import dataclass, replace
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar, Literal, Protocol, runtime_checkable
 
 from calendar_tools.core.bindings import BINDING_ID_PATTERN, MAX_DURATION_PLUS_BUFFER
@@ -177,15 +177,25 @@ class ClaimRecord:
         _check(isinstance(self.binding_id, str) and bool(BINDING_ID_PATTERN.fullmatch(self.binding_id)), "binding_id")
         for name in ("first_cell", "last_cell", "start", "end"):
             _check(_is_utc_minute(getattr(self, name)), name)
+            # Any zero-offset zone is accepted; the record holds `datetime.UTC` only.
+            object.__setattr__(self, name, getattr(self, name).astimezone(UTC))
         _check(type(self.buffer_minutes) is int, "buffer_minutes")
-        _check(self.buffer_minutes >= 0 and self.buffer_minutes % 5 == 0, "buffer_minutes")
+        # Bounded before any arithmetic, so a corrupt record can't overflow it.
+        _check(
+            0 <= self.buffer_minutes <= MAX_DURATION_PLUS_BUFFER and self.buffer_minutes % 5 == 0,
+            "buffer_minutes",
+        )
         _check(self.end > self.start, "end")
         # A booking never spans more than duration + buffer allows (spec 4.1), so
         # a corrupt or hostile record can't describe a huge range.
         span = self.end - self.start + timedelta(minutes=self.buffer_minutes)
         _check(span <= timedelta(minutes=MAX_DURATION_PLUS_BUFFER), "end")
         _check(self.first_cell == floor5(self.start), "first_cell")
-        _check(self.last_cell == last_cell(self.start, self.end, self.buffer_minutes), "last_cell")
+        try:
+            expected_last = last_cell(self.start, self.end, self.buffer_minutes)
+        except OverflowError:  # a range at the very end of the calendar
+            raise ClaimRecordInvalid("last_cell") from None
+        _check(self.last_cell == expected_last, "last_cell")
         if self.state == "pending":
             _check(self.event_id is None, "event_id")
         elif self.state == "booked":
@@ -265,7 +275,7 @@ class ClaimRecord:
             return cls(**values)
         except ClaimRecordInvalid:
             raise
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             raise ClaimRecordInvalid("fields") from None
 
 
@@ -338,8 +348,11 @@ class FakeClaimStore:
     - `fail_next(op, exc=None, after_commit=False)`: the next `op` raises
       `exc` (default `ClaimStoreUnavailable("injected")`), one-shot, queued per
       operation. With `after_commit=True` the write is applied first, then the
-      call raises: a response lost after the store committed. A lost
-      compare-and-swap commits nothing, so it leaves such a failure armed.
+      call raises: a response lost after the store committed. On a path that
+      completes without writing (a `Held` answer, a no-op release of an empty
+      cell) it still fires, as a lost response. A lost compare-and-swap, or a
+      corrupt stored record, already raises; it leaves such a failure armed
+      for the next call.
     - `plant_raw(key, data)`: store unparseable content (a corrupt blob).
     - `hooks`: an optional `ClaimHooks` (barriers for deterministic races).
     - `calls`, `records()`: what happened and what is held, for assertions.
@@ -372,6 +385,10 @@ class FakeClaimStore:
 
     def plant_raw(self, key: CellKey, data: bytes) -> None:
         """Store arbitrary bytes in a cell, as a corrupt blob would hold them."""
+        if not isinstance(key, CellKey):
+            raise TypeError("key must be a CellKey")
+        if not isinstance(data, bytes):
+            raise TypeError("data must be bytes")
         self._etag_counter += 1
         self._cells[key] = _Cell(data, f'"fake-{self._etag_counter}"', self._clock.now())
 
@@ -385,7 +402,7 @@ class FakeClaimStore:
         failure = await self._enter("try_claim", key)
         existing = self._cells.get(key)
         if existing is not None:
-            result: Claimed | Held = self._held(existing)
+            result: Claimed | Held = self._held_or_requeue("try_claim", existing, failure)
         else:
             etag = self._write(key, record)
             result = Claimed(etag)
@@ -420,7 +437,7 @@ class FakeClaimStore:
             raise TypeError("key must be a CellKey")
         failure = await self._enter("read", key)
         existing = self._cells.get(key)
-        result = None if existing is None else self._held(existing)
+        result = None if existing is None else self._held_or_requeue("read", existing, failure)
         return await self._leave("read", key, failure, result)
 
     # internals
@@ -444,8 +461,8 @@ class FakeClaimStore:
         return result
 
     def _requeue(self, operation: str, failure: _Failure | None) -> None:
-        # An after-commit failure is for a write that commits; a lost CAS commits
-        # nothing, so the failure stays armed for the next call.
+        # The call already raises (a lost CAS, a corrupt record), so an armed
+        # after-commit failure stays armed for the next call.
         if failure is not None:
             self._failures[operation].appendleft(failure)
 
@@ -454,6 +471,13 @@ class FakeClaimStore:
         etag = f'"fake-{self._etag_counter}"'
         self._cells[key] = _Cell(record.to_json(), etag, self._clock.now())
         return etag
+
+    def _held_or_requeue(self, operation: str, cell: _Cell, failure: _Failure | None) -> Held:
+        try:
+            return self._held(cell)
+        except ClaimStoreUnavailable:
+            self._requeue(operation, failure)
+            raise
 
     def _held(self, cell: _Cell) -> Held:
         try:

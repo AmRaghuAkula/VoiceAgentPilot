@@ -229,6 +229,56 @@ async def test_a_lost_cas_leaves_an_after_commit_failure_armed(operation):
         assert held is None
 
 
+async def test_after_commit_failure_fires_on_paths_that_write_nothing():
+    # A Held answer or a no-op release still has a response that can be lost.
+    store = FakeClaimStore(FakeClock())
+    key = CellKey(CAL, T0)
+    store.fail_next("release", after_commit=True)
+    with pytest.raises(ClaimStoreUnavailable):
+        await store.release(key, '"any"')
+    await store.release(key, '"any"')  # one-shot
+    await store.try_claim(key, pending())
+    store.fail_next("try_claim", after_commit=True)
+    with pytest.raises(ClaimStoreUnavailable):
+        await store.try_claim(key, pending(attempt_id="fedcba9876543210"))
+
+
+async def test_a_corrupt_record_leaves_an_after_commit_failure_armed():
+    store = FakeClaimStore(FakeClock())
+    key = CellKey(CAL, T0)
+    store.plant_raw(key, b"not json")
+    store.fail_next("read", ClaimStoreUnavailable("timeout"), after_commit=True)
+    with pytest.raises(ClaimStoreUnavailable) as first:
+        await store.read(key)
+    assert first.value.reason == "record_invalid"
+    await store.try_claim(CellKey(CAL, T0 + timedelta(hours=1)), pending(start=T0 + timedelta(hours=1), end=T0 + timedelta(hours=1, minutes=30)))
+    with pytest.raises(ClaimStoreUnavailable) as second:
+        await store.read(CellKey(CAL, T0 + timedelta(hours=1)))
+    assert second.value.reason == "timeout"
+
+
+def test_plant_raw_checks_its_arguments():
+    store = FakeClaimStore(FakeClock())
+    with pytest.raises(TypeError):
+        store.plant_raw("cell", b"x")  # type: ignore[arg-type]
+    with pytest.raises(TypeError):
+        store.plant_raw(CellKey(CAL, T0), "x")  # type: ignore[arg-type]
+
+
+def test_record_times_are_normalized_to_utc():
+    from zoneinfo import ZoneInfo
+
+    london = datetime(2026, 12, 7, 14, 0, tzinfo=ZoneInfo("Europe/London"))
+    rec = pending(start=london, end=london + timedelta(minutes=30))
+    for name in ("start", "end", "first_cell", "last_cell"):
+        assert getattr(rec, name).tzinfo is UTC
+
+
+def test_record_buffer_is_bounded():
+    with pytest.raises(ClaimRecordInvalid):
+        pending(end=T0 + timedelta(minutes=5), buffer_minutes=245)
+
+
 def test_record_span_is_capped_at_duration_plus_buffer_limit():
     pending(end=T0 + timedelta(minutes=230), buffer_minutes=10)  # 240: allowed
     with pytest.raises(ClaimRecordInvalid):

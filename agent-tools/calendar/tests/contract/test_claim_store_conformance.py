@@ -270,8 +270,27 @@ async def test_injected_failure_raises_claim_store_unavailable_and_changes_nothi
     await call()  # one-shot
 
 
+def _corrupted(**changes) -> bytes:
+    doc = json.loads(record().to_json())
+    doc.update(changes)
+    return json.dumps(doc).encode()
+
+
+CORRUPT = {
+    "text": b"not json",
+    "empty": b"{}",
+    "v2": b'{"v": 2}',
+    "bytes": b"\xff\xfe",
+    "huge-buffer": _corrupted(buffer_minutes=10**13),
+    "year-9999": _corrupted(
+        start="9999-12-31T23:50Z", end="9999-12-31T23:55Z", first_cell="9999-12-31T23:50Z",
+        last_cell="9999-12-31T23:55Z", buffer_minutes=5,
+    ),
+}
+
+
 @pytest.mark.parametrize("operation", ["read", "try_claim"])
-@pytest.mark.parametrize("data", [b"not json", b"{}", b'{"v": 2}', b"\xff\xfe"], ids=["text", "empty", "v2", "bytes"])
+@pytest.mark.parametrize("data", list(CORRUPT.values()), ids=list(CORRUPT))
 async def test_a_corrupt_stored_record_is_unavailable_never_empty(h, operation, data):
     h.plant_raw(key(), data)
     call = {
