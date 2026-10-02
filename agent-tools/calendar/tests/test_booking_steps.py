@@ -25,7 +25,7 @@ from calendar_tools.core.ports import (
     SecretInvalid,
     SecretStoreUnavailable,
 )
-from tests.booking_world import NAME, OTHER_PHONE, PHONE, SLOT, World
+from tests.booking_world import NAME, OTHER_PHONE, PHONE, SLOT, World, created_event, our_fingerprint, plant
 from tests.fakes.keyring import FINGERPRINT_KEY, SLOT_KEY_2, SLOT_KEY_3, make_keys
 
 FIVE = timedelta(minutes=5)
@@ -38,39 +38,6 @@ def w() -> World:
 
 def logged(w: World) -> tuple[str | None, str | None]:
     return w.last_ctx.diagnostic, w.last_ctx.reason
-
-
-def our_fingerprint(w: World, start: datetime = SLOT, duration: int = 30, phone: str = PHONE,
-                    type_id: str = "phone_call") -> str:
-    tag = contact_tag(FINGERPRINT_KEY, Contact(name=None, phone=phone, email=None))
-    return fingerprint(FINGERPRINT_KEY, w.cal_key(), start, start + timedelta(minutes=duration), tag, type_id)
-
-
-def plant(w: World, *, fp: str | None = None, state: str = "pending", start: datetime = SLOT,
-          duration: int = 30, attempt: str = "ab" * 8, event_id: str | None = None,
-          cells: list[datetime] | None = None, phone: str = PHONE, binding_id: str = "test-alpha") -> ClaimRecord:
-    """Write a claim record directly into the fake store (as another attempt would)."""
-    tag = contact_tag(FINGERPRINT_KEY, Contact(name=None, phone=phone, email=None))
-    record = ClaimRecord.pending(
-        calendar_key=w.cal_key(), start=start, end=start + timedelta(minutes=duration), buffer_minutes=0,
-        fingerprint=fp or our_fingerprint(w, start, duration), attempt_id=attempt, contact_tag=tag,
-        binding_id=binding_id,
-    )
-    if state == "booked":
-        record = record.booked(event_id or "evt-x")
-    for at in cells or [start + i * FIVE for i in range(duration // 5)]:
-        w.store._write(w.cell(at), record)
-    return record
-
-
-async def created_event(w: World, *, fp: str | None = None, start: datetime = SLOT,
-                        end: datetime | None = None, phone: str = PHONE, binding_id: str = "test-alpha") -> str:
-    tag = contact_tag(FINGERPRINT_KEY, Contact(name=None, phone=phone, email=None))
-    meta = BookingMeta(SERVICE_TAG, binding_id, fp or our_fingerprint(w, start, phone=phone), tag, "REF001")
-    event = NewEvent(start, end or start + timedelta(minutes=30), "America/Toronto", "t", "d", meta, meta.fingerprint)
-    record = await w.provider.create_event(w.binding.calendar_ref, event)
-    w.provider.calls.clear()
-    return record.event_id
 
 
 # --- happy path --------------------------------------------------------------------
