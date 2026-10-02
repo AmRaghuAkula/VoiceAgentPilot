@@ -121,6 +121,7 @@ class ContractOperation:
     path_segment: str
     request_fields: frozenset[str]
     statuses: frozenset[str]
+    body_required: bool
 
 
 def _resolve(doc: Mapping[str, Any], node: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -143,7 +144,8 @@ def load_contract_operations(path: Path = CONTRACT_PATH) -> Mapping[str, Contrac
     operations: dict[str, ContractOperation] = {}
     for route, item in doc["paths"].items():
         post = item["post"]
-        request_schema = _resolve(doc, post["requestBody"]["content"]["application/json"]["schema"])
+        request_body = post["requestBody"]
+        request_schema = _resolve(doc, request_body["content"]["application/json"]["schema"])
         response_schema = _resolve(doc, post["responses"]["200"]["content"]["application/json"]["schema"])
         segment = route.strip("/")
         operations[segment] = ContractOperation(
@@ -151,6 +153,7 @@ def load_contract_operations(path: Path = CONTRACT_PATH) -> Mapping[str, Contrac
             path_segment=segment,
             request_fields=frozenset(request_schema.get("properties", {})),
             statuses=frozenset(response_schema["properties"]["status"]["enum"]),
+            body_required=request_body.get("required", False) is True,
         )
     return MappingProxyType(operations)
 
@@ -160,6 +163,7 @@ class _Route(NamedTuple):
     request_fields: frozenset[str]
     statuses: frozenset[str]
     fallback_status: str
+    body_required: bool
     handler: Operation
 
 
@@ -194,11 +198,11 @@ def _reject_constant(_: str) -> Any:
     raise ValueError("NaN and infinities are not JSON")
 
 
-def _parse_body(body: bytes) -> dict[str, Any] | None:
-    """The body as a JSON object, `{}` for an empty body (the check request body
-    is optional in the contract), or None when it is not a JSON object."""
+def _parse_body(body: bytes, required: bool) -> dict[str, Any] | None:
+    """The body as a JSON object; `{}` for an empty body when the contract
+    marks the request body optional; None when it is not a JSON object."""
     if not body.strip():
-        return {}
+        return None if required else {}
     try:
         data = json.loads(
             body.decode("utf-8"),
@@ -244,7 +248,7 @@ class CalendarService:
             # happened" when it fails unexpectedly.
             fallback = "booking_unconfirmed" if "booking_unconfirmed" in op.statuses else "calendar_unavailable"
             self._routes[op.path_segment] = _Route(
-                operation_id, op.request_fields, op.statuses, fallback, handler
+                operation_id, op.request_fields, op.statuses, fallback, op.body_required, handler
             )
         # GUID principals compare case-insensitively.
         self._allowed: dict[str, frozenset[str]] = {
@@ -334,7 +338,7 @@ class CalendarService:
         record.route = route
 
         # Rule 7: the body is a JSON object.
-        body = _parse_body(request.body)
+        body = _parse_body(request.body, route.body_required)
         if body is None:
             record.status, record.diagnostic, record.reason = "invalid_request", "invalid_request", "body"
             return json_response(

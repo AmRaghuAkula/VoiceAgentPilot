@@ -14,6 +14,7 @@ import pytest
 from calendar_tools.core.deadline import Deadline
 from calendar_tools.http.auth import (
     JWKS_MAX_AGE,
+    JWKS_MAX_STALE_AGE,
     JWKS_RETRY_AFTER_FAILURE,
     UNKNOWN_KID_REFRESH_INTERVAL,
     UNAUTHORIZED_REASONS,
@@ -122,14 +123,15 @@ async def test_kid_missing_is_malformed(clock, jwks_stub, make_token) -> None:
     assert await _reason(_auth(clock, jwks_stub), clock, _bearer(make_token(kid=None))) == "token_malformed"
 
 
-@pytest.mark.parametrize("exp", ["soon", None, True, [1]])
+@pytest.mark.parametrize("exp", ["soon", None, True, [1], float("nan"), float("inf")])
 async def test_exp_missing_or_not_numeric_is_malformed(clock, jwks_stub, make_token, exp) -> None:
     token = make_token(drop=("exp",)) if exp is None else make_token(exp=exp)
     assert await _reason(_auth(clock, jwks_stub), clock, _bearer(token)) == "token_malformed"
 
 
-async def test_nbf_not_numeric_is_malformed(clock, jwks_stub, make_token) -> None:
-    token = make_token(nbf="now")
+@pytest.mark.parametrize("nbf", ["now", float("nan"), float("-inf")])
+async def test_nbf_not_numeric_is_malformed(clock, jwks_stub, make_token, nbf) -> None:
+    token = make_token(nbf=nbf)
     assert await _reason(_auth(clock, jwks_stub), clock, _bearer(token)) == "token_malformed"
 
 
@@ -234,6 +236,40 @@ async def test_stale_cache_survives_an_outage_for_known_kid(clock, jwks_stub, ma
     clock.advance(JWKS_MAX_AGE)
     jwks_stub.mode = "down"
     assert (await _run(auth, clock, _bearer(make_token()))).value == jt.PRINCIPAL_A
+
+
+async def test_stale_cache_outage_unknown_kid_fails_closed(clock, jwks_stub, make_token) -> None:
+    auth = _auth(clock, jwks_stub)
+    await _run(auth, clock, _bearer(make_token()))
+    clock.advance(JWKS_MAX_AGE)
+    jwks_stub.mode = "down"
+    with pytest.raises(JwksUnreachable):
+        await _run(auth, clock, _bearer(make_token(key="b", kid=jt.KID_B)))
+
+
+async def test_stale_keys_are_not_served_past_the_cap(clock, jwks_stub, make_token) -> None:
+    auth = _auth(clock, jwks_stub)
+    await _run(auth, clock, _bearer(make_token()))
+    jwks_stub.mode = "down"
+    clock.advance(JWKS_MAX_STALE_AGE - 1)
+    assert (await _run(auth, clock, _bearer(make_token()))).value == jt.PRINCIPAL_A
+    clock.advance(1)
+    with pytest.raises(JwksUnreachable):
+        await _run(auth, clock, _bearer(make_token()))
+
+
+async def test_lock_wait_is_bounded_by_the_deadline(clock, jwks_stub, make_token) -> None:
+    cache = JwksCache(jt.TENANT_ID, jt.jwks_client(jwks_stub), clock)
+    auth = Authenticator(jt.make_config(), cache, clock)
+    deadline = Deadline(clock)
+    clock.advance(8)  # no budget left
+    await cache._lock.acquire()
+    try:
+        with pytest.raises(JwksUnreachable):
+            await auth.authenticate(_bearer(make_token()), deadline)
+    finally:
+        cache._lock.release()
+    assert jwks_stub.calls == 0
 
 
 async def test_concurrent_first_requests_fetch_once(clock, jwks_stub, make_token) -> None:

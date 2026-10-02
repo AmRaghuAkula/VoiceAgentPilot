@@ -438,10 +438,23 @@ async def test_body_not_a_json_object(harness, logs, body) -> None:
 
 
 @pytest.mark.parametrize("body", [b"", b"   ", b"\r\n"])
-async def test_empty_body_is_an_empty_object(harness, body) -> None:
+async def test_empty_body_is_an_empty_object_when_optional(harness, body) -> None:
+    # check_availability's request body is optional in the contract.
     resp = await harness.call(CHECK, body)
     assert resp.status == 200
     assert harness.check.calls[0][1] == {}
+
+
+@pytest.mark.parametrize("body", [b"", b"   "])
+async def test_empty_body_is_invalid_when_required(harness, logs, body) -> None:
+    # book_appointment's request body is required in the contract (rule 7).
+    resp = await harness.call(BOOK, body)
+    assert resp.status == 200
+    payload = _json(resp)
+    assert (payload["status"], payload["detail"]) == ("invalid_request", {"fields": ["body"]})
+    line = _one_line(logs)
+    assert (line["diagnostic"], line["reason"]) == ("invalid_request", "body")
+    assert harness.book.calls == []
 
 
 # --- rule 8: unknown fields dropped ---------------------------------------------------------
@@ -595,6 +608,24 @@ async def test_unexpected_exception_answers_200(harness, logs, monkeypatch, path
     assert SENTINEL not in logs.text
 
 
+async def test_unexpected_exception_before_authorization_is_401(harness, logs, monkeypatch) -> None:
+    monkeypatch.setattr(obs, "STRICT", False)
+
+    class Broken:
+        async def authenticate(self, header, deadline):
+            raise RuntimeError(SENTINEL)
+
+    harness.service._authenticator = Broken()
+    resp = await harness.call(CHECK)
+    assert resp.status == 401
+    assert resp.headers["WWW-Authenticate"] == "Bearer"
+    assert resp.body_bytes() == b'{"error":"unauthorized"}'
+    line = _one_line(logs)
+    assert (line["status"], line["diagnostic"], line["reason"]) == (401, "unclassified", "unexpected_exception")
+    assert SENTINEL not in logs.text
+    assert harness.check.calls == []
+
+
 async def test_unexpected_exception_fails_the_suite_under_strict(harness) -> None:
     harness.check.raises = RuntimeError("boom")
     with pytest.raises(ValueError):
@@ -705,3 +736,4 @@ def test_contract_operations_loaded_from_the_document() -> None:
     assert book.operation_id == "book_appointment"
     assert book.request_fields == frozenset({"slot_id", "start", "appointment_type", "contact", "notes"})
     assert "booking_unconfirmed" in book.statuses
+    assert (check.body_required, book.body_required) == (False, True)

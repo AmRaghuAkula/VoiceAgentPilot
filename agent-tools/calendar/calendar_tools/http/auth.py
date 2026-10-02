@@ -1,7 +1,8 @@
 """In-code Entra caller authentication (spec section 9.1, plan UC02b).
 
-RS256 only, against the tenant's JWKS (cached 24 h; an unknown `kid` triggers
-at most one refresh per 5 minutes; a failed fetch is not retried for 30 s).
+RS256 only, against the tenant's JWKS (cached 24 h, served stale through an
+outage for at most 72 h; an unknown `kid` triggers at most one refresh per 5
+minutes; a failed fetch is not retried for 30 s).
 Then, in this order: `iss` (the v1 or v2 form for our tenant, exactly), `aud`
 (the app ID URI or the bare app ID), `tid`, `exp`/`nbf` with 60 s leeway
 against the injected clock, the required app role, and the configured
@@ -17,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import re
 from dataclasses import dataclass
 from typing import Any, ClassVar
@@ -31,6 +33,9 @@ from calendar_tools.core.deadline import Deadline, DeadlineExceeded
 JWKS_URL_TEMPLATE = "https://login.microsoftonline.com/{tenant_id}/discovery/v2.0/keys"
 JWKS_TIMEOUT = 3.0  # seconds (plan section 1)
 JWKS_MAX_AGE = 24 * 3600.0
+# Through a JWKS outage, keys already held keep validating known `kid`s, but
+# never past this age: a key Entra has since withdrawn must not live forever.
+JWKS_MAX_STALE_AGE = 72 * 3600.0
 UNKNOWN_KID_REFRESH_INTERVAL = 5 * 60.0
 JWKS_RETRY_AFTER_FAILURE = 30.0
 MAX_JWKS_BYTES = 256 * 1024
@@ -122,31 +127,45 @@ class JwksCache:
 
     async def get_key(self, kid: str, deadline: Deadline) -> Any | None:
         """The verification key for `kid`, or None when the `kid` is unknown.
-        Raises `JwksUnreachable` when the keys cannot be had."""
-        async with self._lock:
-            fetched = False
-            if self._fetched_at is None:
+        Raises `JwksUnreachable` when the keys cannot be had, including when
+        the request's deadline runs out while another request is fetching."""
+        remaining = deadline.remaining()
+        if remaining <= 0:
+            raise JwksUnreachable()
+        try:
+            async with asyncio.timeout(remaining):
+                await self._lock.acquire()
+        except TimeoutError:
+            raise JwksUnreachable() from None
+        try:
+            return await self._get_key_locked(kid, deadline)
+        finally:
+            self._lock.release()
+
+    async def _get_key_locked(self, kid: str, deadline: Deadline) -> Any | None:
+        fetched = False
+        if self._fetched_at is None:
+            await self._fetch(deadline)
+            fetched = True
+        elif self._now() - self._fetched_at >= JWKS_MAX_AGE:
+            try:
                 await self._fetch(deadline)
                 fetched = True
-            elif self._now() - self._fetched_at >= JWKS_MAX_AGE:
-                try:
-                    await self._fetch(deadline)
-                    fetched = True
-                except JwksUnreachable:
-                    # Keep serving a known key through an outage; an unknown
-                    # kid still fails closed.
-                    if kid not in self._keys:
-                        raise
-            if kid in self._keys:
-                return self._keys[kid]
-            if fetched:
-                return None  # the keys were fetched for this very request
-            now = self._now()
-            if self._kid_refresh_at is not None and now - self._kid_refresh_at < UNKNOWN_KID_REFRESH_INTERVAL:
-                return None
-            self._kid_refresh_at = now
-            await self._fetch(deadline)
-            return self._keys.get(kid)
+            except JwksUnreachable:
+                # Keep serving a known key through an outage, up to the
+                # stale cap; an unknown kid still fails closed.
+                if kid not in self._keys or self._now() - self._fetched_at >= JWKS_MAX_STALE_AGE:
+                    raise
+        if kid in self._keys:
+            return self._keys[kid]
+        if fetched:
+            return None  # the keys were fetched for this very request
+        now = self._now()
+        if self._kid_refresh_at is not None and now - self._kid_refresh_at < UNKNOWN_KID_REFRESH_INTERVAL:
+            return None
+        self._kid_refresh_at = now
+        await self._fetch(deadline)
+        return self._keys.get(kid)
 
     async def _fetch(self, deadline: Deadline) -> None:
         now = self._now()
@@ -209,7 +228,8 @@ def bearer_token(header: str | None) -> str:
 
 
 def _is_number(value: object) -> bool:
-    return isinstance(value, (int, float)) and not isinstance(value, bool)
+    """A finite JSON number (PyJWT's decoder accepts NaN and infinities)."""
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
 
 
 class Authenticator:
