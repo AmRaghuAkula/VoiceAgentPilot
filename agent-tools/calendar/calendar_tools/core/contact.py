@@ -31,7 +31,11 @@ MAX_EMAIL_CHARS = 254
 # Characters stripped from a name: every Unicode "other" category (controls,
 # format characters such as bidi overrides, unassigned, private use,
 # surrogates) and the line/paragraph separators.
+# Line breaks, tabs and separators become a space first, so a name split over
+# two lines keeps its word break; runs of whitespace then collapse to one space.
 _STRIP_CATEGORIES = frozenset({"Cc", "Cf", "Cn", "Co", "Cs", "Zl", "Zp"})
+_AS_SPACE = frozenset("\t\n\v\f\r\x1c\x1d\x1e\x1f\x85\u2028\u2029")
+_WHITESPACE_RUN = re.compile(r"\s+")
 # Digits, spaces and the usual phone punctuation only: letters are refused, so a
 # vanity number is never silently converted into digits.
 _PHONE_CHARS = re.compile(r"[0-9+()./\- ]+")
@@ -74,7 +78,9 @@ def _blank(value: Any) -> bool:
 def _clean_name(value: Any) -> str | None:
     if not isinstance(value, str):
         return None
-    stripped = "".join(ch for ch in value if unicodedata.category(ch) not in _STRIP_CATEGORIES).strip()
+    spaced = "".join(" " if ch in _AS_SPACE else ch for ch in value)
+    kept = "".join(ch for ch in spaced if unicodedata.category(ch) not in _STRIP_CATEGORIES)
+    stripped = _WHITESPACE_RUN.sub(" ", kept).strip()
     if not stripped or len(stripped) > MAX_NAME_CHARS:
         return None
     return stripped

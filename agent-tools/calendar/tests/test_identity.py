@@ -150,7 +150,7 @@ def test_fingerprint_shape_and_determinism():
     assert fp == fingerprint(K, _cal_key(), T0, T1, contact_tag(K, PHONE), "phone_call")
 
 
-def test_fingerprint_excludes_name():
+def test_fingerprint_is_unchanged_by_the_name_spelling():
     a = Contact(name="Jordan Example", phone="+16135550123", email=None)
     b = Contact(name="jordan  example", phone="+16135550123", email=None)
     fa = fingerprint(K, _cal_key(), T0, T1, contact_tag(K, a), "phone_call")

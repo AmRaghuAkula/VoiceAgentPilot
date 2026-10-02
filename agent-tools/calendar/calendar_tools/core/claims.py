@@ -14,9 +14,13 @@ read-your-writes consistent:
 | `release(key, etag)` | Conditional delete |
 | `read(key)` | `Held(record, etag, age)`, or `None` for an empty cell |
 
-`replace` and `release` raise `PreconditionFailed` when the etag is not the
-cell's current one, **including when the cell is empty** (the caller lost the
-race either way, and re-reads). Every failure to reach the store, including a
+`replace` raises `PreconditionFailed` when the etag is not the cell's current
+one, including when the cell is empty (the caller lost the race and re-reads;
+the Blob store must map a 404 on its conditional `PUT` the same way).
+`release` raises `PreconditionFailed` on an etag mismatch, but releasing an
+**empty** cell succeeds as a no-op (plan UC06: "404 counts as released"); that is
+safe, because a cell claimed again since carries a new etag and so still fails
+the precondition. Every failure to reach the store, including a
 stored record that cannot be parsed, is `ClaimStoreUnavailable`; it never
 passes for an empty cell. A record handed to `try_claim`/`replace` must belong
 to the cell (same calendar key, cell inside its range), else `ValueError`
@@ -39,9 +43,10 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from typing import Any, ClassVar, Literal, Protocol, runtime_checkable
 
+from calendar_tools.core.bindings import BINDING_ID_PATTERN, MAX_DURATION_PLUS_BUFFER
 from calendar_tools.core.clock import Clock
 from calendar_tools.core.encoding import encode_time
-from calendar_tools.core.identity import CellKey, cell_range
+from calendar_tools.core.identity import CellKey, floor5, last_cell
 from calendar_tools.core.ports import INVALID_REASON, is_reason_code
 
 __all__ = [
@@ -66,7 +71,6 @@ ClaimState = Literal["pending", "booked"]
 
 _HEX64 = re.compile(r"[0-9a-f]{64}")
 _ATTEMPT_ID = re.compile(r"[0-9a-f]{16,64}")
-_BINDING_ID = re.compile(r"[a-z0-9][a-z0-9-]{2,39}")
 _TIME = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}Z")
 _MAX_EVENT_ID = 1024
 _FIELDS: tuple[str, ...] = (
@@ -170,15 +174,18 @@ class ClaimRecord:
             value = getattr(self, name)
             _check(isinstance(value, str) and bool(_HEX64.fullmatch(value)), name)
         _check(isinstance(self.attempt_id, str) and bool(_ATTEMPT_ID.fullmatch(self.attempt_id)), "attempt_id")
-        _check(isinstance(self.binding_id, str) and bool(_BINDING_ID.fullmatch(self.binding_id)), "binding_id")
+        _check(isinstance(self.binding_id, str) and bool(BINDING_ID_PATTERN.fullmatch(self.binding_id)), "binding_id")
         for name in ("first_cell", "last_cell", "start", "end"):
             _check(_is_utc_minute(getattr(self, name)), name)
         _check(type(self.buffer_minutes) is int, "buffer_minutes")
         _check(self.buffer_minutes >= 0 and self.buffer_minutes % 5 == 0, "buffer_minutes")
         _check(self.end > self.start, "end")
-        cells = cell_range(self.start, self.end, self.buffer_minutes)
-        _check(self.first_cell == cells[0], "first_cell")
-        _check(self.last_cell == cells[-1], "last_cell")
+        # A booking never spans more than duration + buffer allows (spec 4.1), so
+        # a corrupt or hostile record can't describe a huge range.
+        span = self.end - self.start + timedelta(minutes=self.buffer_minutes)
+        _check(span <= timedelta(minutes=MAX_DURATION_PLUS_BUFFER), "end")
+        _check(self.first_cell == floor5(self.start), "first_cell")
+        _check(self.last_cell == last_cell(self.start, self.end, self.buffer_minutes), "last_cell")
         if self.state == "pending":
             _check(self.event_id is None, "event_id")
         elif self.state == "booked":
@@ -200,11 +207,14 @@ class ClaimRecord:
         binding_id: str,
     ) -> ClaimRecord:
         """A new `pending` record; the cell range is derived, never passed in."""
-        cells = cell_range(start, end, buffer_minutes)
+        if isinstance(buffer_minutes, bool) or not isinstance(buffer_minutes, int):
+            raise TypeError("buffer_minutes must be an int")
+        if not isinstance(start, datetime) or not isinstance(end, datetime):
+            raise TypeError("start and end must be datetimes")
         return cls(
             calendar_key=calendar_key,
-            first_cell=cells[0],
-            last_cell=cells[-1],
+            first_cell=floor5(start),
+            last_cell=last_cell(start, end, buffer_minutes),
             start=start,
             end=end,
             buffer_minutes=buffer_minutes,
@@ -328,7 +338,9 @@ class FakeClaimStore:
     - `fail_next(op, exc=None, after_commit=False)`: the next `op` raises
       `exc` (default `ClaimStoreUnavailable("injected")`), one-shot, queued per
       operation. With `after_commit=True` the write is applied first, then the
-      call raises: a response lost after the store committed.
+      call raises: a response lost after the store committed. A lost
+      compare-and-swap commits nothing, so it leaves such a failure armed.
+    - `plant_raw(key, data)`: store unparseable content (a corrupt blob).
     - `hooks`: an optional `ClaimHooks` (barriers for deterministic races).
     - `calls`, `records()`: what happened and what is held, for assertions.
 
@@ -358,6 +370,11 @@ class FakeClaimStore:
             raise TypeError("a claim store raises only ClaimStoreUnavailable")
         self._failures[operation].append(_Failure(exc, after_commit))
 
+    def plant_raw(self, key: CellKey, data: bytes) -> None:
+        """Store arbitrary bytes in a cell, as a corrupt blob would hold them."""
+        self._etag_counter += 1
+        self._cells[key] = _Cell(data, f'"fake-{self._etag_counter}"', self._clock.now())
+
     def records(self) -> dict[CellKey, ClaimRecord]:
         return {k: ClaimRecord.from_json(c.data) for k, c in self._cells.items()}
 
@@ -379,6 +396,7 @@ class FakeClaimStore:
         failure = await self._enter("replace", key)
         existing = self._cells.get(key)
         if existing is None or existing.etag != etag:
+            self._requeue("replace", failure)
             raise PreconditionFailed()
         new_etag = self._write(key, record)
         return await self._leave("replace", key, failure, new_etag)
@@ -388,7 +406,11 @@ class FakeClaimStore:
             raise TypeError("key must be a CellKey")
         failure = await self._enter("release", key)
         existing = self._cells.get(key)
-        if existing is None or existing.etag != etag:
+        if existing is None:
+            # Already gone: released (plan UC06, "404 counts as released").
+            return await self._leave("release", key, failure, None)
+        if existing.etag != etag:
+            self._requeue("release", failure)
             raise PreconditionFailed()
         del self._cells[key]
         await self._leave("release", key, failure, None)
@@ -421,6 +443,12 @@ class FakeClaimStore:
             raise failure.exc
         return result
 
+    def _requeue(self, operation: str, failure: _Failure | None) -> None:
+        # An after-commit failure is for a write that commits; a lost CAS commits
+        # nothing, so the failure stays armed for the next call.
+        if failure is not None:
+            self._failures[operation].appendleft(failure)
+
     def _write(self, key: CellKey, record: ClaimRecord) -> str:
         self._etag_counter += 1
         etag = f'"fake-{self._etag_counter}"'
@@ -428,5 +456,10 @@ class FakeClaimStore:
         return etag
 
     def _held(self, cell: _Cell) -> Held:
+        try:
+            record = ClaimRecord.from_json(cell.data)
+        except ClaimRecordInvalid:
+            # Unusable stored content is a store failure, never an empty cell.
+            raise ClaimStoreUnavailable("record_invalid") from None
         age = max(timedelta(0), self._clock.now() - cell.last_modified)
-        return Held(ClaimRecord.from_json(cell.data), cell.etag, age)
+        return Held(record, cell.etag, age)

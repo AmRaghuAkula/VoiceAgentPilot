@@ -208,6 +208,35 @@ async def test_fail_next_after_commit_applies_the_write_then_raises():
     assert held is not None and held.record == pending()
 
 
+@pytest.mark.parametrize("operation", ["replace", "release"])
+async def test_a_lost_cas_leaves_an_after_commit_failure_armed(operation):
+    store = FakeClaimStore(FakeClock())
+    key = CellKey(CAL, T0)
+    claimed = await store.try_claim(key, pending())
+    store.fail_next(operation, after_commit=True)
+    call = {
+        "replace": lambda etag: store.replace(key, pending().booked("evt-0001"), etag),
+        "release": lambda etag: store.release(key, etag),
+    }[operation]
+    with pytest.raises(PreconditionFailed):
+        await call('"wrong"')
+    with pytest.raises(ClaimStoreUnavailable):
+        await call(claimed.etag)  # the write commits, then the response is lost
+    held = await store.read(key)
+    if operation == "replace":
+        assert held is not None and held.record.state == "booked"
+    else:
+        assert held is None
+
+
+def test_record_span_is_capped_at_duration_plus_buffer_limit():
+    pending(end=T0 + timedelta(minutes=230), buffer_minutes=10)  # 240: allowed
+    with pytest.raises(ClaimRecordInvalid):
+        pending(end=T0 + timedelta(minutes=235), buffer_minutes=10)
+    with pytest.raises(ClaimRecordInvalid):
+        ClaimRecord.from_json(_doc(end="2027-10-05T14:00Z", last_cell="2027-10-05T14:05Z"))
+
+
 async def test_fail_next_with_a_custom_exception_and_bad_operation():
     store = FakeClaimStore(FakeClock())
     store.fail_next("read", ClaimStoreUnavailable("record_invalid"))

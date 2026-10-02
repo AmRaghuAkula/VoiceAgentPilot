@@ -47,6 +47,17 @@ def test_cell_range_misaligned_input_floors_and_ceils():
     assert len(cells) == 7
 
 
+def test_zero_offset_zone_is_normalized_to_utc():
+    # Europe/London is UTC+0 in winter, but has DST: arithmetic must happen in UTC.
+    from zoneinfo import ZoneInfo
+
+    london = datetime(2026, 12, 7, 14, 0, tzinfo=ZoneInfo("Europe/London"))
+    cells = cell_range(london, london + timedelta(minutes=30), 0)
+    assert all(c.tzinfo is UTC for c in cells)
+    assert CellKey(_cal_key(), london).start.tzinfo is UTC
+    assert CellKey(_cal_key(), london) == CellKey(_cal_key(), datetime(2026, 12, 7, 14, 0, tzinfo=UTC))
+
+
 def test_cell_range_240_minutes_is_48_cells():
     assert len(cell_range(T0, T0 + timedelta(minutes=240), 0)) == 48
     assert len(cell_range(T0, T0 + timedelta(minutes=210), 30)) == 48

@@ -152,16 +152,17 @@ def test_name_trimmed():
 @pytest.mark.parametrize(
     ("raw", "expected"),
     [
-        ("Jordan\nExample", "JordanExample"),
-        ("Jordan\r\nExample", "JordanExample"),
-        ("Jordan\tExample", "JordanExample"),
+        ("Jordan\nExample", "Jordan Example"),
+        ("Jordan\r\nExample", "Jordan Example"),
+        ("Jordan\tExample", "Jordan Example"),
         ("Jordan\x00\x07Example", "JordanExample"),
-        ("Jordan Example", "JordanExample"),
-        ("Jordan‮Example", "JordanExample"),
-        ("Jordan\x85Example", "JordanExample"),
+        ("Jordan\u2028Example", "Jordan Example"),
+        ("Jordan\u202eExample", "JordanExample"),
+        ("Jordan\x85Example", "Jordan Example"),
         ("Jordan Example\n", "Jordan Example"),
+        ("Jordan \n\n  Example", "Jordan Example"),
     ],
-    ids=["lf", "crlf", "tab", "nul-bel", "line-sep", "bidi-override", "nel", "trailing-newline"],
+    ids=["lf", "crlf", "tab", "nul-bel", "line-sep", "bidi-override", "nel", "trailing-newline", "collapse"],
 )
 def test_name_control_characters_and_newlines_stripped(raw, expected):
     assert ok(CA, {"name": raw, "phone": "6135550123"}).name == expected

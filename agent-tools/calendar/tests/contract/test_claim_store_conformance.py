@@ -51,6 +51,9 @@ class FakeStoreHarness:
     def inject(self, operation: str) -> None:
         self.store.fail_next(operation)
 
+    def plant_raw(self, cell: CellKey, data: bytes) -> None:
+        self.store.plant_raw(cell, data)
+
 
 HARNESSES = {"fake": FakeStoreHarness}
 
@@ -161,9 +164,21 @@ async def test_release_with_a_wrong_etag_is_precondition_failed(h):
     assert held is not None and held.etag == new_etag
 
 
-async def test_release_of_an_empty_cell_is_precondition_failed(h):
+async def test_release_of_an_empty_cell_is_a_no_op(h):
+    # Plan UC06: "404 counts as released". Safe: a cell claimed again since
+    # carries a new etag, so a stale release still fails its precondition.
+    await h.store.release(key(), '"no-such-etag"')
+    assert await h.store.read(key()) is None
+
+
+async def test_release_after_a_reclaim_with_the_old_etag_is_precondition_failed(h):
+    first = await h.store.try_claim(key(), record())
+    await h.store.release(key(), first.etag)
+    second = await h.store.try_claim(key(), record(attempt="f6" * 8))
     with pytest.raises(PreconditionFailed):
-        await h.store.release(key(), '"no-such-etag"')
+        await h.store.release(key(), first.etag)
+    held = await h.store.read(key())
+    assert held is not None and held.etag == second.etag
 
 
 async def test_an_etag_is_valid_only_on_its_own_cell(h):
@@ -190,7 +205,9 @@ async def test_adjacent_cells_are_independent(h):
 
 async def test_age_is_server_time_only(h):
     # Round-3 SF-1: the caller's clock plays no part, so skew can't make a live
-    # claim look stale. The store is never given the caller's clock at all.
+    # claim look stale. The store is never given the caller's clock at all; for
+    # the fake this guards the contract, and a harness for a real store (UC06's
+    # emulator) must drive its Date/Last-Modified from `advance_server` only.
     caller_clock = FakeClock(T0)
     await h.store.try_claim(key(), record())
     h.advance_server(30)
@@ -251,6 +268,19 @@ async def test_injected_failure_raises_claim_store_unavailable_and_changes_nothi
     held = await h.store.read(key())
     assert held is not None and held.etag == claimed.etag and held.record == record()
     await call()  # one-shot
+
+
+@pytest.mark.parametrize("operation", ["read", "try_claim"])
+@pytest.mark.parametrize("data", [b"not json", b"{}", b'{"v": 2}', b"\xff\xfe"], ids=["text", "empty", "v2", "bytes"])
+async def test_a_corrupt_stored_record_is_unavailable_never_empty(h, operation, data):
+    h.plant_raw(key(), data)
+    call = {
+        "read": lambda: h.store.read(key()),
+        "try_claim": lambda: h.store.try_claim(key(), record()),
+    }[operation]
+    with pytest.raises(ClaimStoreUnavailable) as info:
+        await call()
+    assert info.value.reason == "record_invalid"
 
 
 async def test_record_round_trip_holds_no_contact_pii(h):

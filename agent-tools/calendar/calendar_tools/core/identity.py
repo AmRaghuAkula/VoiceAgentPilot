@@ -17,7 +17,7 @@ import hashlib
 import hmac
 import re
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 from calendar_tools.core.contact import Contact
 from calendar_tools.core.deadline import PROVIDER_TIMEOUT, Deadline, DeadlineExceeded
@@ -36,6 +36,7 @@ __all__ = [
     "contact_tag",
     "fingerprint",
     "floor5",
+    "last_cell",
 ]
 
 CELL_MINUTES = 5
@@ -135,13 +136,20 @@ def booking_ref(k_fp: bytes, fingerprint: str) -> str:
 
 
 def floor5(value: datetime) -> datetime:
-    _require_utc("time", value)
+    # Normalized to `datetime.UTC` first: any zero-offset zone is accepted, but
+    # arithmetic in a zone with DST (London in winter) must never happen here.
+    value = _require_utc("time", value).astimezone(UTC)
     return value.replace(minute=value.minute - value.minute % CELL_MINUTES, second=0, microsecond=0)
 
 
 def ceil5(value: datetime) -> datetime:
     floored = floor5(value)
     return floored if floored == value else floored + _CELL
+
+
+def last_cell(start: datetime, end: datetime, buffer_minutes: int) -> datetime:
+    """The last cell of `cell_range(start, end, buffer)`, without building it."""
+    return ceil5(end + timedelta(minutes=buffer_minutes)) - _CELL
 
 
 def cell_range(start: datetime, end: datetime, buffer_minutes: int) -> list[datetime]:
@@ -173,7 +181,7 @@ class CellKey:
 
     def __post_init__(self) -> None:
         _require_hex64("calendar_key", self.calendar_key)
-        _require_utc("start", self.start)
+        object.__setattr__(self, "start", _require_utc("start", self.start).astimezone(UTC))
         if self.start != floor5(self.start):
             raise ValueError("a cell starts on the 5-minute UTC grid")
 
