@@ -228,8 +228,14 @@ def bearer_token(header: str | None) -> str:
 
 
 def _is_number(value: object) -> bool:
-    """A finite JSON number (PyJWT's decoder accepts NaN and infinities)."""
-    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+    """A finite JSON number (PyJWT's decoder accepts NaN, infinities and
+    integers too large for a float)."""
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
 
 
 class Authenticator:
@@ -286,21 +292,24 @@ class Authenticator:
 
     def _check_claims(self, claims: dict[str, Any]) -> Principal:
         config = self._config
-        # The signature is verified: the principal may now be logged with a refusal.
+        # Entra signs every tenant's tokens with the same keys, so a verified
+        # signature alone does not make the token ours: a refusal carries no
+        # principal until the issuer, audience and tenant have matched.
+        iss = claims.get("iss")
+        if not isinstance(iss, str) or iss not in config.issuers:
+            raise Unauthorized("issuer_mismatch")
+        aud = claims.get("aud")
+        if not isinstance(aud, str) or aud not in config.audiences:
+            raise Unauthorized("audience_mismatch")
+        tid = claims.get("tid")
+        if not isinstance(tid, str) or tid != config.tenant_id:
+            raise Unauthorized("tenant_mismatch")
+
+        # Our tenant's token for our API: the principal may now be logged with a refusal.
         principal = as_guid(claims.get(config.principal_claim))
 
         def fail(reason: str) -> Unauthorized:
             return Unauthorized(reason, principal)
-
-        iss = claims.get("iss")
-        if not isinstance(iss, str) or iss not in config.issuers:
-            raise fail("issuer_mismatch")
-        aud = claims.get("aud")
-        if not isinstance(aud, str) or aud not in config.audiences:
-            raise fail("audience_mismatch")
-        tid = claims.get("tid")
-        if not isinstance(tid, str) or tid != config.tenant_id:
-            raise fail("tenant_mismatch")
 
         now = self._clock.now().timestamp()
         exp = claims.get("exp")

@@ -123,7 +123,7 @@ async def test_kid_missing_is_malformed(clock, jwks_stub, make_token) -> None:
     assert await _reason(_auth(clock, jwks_stub), clock, _bearer(make_token(kid=None))) == "token_malformed"
 
 
-@pytest.mark.parametrize("exp", ["soon", None, True, [1], float("nan"), float("inf")])
+@pytest.mark.parametrize("exp", ["soon", None, True, [1], float("nan"), float("inf"), 10**400])
 async def test_exp_missing_or_not_numeric_is_malformed(clock, jwks_stub, make_token, exp) -> None:
     token = make_token(drop=("exp",)) if exp is None else make_token(exp=exp)
     assert await _reason(_auth(clock, jwks_stub), clock, _bearer(token)) == "token_malformed"
@@ -267,6 +267,20 @@ async def test_lock_wait_is_bounded_by_the_deadline(clock, jwks_stub, make_token
     try:
         with pytest.raises(JwksUnreachable):
             await auth.authenticate(_bearer(make_token()), deadline)
+    finally:
+        cache._lock.release()
+    assert jwks_stub.calls == 0
+
+
+async def test_lock_wait_times_out_with_a_small_budget(clock, jwks_stub, make_token) -> None:
+    cache = JwksCache(jt.TENANT_ID, jt.jwks_client(jwks_stub), clock)
+    auth = Authenticator(jt.make_config(), cache, clock)
+    deadline = Deadline(clock, total=0.05)  # a small positive budget, in real seconds here
+    await cache._lock.acquire()
+    try:
+        with pytest.raises(JwksUnreachable):
+            await auth.authenticate(_bearer(make_token()), deadline)
+        assert cache._lock.locked()  # still held by the holder, not stolen or released
     finally:
         cache._lock.release()
     assert jwks_stub.calls == 0
@@ -430,6 +444,22 @@ async def test_principal_known_after_signature_check(clock, jwks_stub, make_toke
         await _run(_auth(clock, jwks_stub), clock, _bearer(make_token(drop=("roles",))))
     assert info.value.reason == "role_missing"
     assert info.value.principal == jt.PRINCIPAL_A
+
+
+@pytest.mark.parametrize(
+    "claims",
+    [
+        {"iss": f"https://sts.windows.net/{jt.OTHER_TENANT_ID}/"},
+        {"aud": "api://00000000-0000-0000-0000-0000000000c3"},
+        {"tid": jt.OTHER_TENANT_ID},
+    ],
+)
+async def test_principal_not_reported_for_a_foreign_token(clock, jwks_stub, make_token, claims) -> None:
+    # Entra's signing keys are shared by every tenant: a token for another
+    # tenant or audience verifies, but its principal is not ours to log.
+    with pytest.raises(Unauthorized) as info:
+        await _run(_auth(clock, jwks_stub), clock, _bearer(make_token(**claims)))
+    assert info.value.principal is None
 
 
 async def test_principal_not_reported_before_signature_check(clock, jwks_stub, make_token) -> None:

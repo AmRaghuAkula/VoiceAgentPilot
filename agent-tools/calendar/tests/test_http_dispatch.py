@@ -209,13 +209,26 @@ async def test_contract_operation_not_registered_is_404(logs) -> None:
     assert _one_line(logs)["diagnostic"] == "not_found"
 
 
-async def test_404_logs_binding_only_when_valid(harness, logs) -> None:
+async def test_404_logs_binding_only_when_configured(harness, logs) -> None:
     await harness.call("/api/v1/bindings/test-alpha/unknown-op")
     await harness.call(f"/api/v1/bindings/{SENTINEL}/unknown-op")
-    first, second = _lines(logs)
+    await harness.call("/api/v1/bindings/sam-sample-example/unknown-op")
+    first, second, third = _lines(logs)
     assert first["binding_id"] == "test-alpha"
     assert second["binding_id"] is None
+    assert third["binding_id"] is None
     assert SENTINEL not in logs.text
+    assert "sam-sample-example" not in logs.text
+
+
+async def test_unknown_well_formed_binding_not_logged(harness, logs) -> None:
+    # cso r1: a caller must not be able to write ID-shaped text into the logs.
+    for token in (None, "default"):
+        await harness.call("/api/v1/bindings/sam-sample-example/check-availability", token=token)
+    lines = _lines(logs)
+    assert [(line["status"], line["reason"]) for line in lines] == [(401, "token_missing"), (403, "binding_unknown")]
+    assert all(line["binding_id"] is None for line in lines)
+    assert "sam-sample-example" not in logs.text
 
 
 @pytest.mark.parametrize(

@@ -306,7 +306,9 @@ class CalendarService:
         match = _OP_PATH.fullmatch(request.path)
         route = self._routes.get(match.group(2)) if match else None
         segment = match.group(1) if match else None
-        if segment is not None and is_valid_binding_id(segment):
+        # Only a configured binding's ID is logged (cso r1): an unknown one,
+        # even if well formed, is caller text, and the reason says it was unknown.
+        if segment is not None and is_valid_binding_id(segment) and segment in self._bindings:
             record.binding_id = segment
         if route is None or segment is None:
             return self._refuse(record, 404, "not_found", NOT_FOUND)
