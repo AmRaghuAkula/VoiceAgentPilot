@@ -823,15 +823,13 @@ class BookingService:
         if outcome.rechecked:
             # Recovery judged a re-read record that may have another holder.
             judged = outcome.held.record if outcome.held is not None else None
-            if (
-                outcome.action == "failed"
-                and not ours
-                and judged is not None
-                and judged.fingerprint != req.fingerprint
-            ):
-                # Still another contact's claim and recovery could not decide
-                # it: treated as held, surfaced as `calendar_unavailable` like
-                # the same failure without a lost CAS (review r2 S-r2-1).
+            if outcome.action == "failed" and judged is not None and judged.fingerprint != req.fingerprint:
+                # The judged record is another contact's (whoever held the cell
+                # first) and recovery could not decide it: treated as held,
+                # surfaced as `calendar_unavailable` like the same failure
+                # without a lost CAS (reviews r2 S-r2-1, r3 SF-r3-1). If the
+                # cell first held a leftover of ours, another recoverer already
+                # judged it to have no event before the cell changed holder.
                 await self._release_all(req, acquired)
                 return _unavailable(req.ctx, outcome.error)
             # Otherwise `try_claim` once more and classify the cell afresh

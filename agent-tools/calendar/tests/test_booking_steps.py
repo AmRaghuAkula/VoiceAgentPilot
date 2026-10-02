@@ -1214,3 +1214,50 @@ async def test_step2_finalize_replays_from_the_recovery_lookup(w) -> None:
     resp = await w.book()
     assert resp["status"] == "booked" and resp["replayed"] is True
     assert "get_event" not in w.provider.calls
+
+
+# --- UC04c review r3 ------------------------------------------------------------------
+
+
+async def test_own_leftover_replaced_by_foreign_then_recovery_fails_is_unavailable(w, monkeypatch) -> None:
+    """Review r3 SF-r3-1: our stale leftover is replaced by another contact's
+    stale claim while we look it up; our CAS loses and the re-evaluation's
+    lookup fails: `calendar_unavailable`, never `taken`."""
+    leftover = SLOT + 2 * FIVE
+
+    async def plant_leftover():
+        plant(w, attempt="cd" * 8, cells=[leftover], age=STALE)
+
+    async def replace_and_break():
+        plant(w, fp="e" * 64, cells=[leftover], age=STALE, phone=OTHER_PHONE)
+        w.provider.fail_next("find_bookings", ProviderUnavailable("http_503"))
+
+    _after_get_busy(w, monkeypatch, plant_leftover)
+    _on_recovery_lookup(w, monkeypatch, replace_and_break)
+    resp = await w.book()
+    assert resp == {"status": "calendar_unavailable", "retryable": True}
+    assert logged(w) == ("provider_unavailable", "http_503")
+    assert {r.fingerprint for r in w.records().values()} == {"e" * 64}  # acquired released
+    assert "create_event" not in w.provider.calls
+
+
+async def test_reread_failure_after_a_lost_cas_on_a_foreign_cell_is_unavailable(w, monkeypatch) -> None:
+    """Review r3 N-r3-1: the re-read after a lost CAS fails: the cell is left
+    alone and the answer is `calendar_unavailable` (nothing created)."""
+    cell = SLOT + 2 * FIVE
+    plant(w, fp="e" * 64, cells=[cell], age=STALE, phone=OTHER_PHONE)
+    real_release = w.store.release
+
+    async def lose_then_break(key, etag):
+        if key == w.cell(cell):
+            # Another writer rewrites the cell (new etag), then the store fails.
+            plant(w, fp="e" * 64, attempt="cd" * 8, cells=[cell], age=STALE, phone=OTHER_PHONE)
+            w.store.fail_next("read", ClaimStoreUnavailable("timeout"))
+        return await real_release(key, etag)
+
+    monkeypatch.setattr(w.store, "release", lose_then_break)
+    resp = await w.book()
+    assert resp == {"status": "calendar_unavailable", "retryable": True}
+    assert logged(w) == ("claim_store_unreachable", "timeout")
+    assert [k.start for k in w.records()] == [cell]
+    assert "create_event" not in w.provider.calls
