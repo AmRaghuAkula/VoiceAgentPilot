@@ -41,6 +41,7 @@ async def test_logs_hold_no_contact_data_tokens_or_calendar_id(caplog, fail_crea
     resp = await w.post(BOOK, body)
     assert resp["status"] == ("booking_unconfirmed" if fail_create else "booked")
     text = everything(caplog)
+    assert '"operation":"book_appointment"' in text  # the request's line was captured
     for secret in (NAME, "Jordan", NOTES, slot["slot_id"], slot["slot_id"][3:], CALENDAR_ID, "Meeting:"):
         assert secret not in text
     for digits in (PHONE, PHONE[1:], "6135550123", "5550123", "***0123", "0123"):

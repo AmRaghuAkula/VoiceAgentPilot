@@ -170,8 +170,11 @@ class _Request:
     fingerprint: str
     booking_ref: str
     # Set once our own fingerprint was seen at step 5 or 6 (an attempt of ours
-    # may be in flight): from then on no failure may answer
-    # `calendar_unavailable` ("nothing was created"); it is `booking_unconfirmed`.
+    # may be in flight): from then on no claim-read failure at step 2 or 5 may
+    # answer `calendar_unavailable` ("nothing was created"); it is
+    # `booking_unconfirmed`. Steps 3-6 are reached again only after step 2 saw
+    # that attempt's first cell released, which no path does after a create
+    # that succeeded or may have succeeded.
     seen_own: bool = False
 
     @property
