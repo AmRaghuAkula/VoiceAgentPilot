@@ -83,7 +83,8 @@ class Principal:
 
 class Unauthorized(Exception):
     """A 401. Carries only the diagnostic, a reason from `UNAUTHORIZED_REASONS`,
-    and (once the signature has been verified) the principal GUID."""
+    and (once the signature, issuer, audience and tenant have been verified)
+    the principal GUID."""
 
     diagnostic: ClassVar[str] = "unauthorized"
 
