@@ -43,7 +43,7 @@ def test_mask_phone(value, masked):
 
 def _log(**overrides):
     fields = dict(
-        request_id="7d1c2b3a",
+        request_id="7d1c2b3a" * 4,
         binding_id="test-alpha",
         operation="check_availability",
         status="available",
@@ -210,7 +210,7 @@ def test_log_line_carries_no_extra_fields(caplog):
     caplog.set_level(logging.INFO, logger=LOGGER.name)
     with pytest.raises(TypeError):
         obs.log_request(LOGGER, contact_name="Jordan Example", **{  # type: ignore[call-arg]
-            "request_id": "r",
+            "request_id": "0" * 32,
             "binding_id": "test-alpha",
             "operation": "book_appointment",
             "status": "booked",
@@ -219,3 +219,52 @@ def test_log_line_carries_no_extra_fields(caplog):
             "total_ms": 2,
             "replayed": False,
         })
+
+
+# --- UC02b: identifiers are validated and bounded before they are logged ------
+# (UC02a cso note: `binding_id` can come from a request path, so it must never
+# carry free text or a phone number into the log line.)
+
+BAD_IDS = {
+    "request_id": ["", "zq", "7D1C2B3A" * 4, "7d1c2b3a" * 5, "not hex at all, 32 characters!!"],
+    "binding_id": ["", "NOT A BINDING", "x" * 41, "a-" + "6135550" + "123", "../etc"],
+    "principal": ["", "not-a-guid", "00000000-0000-0000-0000-0000000000A1x"],
+    "operation": ["", "Check Availability", "x" * 65],
+}
+
+
+@pytest.mark.parametrize(
+    ("field", "value"), [(f, v) for f, values in BAD_IDS.items() for v in values]
+)
+def test_bad_identifier_raises_under_strict(field, value):
+    with pytest.raises(ValueError) as info:
+        _log(**{field: value})
+    assert value not in str(info.value) or value == ""
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "replacement"),
+    [
+        ("request_id", "zq", "invalid"),
+        ("binding_id", "NOT A BINDING", None),
+        ("principal", "not-a-guid", None),
+        ("operation", "Check Availability", "invalid"),
+    ],
+)
+def test_bad_identifier_replaced_in_production(field, value, replacement, caplog, monkeypatch):
+    monkeypatch.setattr(obs, "STRICT", False)
+    caplog.set_level(logging.INFO, logger=LOGGER.name)
+    _log(**{field: value})
+    info = _lines(caplog)
+    assert len(info) == 1
+    assert value not in info[0].getMessage()
+    assert json.loads(info[0].getMessage())[field] == replacement
+    assert len(_lines(caplog, logging.WARNING)) == 1
+
+
+def test_valid_identifiers_pass_through(caplog):
+    caplog.set_level(logging.INFO, logger=LOGGER.name)
+    _log(binding_id=None, principal="00000000-0000-0000-0000-0000000000a1", operation="health")
+    payload = json.loads(_lines(caplog)[0].getMessage())
+    assert payload["binding_id"] is None
+    assert payload["operation"] == "health"

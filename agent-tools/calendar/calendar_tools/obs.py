@@ -12,6 +12,7 @@ import json
 import logging
 import re
 
+from calendar_tools.core.bindings import is_valid_binding_id
 from calendar_tools.core.ports import INVALID_REASON, is_reason_code
 
 # Set True by tests/conftest.py for the whole suite. In production it stays
@@ -25,6 +26,13 @@ OK_STATUSES: frozenset[str] = frozenset({"ok", "available", "no_availability", "
 UNCLASSIFIED = "unclassified"
 
 _NON_DIGIT = re.compile(r"\D")
+# Identifiers are validated before they are logged (UC02b; the UC02a cso note):
+# a `binding_id` can come from a request path, so free text or a phone number
+# must never reach the line through it.
+_REQUEST_ID = re.compile(r"[0-9a-f]{32}")  # a 16-byte hex nonce
+_PRINCIPAL = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+_OPERATION = re.compile(r"[a-z][a-z0-9_]{0,63}")
+INVALID_ID = "invalid"
 
 
 def mask_phone(value: object) -> str:
@@ -64,6 +72,9 @@ def log_request(
     diagnostic `unclassified` (alerted in UC09) plus one WARNING. Under `STRICT`
     a non-OK outcome passed in as `unclassified` also raises.
     """
+    request_id, binding_id, principal, operation = _checked_identifiers(
+        logger, request_id, binding_id, principal, operation
+    )
     if reason is not None and not is_reason_code(reason):
         # A reason is a code, never a value, token, contact field or vendor text.
         if STRICT:
@@ -101,3 +112,33 @@ def log_request(
         "replayed": replayed,
     }
     logger.info(json.dumps(line, separators=(",", ":"), ensure_ascii=True))
+
+
+def _checked_identifiers(
+    logger: logging.Logger,
+    request_id: object,
+    binding_id: object,
+    principal: object,
+    operation: object,
+) -> tuple[str, str | None, str | None, str]:
+    """Each identifier, or its replacement when it has the wrong shape. A wrong
+    shape is a programming error: it raises under `STRICT`; in production the
+    value is replaced (never echoed) and one WARNING names the field."""
+    bad: list[str] = []
+    if not (isinstance(request_id, str) and _REQUEST_ID.fullmatch(request_id)):
+        bad.append("request_id")
+        request_id = INVALID_ID
+    if binding_id is not None and not is_valid_binding_id(binding_id):
+        bad.append("binding_id")
+        binding_id = None
+    if principal is not None and not (isinstance(principal, str) and _PRINCIPAL.fullmatch(principal)):
+        bad.append("principal")
+        principal = None
+    if not (isinstance(operation, str) and _OPERATION.fullmatch(operation)):
+        bad.append("operation")
+        operation = INVALID_ID
+    if bad:
+        if STRICT:
+            raise ValueError(f"log line identifiers with the wrong shape: {','.join(bad)}")
+        logger.warning("log line identifiers replaced: %s", ",".join(bad))
+    return request_id, binding_id, principal, operation  # type: ignore[return-value]
