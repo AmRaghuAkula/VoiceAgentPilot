@@ -34,6 +34,8 @@ async def test_logs_hold_no_contact_data_tokens_or_calendar_id(caplog, fail_crea
         event_description_template="{notes_block}Phone: {contact_phone}",
     )
     if fail_create:
+        # The create and its one retry (UC04c) are both uncertain.
+        w.provider.fail_next("create_event", ProviderTimeout(maybe_committed=True))
         w.provider.fail_next("create_event", ProviderTimeout(maybe_committed=True))
     slot = await w.offered()
     body = {"slot_id": slot["slot_id"], "start": slot["start"], "appointment_type": "phone_call",

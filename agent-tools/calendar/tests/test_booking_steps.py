@@ -6,18 +6,14 @@ request's log line (plan section 1, "Reason codes")."""
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta
+from datetime import timedelta
 
 import pytest
 
 from calendar_tools.core import booking
 from calendar_tools.core.booking import CLAIM_TTL, SERVICE_TAG
-from calendar_tools.core.claims import ClaimRecord, ClaimStoreUnavailable
-from calendar_tools.core.identity import contact_tag, fingerprint
-from calendar_tools.core.contact import Contact
+from calendar_tools.core.claims import ClaimStoreUnavailable
 from calendar_tools.core.ports import (
-    BookingMeta,
-    NewEvent,
     ProviderAuthError,
     ProviderConfigError,
     ProviderTimeout,
@@ -25,10 +21,11 @@ from calendar_tools.core.ports import (
     SecretInvalid,
     SecretStoreUnavailable,
 )
-from tests.booking_world import NAME, OTHER_PHONE, PHONE, SLOT, World
-from tests.fakes.keyring import FINGERPRINT_KEY, SLOT_KEY_2, SLOT_KEY_3, make_keys
+from tests.booking_world import NAME, OTHER_PHONE, PHONE, SLOT, World, created_event, our_fingerprint, plant
+from tests.fakes.keyring import SLOT_KEY_2, SLOT_KEY_3, make_keys
 
 FIVE = timedelta(minutes=5)
+STALE = CLAIM_TTL.total_seconds() + 1
 
 
 @pytest.fixture
@@ -38,39 +35,6 @@ def w() -> World:
 
 def logged(w: World) -> tuple[str | None, str | None]:
     return w.last_ctx.diagnostic, w.last_ctx.reason
-
-
-def our_fingerprint(w: World, start: datetime = SLOT, duration: int = 30, phone: str = PHONE,
-                    type_id: str = "phone_call") -> str:
-    tag = contact_tag(FINGERPRINT_KEY, Contact(name=None, phone=phone, email=None))
-    return fingerprint(FINGERPRINT_KEY, w.cal_key(), start, start + timedelta(minutes=duration), tag, type_id)
-
-
-def plant(w: World, *, fp: str | None = None, state: str = "pending", start: datetime = SLOT,
-          duration: int = 30, attempt: str = "ab" * 8, event_id: str | None = None,
-          cells: list[datetime] | None = None, phone: str = PHONE, binding_id: str = "test-alpha") -> ClaimRecord:
-    """Write a claim record directly into the fake store (as another attempt would)."""
-    tag = contact_tag(FINGERPRINT_KEY, Contact(name=None, phone=phone, email=None))
-    record = ClaimRecord.pending(
-        calendar_key=w.cal_key(), start=start, end=start + timedelta(minutes=duration), buffer_minutes=0,
-        fingerprint=fp or our_fingerprint(w, start, duration), attempt_id=attempt, contact_tag=tag,
-        binding_id=binding_id,
-    )
-    if state == "booked":
-        record = record.booked(event_id or "evt-x")
-    for at in cells or [start + i * FIVE for i in range(duration // 5)]:
-        w.store._write(w.cell(at), record)
-    return record
-
-
-async def created_event(w: World, *, fp: str | None = None, start: datetime = SLOT,
-                        end: datetime | None = None, phone: str = PHONE, binding_id: str = "test-alpha") -> str:
-    tag = contact_tag(FINGERPRINT_KEY, Contact(name=None, phone=phone, email=None))
-    meta = BookingMeta(SERVICE_TAG, binding_id, fp or our_fingerprint(w, start, phone=phone), tag, "REF001")
-    event = NewEvent(start, end or start + timedelta(minutes=30), "America/Toronto", "t", "d", meta, meta.fingerprint)
-    record = await w.provider.create_event(w.binding.calendar_ref, event)
-    w.provider.calls.clear()
-    return record.event_id
 
 
 # --- happy path --------------------------------------------------------------------
@@ -284,12 +248,16 @@ async def test_cancelled_release_keeps_another_attempts_cells(w) -> None:
     assert [k.start for k in w.records()] == [SLOT + 5 * FIVE]
 
 
-async def test_get_event_failure_is_calendar_unavailable(w) -> None:
+async def test_get_event_failure_on_our_booked_claim_is_unconfirmed(w) -> None:
+    """Partner ruling F1 (UC04b follow-up): an event of ours exists or existed,
+    so the answer is "unknown", never `calendar_unavailable` ("no event was
+    created"). Spec 7.4 step 2's text differs until the partner's docs unit."""
     await w.book()
     w.provider.fail_next("get_event", ProviderUnavailable())
     resp = await w.book()
-    assert resp == {"status": "calendar_unavailable", "retryable": True}
+    assert resp == {"status": "booking_unconfirmed"}
     assert logged(w) == ("provider_unavailable", None)
+    assert {r.state for r in w.records().values()} == {"booked"}  # nothing released
 
 
 async def test_first_cell_read_failure_is_calendar_unavailable(w) -> None:
@@ -307,20 +275,35 @@ async def test_corrupt_first_cell_is_calendar_unavailable(w) -> None:
     assert logged(w) == ("claim_store_unreachable", "record_invalid")
 
 
-async def test_own_live_pending_then_booked_replays(w) -> None:
+async def test_own_live_pending_then_booked_replays_with_the_events_current_times(w) -> None:
+    """F3: the polled `booked` answer goes through `_replay_booked`."""
     record = plant(w)
+    event_id = await created_event(w)
+    [event] = w.events()
+    event.start, event.end = SLOT + timedelta(minutes=30), SLOT + timedelta(minutes=60)  # host moved it
 
     def finish() -> None:
         if len(w.clock.sleeps) == 3:
             for key in list(w.records()):
-                w.store._write(key, record.booked("evt-9"))
+                w.store._write(key, record.booked(event_id))
 
     w.clock.on_sleep.append(finish)
     resp = await w.book()
     assert resp["status"] == "booked" and resp["replayed"] is True
-    assert resp["booking"]["start"] == "2026-10-06T14:00:00-04:00"
+    assert resp["booking"]["start"] == "2026-10-06T14:30:00-04:00"
     assert w.clock.sleeps == [0.25, 0.25, 0.25]
     assert "create_event" not in w.provider.calls
+
+
+async def test_polled_booked_with_get_event_failure_is_unconfirmed(w) -> None:
+    record = plant(w)
+    w.clock.on_sleep.append(
+        lambda: [w.store._write(k, record.booked("evt-9")) for k in list(w.records())] if len(w.clock.sleeps) == 1 else None
+    )
+    w.provider.fail_next("get_event", ProviderTimeout(maybe_committed=False))
+    resp = await w.book()
+    assert resp == {"status": "booking_unconfirmed"}
+    assert logged(w) == ("provider_timeout", None)
 
 
 async def test_own_pending_disappears_continues_to_step_3_and_books(w) -> None:
@@ -380,13 +363,54 @@ async def test_read_failure_while_polling_own_pending_is_unconfirmed_not_unavail
     assert logged(w) == ("claim_store_unreachable", "injected")
 
 
-async def test_own_stale_pending_first_cell_is_unconfirmed_interim(w) -> None:
-    plant(w)
-    w.clock.advance(CLAIM_TTL.total_seconds())
+async def test_own_stale_pending_without_event_is_recovered_then_books(w) -> None:
+    plant(w, age=STALE)
+    resp = await w.book()
+    assert resp["status"] == "booked" and resp["replayed"] is False
+    assert logged(w) == ("stale_claim_recovered", "stale_released")
+    assert w.provider.calls.count("create_event") == 1
+    [event] = w.events()
+    assert {(r.state, r.event_id) for r in w.records().values()} == {("booked", event.event_id)}
+
+
+async def test_own_stale_pending_with_event_is_finalized_then_replays(w) -> None:
+    """F15: the instance died between create and finalize; the identical retry
+    after claim_ttl recovers the claims and answers booked."""
+    record = plant(w, age=STALE)
+    event_id = await created_event(w)
+    resp = await w.book()
+    assert resp["status"] == "booked" and resp["replayed"] is True
+    assert logged(w) == ("stale_claim_recovered", "stale_finalized")
+    assert {(r.state, r.event_id, r.attempt_id) for r in w.records().values()} == {
+        ("booked", event_id, record.attempt_id)
+    }
+    assert "create_event" not in w.provider.calls
+
+
+async def test_own_stale_pending_recovery_failure_is_unconfirmed(w) -> None:
+    plant(w, age=STALE)
+    w.provider.fail_next("find_bookings", ProviderUnavailable("http_503"))
+    resp = await w.book()
+    assert resp == {"status": "booking_unconfirmed"}
+    assert logged(w) == ("create_unconfirmed", "provider_unavailable")
+    assert len(w.records()) == 6 and "create_event" not in w.provider.calls
+
+
+async def test_own_stale_pending_still_stale_after_one_recovery_is_unconfirmed(w, monkeypatch) -> None:
+    plant(w, age=STALE)
+    real_release = w.store.release
+
+    async def contended(key, etag):
+        # Another writer keeps rewriting the stale cell (new etag, still stale).
+        held = await w.store.read(key)
+        w.store._write(key, held.record)
+        w.store._cells[key].last_modified = w.clock.now() - timedelta(seconds=STALE)
+        return await real_release(key, etag)
+
+    monkeypatch.setattr(w.store, "release", contended)
     resp = await w.book()
     assert resp == {"status": "booking_unconfirmed"}
     assert logged(w) == ("create_unconfirmed", "stale_own_claim")
-    assert "create_event" not in w.provider.calls
 
 
 async def test_other_fingerprint_on_first_cell_continues_to_step_6(w) -> None:
@@ -621,19 +645,39 @@ async def test_deadline_guard_one_ms_short_claims_nothing(w, monkeypatch) -> Non
 
 @pytest.mark.parametrize("state", ["pending", "booked"])
 async def test_held_by_another_live_claim_releases_acquired_and_is_taken(w, state) -> None:
-    plant(w, fp="f" * 64, state=state, start=SLOT + 3 * FIVE, cells=[SLOT + 3 * FIVE], event_id="evt-z")
+    event_id = await created_event(w, fp="e" * 64, start=SLOT + 3 * FIVE, end=SLOT + 4 * FIVE)
+    [event] = w.events()
+    event.transparency = "transparent"  # verified by get_event, invisible to get_busy
+    plant(w, fp="e" * 64, state=state, start=SLOT + 3 * FIVE, duration=5, event_id=event_id)
     resp = await w.book()
     assert resp == {"status": "slot_unavailable", "detail": {"reason": "taken"}}
     assert logged(w) == ("claim_conflict", "claim_held")
     assert [k.start for k in w.records()] == [SLOT + 3 * FIVE]  # our three cells released
 
 
-async def test_held_by_another_stale_claim_is_still_taken_interim(w) -> None:
-    plant(w, fp="f" * 64, cells=[SLOT + FIVE])
-    w.clock.advance(CLAIM_TTL.total_seconds() * 10)  # far past claim_ttl
-    resp = await w.book(w.body())
-    assert resp["detail"]["reason"] == "taken"
-    assert logged(w) == ("claim_conflict", "claim_held")
+async def test_held_by_another_stale_claim_is_recovered_then_claimed(w) -> None:
+    plant(w, fp="e" * 64, cells=[SLOT + FIVE], age=STALE)
+    resp = await w.book()
+    assert resp["status"] == "booked"
+    assert logged(w) == ("stale_claim_recovered", "stale_released")
+    assert {r.fingerprint for r in w.records().values()} == {our_fingerprint(w)}
+
+
+async def test_held_by_another_unverified_booked_claim_is_released_then_claimed(w) -> None:
+    plant(w, fp="e" * 64, state="booked", event_id="evt-gone", cells=[SLOT + FIVE])
+    resp = await w.book()
+    assert resp["status"] == "booked"
+    assert logged(w) == ("stale_claim_recovered", "unverified_released")
+
+
+async def test_recovery_failure_on_another_claim_is_unavailable_and_releases(w) -> None:
+    plant(w, fp="e" * 64, state="booked", event_id="evt-x", cells=[SLOT + 2 * FIVE])
+    w.provider.fail_next("get_event", ProviderUnavailable("http_503"))
+    resp = await w.book()
+    assert resp == {"status": "calendar_unavailable", "retryable": True}
+    assert logged(w) == ("provider_unavailable", "http_503")
+    assert [k.start for k in w.records()] == [SLOT + 2 * FIVE]
+    assert "create_event" not in w.provider.calls
 
 
 async def test_own_fingerprint_on_first_cell_goes_to_step_2(w, monkeypatch) -> None:
@@ -643,8 +687,10 @@ async def test_own_fingerprint_on_first_cell_goes_to_step_2(w, monkeypatch) -> N
     async def claim_first(*args):
         result = await real(*args)
         record = plant(w, cells=[SLOT])
+        event_id = await created_event(w)
+        w.events()[0].transparency = "transparent"
         # ... and finishes while we poll.
-        w.clock.on_sleep.append(lambda: w.store._write(w.cell(SLOT), record.booked("evt-q")))
+        w.clock.on_sleep.append(lambda: w.store._write(w.cell(SLOT), record.booked(event_id)))
         return result
 
     monkeypatch.setattr(w.provider, "get_busy", claim_first)
@@ -653,26 +699,38 @@ async def test_own_fingerprint_on_first_cell_goes_to_step_2(w, monkeypatch) -> N
     assert "create_event" not in w.provider.calls
 
 
-@pytest.mark.parametrize(("stale", "reason"), [(False, "own_claim_live"), (True, "stale_own_claim")])
-async def test_own_fingerprint_on_later_cell_is_unconfirmed_interim(w, monkeypatch, stale, reason) -> None:
+async def test_own_live_leftover_on_later_cell_releases_and_polls_it(w, monkeypatch) -> None:
+    """SF-3: a live leftover of ours on a later cell: release what we acquired,
+    then step 2's pending logic on that cell (here it never resolves)."""
     real = w.provider.get_busy
 
     async def leftover(*args):
         result = await real(*args)
         plant(w, cells=[SLOT + 2 * FIVE])
-        if stale:
-            w.clock.advance(2)  # older than the (shortened) claim_ttl
         return result
 
     monkeypatch.setattr(w.provider, "get_busy", leftover)
-    if stale:
-        # Shortened so the request deadline survives; only the leftover's store age matters.
-        monkeypatch.setattr(booking, "CLAIM_TTL", timedelta(seconds=1))
     resp = await w.book()
     assert resp == {"status": "booking_unconfirmed"}
-    assert logged(w) == ("create_unconfirmed", reason)
+    assert logged(w) == ("replay_poll_timeout", None)
     assert [k.start for k in w.records()] == [SLOT + 2 * FIVE]  # acquired cells released
     assert "create_event" not in w.provider.calls
+
+
+async def test_own_stale_leftover_on_later_cell_is_recovered_and_claimed(w, monkeypatch) -> None:
+    real = w.provider.get_busy
+
+    async def leftover(*args):
+        result = await real(*args)
+        plant(w, attempt="cd" * 8, cells=[SLOT + 2 * FIVE], age=STALE)
+        return result
+
+    monkeypatch.setattr(w.provider, "get_busy", leftover)
+    resp = await w.book()
+    assert resp["status"] == "booked" and resp["replayed"] is False
+    assert logged(w) == ("stale_claim_recovered", "stale_released")
+    assert {r.attempt_id for r in w.records().values()} != {"cd" * 8}
+    assert len(w.events()) == 1
 
 
 async def test_claim_store_failure_mid_claim_releases_acquired(w) -> None:
@@ -733,14 +791,15 @@ async def test_definitive_create_rejection_releases_and_is_unavailable(w, exc, d
     "exc",
     [ProviderTimeout(maybe_committed=True), ProviderTimeout(maybe_committed=False), ProviderUnavailable("http_503")],
 )
-async def test_uncertain_create_is_unconfirmed_and_claims_stay_pending(w, exc) -> None:
+async def test_uncertain_create_twice_is_unconfirmed_and_claims_stay_pending(w, exc) -> None:
+    w.provider.fail_next("create_event", exc)
     w.provider.fail_next("create_event", exc)
     resp = await w.book()
     assert resp == {"status": "booking_unconfirmed"}
     assert logged(w) == ("create_unconfirmed", exc.diagnostic)
     records = w.records()
     assert len(records) == 6 and {r.state for r in records.values()} == {"pending"}
-    assert w.provider.calls.count("create_event") == 1  # interim: no lookup, no retry
+    assert w.provider.calls.count("create_event") == 2  # the create and one retry
 
 
 async def test_create_slower_than_its_timeout_is_unconfirmed(w, monkeypatch) -> None:
@@ -756,6 +815,7 @@ async def test_create_slower_than_its_timeout_is_unconfirmed(w, monkeypatch) -> 
 
 
 async def test_retry_after_uncertain_create_with_live_pending_is_unconfirmed_not_taken(w) -> None:
+    w.provider.fail_next("create_event", ProviderTimeout(maybe_committed=True))
     w.provider.fail_next("create_event", ProviderTimeout(maybe_committed=True))
     await w.book()
     resp = await w.book()
@@ -904,4 +964,300 @@ async def test_own_attempt_flickering_is_bounded_and_unconfirmed(w, monkeypatch)
     assert resp == {"status": "booking_unconfirmed"}
     assert logged(w) == ("replay_poll_timeout", "replay_loop")
     assert w.provider.calls.count("get_busy") == booking.MAX_ROUNDS
+    assert "create_event" not in w.provider.calls
+
+
+# --- UC04c review r1: step-6 recovery, own leftovers and lost CAS end to end ------------
+
+
+def _after_get_busy(w: World, monkeypatch, action) -> None:
+    """Run `action` once get_busy (step 5) has answered: the next thing the
+    request does is step 6."""
+    real = w.provider.get_busy
+
+    async def hooked(*args):
+        result = await real(*args)
+        await action()
+        return result
+
+    monkeypatch.setattr(w.provider, "get_busy", hooked)
+
+
+def _on_recovery_lookup(w: World, monkeypatch, action, call: int = 2) -> None:
+    """Run `action` inside the `call`-th find_bookings (step 3 is the first;
+    step-6 recovery's lookup is the second)."""
+    real = w.provider.find_bookings
+    seen = {"n": 0}
+
+    async def hooked(*args, **kwargs):
+        seen["n"] += 1
+        result = await real(*args, **kwargs)
+        if seen["n"] == call:
+            await action()
+        return result
+
+    monkeypatch.setattr(w.provider, "find_bookings", hooked)
+
+
+async def test_b1_lost_cas_onto_another_contacts_booking_is_never_our_booked(w, monkeypatch) -> None:
+    """Review r1 B1: our stale leftover is released and re-booked by another
+    contact while our recoverer looks it up; our release loses and the re-read
+    shows the other contact's verified booking. We must answer `taken`."""
+    leftover = SLOT + 2 * FIVE
+
+    async def plant_leftover():
+        plant(w, attempt="cd" * 8, cells=[leftover], age=STALE)
+
+    async def other_contact_wins():
+        del w.store._cells[w.cell(leftover)]
+        event_id = await created_event(w, fp="e" * 64, start=leftover, end=leftover + FIVE, phone=OTHER_PHONE)
+        plant(w, fp="e" * 64, state="booked", event_id=event_id, start=leftover, duration=5, phone=OTHER_PHONE)
+
+    _after_get_busy(w, monkeypatch, plant_leftover)
+    _on_recovery_lookup(w, monkeypatch, other_contact_wins)
+    resp = await w.book()
+    assert resp == {"status": "slot_unavailable", "detail": {"reason": "taken"}}
+    assert logged(w) == ("claim_conflict", "claim_held")
+    assert "create_event" not in w.provider.calls
+    assert [e.meta.fingerprint for e in w.events()] == ["e" * 64]
+    assert {r.fingerprint for r in w.records().values()} == {"e" * 64}  # ours released
+
+
+async def test_b1_mirror_our_identical_retry_wins_the_recovered_cell_never_taken(w, monkeypatch) -> None:
+    """Review r1 B1 mirror: a stale foreign claim on our first cell; while we
+    recover it, an identical attempt of ours recovers and claims it first.
+    The re-read shows our own live claim: never `taken` for our own booking."""
+    plant(w, fp="e" * 64, cells=[SLOT], age=STALE, phone=OTHER_PHONE)
+
+    async def our_twin_wins():
+        del w.store._cells[w.cell(SLOT)]
+        plant(w, attempt="ef" * 8, cells=[SLOT])
+
+    _on_recovery_lookup(w, monkeypatch, our_twin_wins)
+    resp = await w.book()
+    assert resp["status"] != "slot_unavailable"
+    assert resp == {"status": "booking_unconfirmed"}  # the twin never resolves here
+    assert logged(w) == ("replay_poll_timeout", None)
+    assert "create_event" not in w.provider.calls
+
+
+async def test_own_stale_leftover_on_later_cell_with_its_event_replays(w, monkeypatch) -> None:
+    """S1(a): the leftover's attempt did create; recovery finalizes it and the
+    answer is this booking, replayed."""
+    leftover = SLOT + 2 * FIVE
+    record: dict = {}
+
+    async def plant_leftover():
+        record["r"] = plant(w, attempt="cd" * 8, cells=[leftover], age=STALE)
+        record["e"] = await created_event(w)
+
+    _after_get_busy(w, monkeypatch, plant_leftover)
+    resp = await w.book()
+    assert resp["status"] == "booked" and resp["replayed"] is True
+    assert logged(w) == ("stale_claim_recovered", "stale_finalized")
+    assert "create_event" not in w.provider.calls
+    assert w.records() == {w.cell(leftover): record["r"].booked(record["e"])}  # acquired released
+
+
+async def test_own_booked_leftover_on_later_cell_verified_replays(w, monkeypatch) -> None:
+    """S1(b): a verified booked leftover of ours is this booking."""
+    leftover = SLOT + 2 * FIVE
+
+    async def plant_leftover():
+        event_id = await created_event(w)
+        plant(w, attempt="cd" * 8, state="booked", event_id=event_id, cells=[leftover])
+
+    _after_get_busy(w, monkeypatch, plant_leftover)
+    resp = await w.book()
+    assert resp["status"] == "booked" and resp["replayed"] is True
+    assert logged(w) == (None, None)
+    assert "create_event" not in w.provider.calls
+
+
+async def test_own_booked_leftover_on_later_cell_unverified_is_released_and_claimed(w, monkeypatch) -> None:
+    """S1(b): its event is gone: released, `try_claim` once more, booked."""
+    leftover = SLOT + 2 * FIVE
+
+    async def plant_leftover():
+        plant(w, attempt="cd" * 8, state="booked", event_id="evt-gone", cells=[leftover])
+
+    _after_get_busy(w, monkeypatch, plant_leftover)
+    resp = await w.book()
+    assert resp["status"] == "booked" and resp["replayed"] is False
+    assert logged(w) == ("stale_claim_recovered", "unverified_released")
+    assert w.provider.calls.count("create_event") == 1
+    [event] = w.events()
+    assert {(r.state, r.event_id) for r in w.records().values()} == {("booked", event.event_id)}
+
+
+@pytest.mark.parametrize(
+    ("fail", "state", "reason"),
+    [
+        (("provider", "find_bookings"), "pending", "provider_unavailable"),
+        (("provider", "get_event"), "booked", "provider_unavailable"),
+        (("store", "release"), "pending", "claim_store_unreachable"),
+    ],
+)
+async def test_own_leftover_recovery_failure_is_unconfirmed_and_releases(w, monkeypatch, fail, state, reason) -> None:
+    """S1(c), S2: recovery of an earlier attempt of ours failed: unknown, logged
+    with the alerted `create_unconfirmed`."""
+    leftover = SLOT + 2 * FIVE
+
+    async def plant_leftover():
+        plant(w, attempt="cd" * 8, state=state, event_id="evt-x", cells=[leftover], age=STALE)
+        kind, op = fail
+        if kind == "provider":
+            w.provider.fail_next(op, ProviderUnavailable())
+        else:
+            w.store.fail_next(op)
+
+    _after_get_busy(w, monkeypatch, plant_leftover)
+    resp = await w.book()
+    assert resp == {"status": "booking_unconfirmed"}
+    assert logged(w) == ("create_unconfirmed", reason)
+    assert [k.start for k in w.records()] == [leftover]  # acquired released, leftover untouched
+    assert "create_event" not in w.provider.calls
+
+
+async def _contend(w: World, monkeypatch) -> None:
+    """Every release loses its compare-and-swap (another writer keeps rewriting
+    the stale cell with a new etag)."""
+    real_release = w.store.release
+
+    async def contended(key, etag):
+        held = await w.store.read(key)
+        if held is not None and held.record.state == "pending" and held.age.total_seconds() >= STALE - 1:
+            w.store._write(key, held.record)
+            w.store._cells[key].last_modified = w.clock.now() - timedelta(seconds=STALE)
+        return await real_release(key, etag)
+
+    monkeypatch.setattr(w.store, "release", contended)
+
+
+async def test_contended_foreign_stale_cell_is_taken_after_one_retry(w, monkeypatch) -> None:
+    """S1(d): recovery gives up after MAX_CAS_ROUNDS lost compare-and-swaps;
+    the cell is re-claimed once, still held: `taken`."""
+    plant(w, fp="e" * 64, cells=[SLOT + 2 * FIVE], age=STALE, phone=OTHER_PHONE)
+    await _contend(w, monkeypatch)
+    resp = await w.book()
+    assert resp == {"status": "slot_unavailable", "detail": {"reason": "taken"}}
+    assert logged(w) == ("claim_conflict", "claim_held")
+    assert "create_event" not in w.provider.calls
+
+
+async def test_contended_own_stale_leftover_is_never_taken(w, monkeypatch) -> None:
+    """S1(d): the same for a leftover of ours: unknown, never `taken`."""
+    leftover = SLOT + 2 * FIVE
+
+    async def plant_leftover():
+        if w.cell(leftover) not in w.store._cells:
+            plant(w, attempt="cd" * 8, cells=[leftover], age=STALE)
+
+    _after_get_busy(w, monkeypatch, plant_leftover)
+    await _contend(w, monkeypatch)
+    resp = await w.book()
+    assert resp["status"] == "booking_unconfirmed"
+    assert "create_event" not in w.provider.calls
+
+
+async def test_step3_failure_after_our_own_attempt_was_seen_is_unconfirmed(w, monkeypatch) -> None:
+    """Review r1 N4: a live leftover of ours vanished while we polled it, so we
+    start over; a step-3 lookup failure then is unknown, never
+    `calendar_unavailable` (that attempt of ours may have created)."""
+    leftover = SLOT + 2 * FIVE
+    rounds = {"n": 0}
+
+    async def plant_leftover():
+        rounds["n"] += 1
+        if rounds["n"] == 1:
+            plant(w, attempt="cd" * 8, cells=[leftover])
+
+    def vanish() -> None:
+        if w.cell(leftover) in w.store._cells:
+            del w.store._cells[w.cell(leftover)]
+            w.provider.fail_next("find_bookings", ProviderUnavailable("http_503"))
+
+    _after_get_busy(w, monkeypatch, plant_leftover)
+    w.clock.on_sleep.append(vanish)
+    resp = await w.book()
+    assert resp == {"status": "booking_unconfirmed"}
+    assert logged(w) == ("provider_unavailable", "http_503")
+    assert "create_event" not in w.provider.calls
+
+
+# --- UC04c review r2 ------------------------------------------------------------------
+
+
+async def test_recovery_failure_after_a_lost_cas_on_a_foreign_cell_is_unavailable(w, monkeypatch) -> None:
+    """Review r2 S-r2-1: recovery of another contact's stale claim loses its
+    CAS (the cell was rewritten, still foreign and stale) and the re-evaluation's
+    lookup fails: `calendar_unavailable`, as without the lost CAS; never `taken`."""
+    cell = SLOT + 2 * FIVE
+    plant(w, fp="e" * 64, cells=[cell], age=STALE, phone=OTHER_PHONE)
+
+    async def rewrite_and_break():
+        plant(w, fp="e" * 64, attempt="cd" * 8, cells=[cell], age=STALE, phone=OTHER_PHONE)
+        w.provider.fail_next("find_bookings", ProviderUnavailable("http_503"))
+
+    _on_recovery_lookup(w, monkeypatch, rewrite_and_break)
+    resp = await w.book()
+    assert resp == {"status": "calendar_unavailable", "retryable": True}
+    assert logged(w) == ("provider_unavailable", "http_503")
+    assert [k.start for k in w.records()] == [cell]  # acquired released, foreign cell untouched
+    assert "create_event" not in w.provider.calls
+
+
+async def test_step2_finalize_replays_from_the_recovery_lookup(w) -> None:
+    """Review r2 N-r2-1: no second `get_event` after recovery found the event."""
+    plant(w, age=STALE)
+    await created_event(w)
+    resp = await w.book()
+    assert resp["status"] == "booked" and resp["replayed"] is True
+    assert "get_event" not in w.provider.calls
+
+
+# --- UC04c review r3 ------------------------------------------------------------------
+
+
+async def test_own_leftover_replaced_by_foreign_then_recovery_fails_is_unavailable(w, monkeypatch) -> None:
+    """Review r3 SF-r3-1: our stale leftover is replaced by another contact's
+    stale claim while we look it up; our CAS loses and the re-evaluation's
+    lookup fails: `calendar_unavailable`, never `taken`."""
+    leftover = SLOT + 2 * FIVE
+
+    async def plant_leftover():
+        plant(w, attempt="cd" * 8, cells=[leftover], age=STALE)
+
+    async def replace_and_break():
+        plant(w, fp="e" * 64, cells=[leftover], age=STALE, phone=OTHER_PHONE)
+        w.provider.fail_next("find_bookings", ProviderUnavailable("http_503"))
+
+    _after_get_busy(w, monkeypatch, plant_leftover)
+    _on_recovery_lookup(w, monkeypatch, replace_and_break)
+    resp = await w.book()
+    assert resp == {"status": "calendar_unavailable", "retryable": True}
+    assert logged(w) == ("provider_unavailable", "http_503")
+    assert {r.fingerprint for r in w.records().values()} == {"e" * 64}  # acquired released
+    assert "create_event" not in w.provider.calls
+
+
+async def test_reread_failure_after_a_lost_cas_on_a_foreign_cell_is_unavailable(w, monkeypatch) -> None:
+    """Review r3 N-r3-1: the re-read after a lost CAS fails: the cell is left
+    alone and the answer is `calendar_unavailable` (nothing created)."""
+    cell = SLOT + 2 * FIVE
+    plant(w, fp="e" * 64, cells=[cell], age=STALE, phone=OTHER_PHONE)
+    real_release = w.store.release
+
+    async def lose_then_break(key, etag):
+        if key == w.cell(cell):
+            # Another writer rewrites the cell (new etag), then the store fails.
+            plant(w, fp="e" * 64, attempt="cd" * 8, cells=[cell], age=STALE, phone=OTHER_PHONE)
+            w.store.fail_next("read", ClaimStoreUnavailable("timeout"))
+        return await real_release(key, etag)
+
+    monkeypatch.setattr(w.store, "release", lose_then_break)
+    resp = await w.book()
+    assert resp == {"status": "calendar_unavailable", "retryable": True}
+    assert logged(w) == ("claim_store_unreachable", "timeout")
+    assert [k.start for k in w.records()] == [cell]
     assert "create_event" not in w.provider.calls

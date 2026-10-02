@@ -16,10 +16,19 @@ from typing import Any
 
 from calendar_tools.core import tokens
 from calendar_tools.core.bindings import Binding, load_bindings
-from calendar_tools.core.booking import BookingService
+from calendar_tools.core.booking import SERVICE_TAG, BookingService
 from calendar_tools.core.claims import ClaimRecord, FakeClaimStore
+from calendar_tools.core.contact import Contact
 from calendar_tools.core.deadline import Deadline
-from calendar_tools.core.identity import CalendarIdentityCache, CellKey, calendar_key, floor5
+from calendar_tools.core.identity import (
+    CalendarIdentityCache,
+    CellKey,
+    calendar_key,
+    contact_tag,
+    fingerprint,
+    floor5,
+)
+from calendar_tools.core.ports import BookingMeta, NewEvent
 from calendar_tools.http.app import RequestContext
 from calendar_tools.providers.fake import FakeCalendarProvider
 from tests.fakes import jwt_tokens as jt
@@ -145,3 +154,49 @@ class World:
     def events(self, binding_id: str = "test-alpha") -> list[Any]:
         provider = self.providers[self.bindings[binding_id].provider]
         return [e for e in provider._store(self.bindings[binding_id].calendar_ref).values() if e.active]
+
+
+# --- shared helpers (UC04b/UC04c) ----------------------------------------------------
+
+FIVE = timedelta(minutes=5)
+
+
+def our_fingerprint(w: World, start: datetime = SLOT, duration: int = 30, phone: str = PHONE,
+                    type_id: str = "phone_call") -> str:
+    tag = contact_tag(FINGERPRINT_KEY, Contact(name=None, phone=phone, email=None))
+    return fingerprint(FINGERPRINT_KEY, w.cal_key(), start, start + timedelta(minutes=duration), tag, type_id)
+
+
+def plant(w: World, *, fp: str | None = None, state: str = "pending", start: datetime = SLOT,
+          duration: int = 30, attempt: str = "ab" * 8, event_id: str | None = None,
+          cells: list[datetime] | None = None, phone: str = PHONE, binding_id: str = "test-alpha",
+          buffer_minutes: int = 0, age: float = 0.0) -> ClaimRecord:
+    """Write a claim record directly into the fake store (as another attempt
+    would). `age` backdates the cells' store-server write time, in seconds."""
+    tag = contact_tag(FINGERPRINT_KEY, Contact(name=None, phone=phone, email=None))
+    record = ClaimRecord.pending(
+        calendar_key=w.cal_key(), start=start, end=start + timedelta(minutes=duration),
+        buffer_minutes=buffer_minutes, fingerprint=fp or our_fingerprint(w, start, duration, phone),
+        attempt_id=attempt, contact_tag=tag, binding_id=binding_id,
+    )
+    if state == "booked":
+        record = record.booked(event_id or "evt-x")
+    span = (duration + buffer_minutes) // 5
+    for at in cells or [start + i * FIVE for i in range(span)]:
+        key = w.cell(at)
+        w.store._write(key, record)
+        if age:
+            w.store._cells[key].last_modified = w.clock.now() - timedelta(seconds=age)
+    return record
+
+
+async def created_event(w: World, *, fp: str | None = None, start: datetime = SLOT,
+                        end: datetime | None = None, phone: str = PHONE, binding_id: str = "test-alpha") -> str:
+    """Create a service event directly on the fake calendar (as an earlier
+    attempt's create would have)."""
+    tag = contact_tag(FINGERPRINT_KEY, Contact(name=None, phone=phone, email=None))
+    meta = BookingMeta(SERVICE_TAG, binding_id, fp or our_fingerprint(w, start, phone=phone), tag, "REF001")
+    event = NewEvent(start, end or start + timedelta(minutes=30), "America/Toronto", "t", "d", meta, meta.fingerprint)
+    record = await w.provider.create_event(w.binding.calendar_ref, event)
+    w.provider.calls.clear()
+    return record.event_id

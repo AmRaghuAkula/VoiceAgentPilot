@@ -7,11 +7,13 @@ all of its cells, and a retry of our own booking never answers `taken`."""
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import itertools
 from datetime import timedelta
 
 import pytest
 
+from calendar_tools.core.recovery import CLAIM_TTL
 from tests.booking_world import OTHER_PHONE, PHONE, SLOT, World
 
 FIVE = timedelta(minutes=5)
@@ -202,3 +204,132 @@ async def test_many_concurrent_different_contacts_one_slot() -> None:
     assert len(w.events()) == 1
     assert_no_overlapping_bookings(w)
 
+
+
+# --- UC04c: recovery and lifecycle (spec 7.4 "Recovery", F14, F15, SF-3, SF-7, SF-8) ---
+
+STALE = CLAIM_TTL.total_seconds() + 1
+
+
+async def _die(w: World, task: asyncio.Task, gate) -> None:
+    """The instance running `task` dies at `gate`: nothing after it runs."""
+    await gate.reached.wait()
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+
+async def test_f15_owner_died_before_create_then_another_contact_books_the_slot() -> None:
+    w = World()
+    gate = w.hooks.gate("after", "try_claim", w.cell(SLOT + 5 * FIVE))  # all six claimed
+    await _die(w, asyncio.create_task(w.book()), gate)
+    assert {r.state for r in w.records().values()} == {"pending"} and w.events() == []
+    # Within claim_ttl the slot stays protected.
+    assert (await w.book(w.body(phone=OTHER_PHONE)))["detail"]["reason"] == "taken"
+    w.clock.advance(STALE)
+    resp = await w.book(w.body(phone=OTHER_PHONE))
+    assert resp["status"] == "booked"
+    assert (w.last_ctx.diagnostic, w.last_ctx.reason) == ("stale_claim_recovered", "stale_released")
+    assert len(w.events()) == 1
+    assert_no_overlapping_bookings(w)
+
+
+async def test_f15_owner_died_after_create_then_the_identical_retry_replays() -> None:
+    w = World()
+    gate = w.hooks.gate("before", "replace", w.cell(SLOT))  # created, not finalized
+    await _die(w, asyncio.create_task(w.book()), gate)
+    [event] = w.events()
+    w.clock.advance(STALE)
+    # Another contact cannot take it (busy time and the recovered claims).
+    assert (await w.book(w.body(phone=OTHER_PHONE)))["detail"]["reason"] == "taken"
+    resp = await w.book()
+    assert resp["status"] == "booked" and resp["replayed"] is True
+    assert {(r.state, r.event_id) for r in w.records().values()} == {("booked", event.event_id)}
+    assert w.provider.calls.count("create_event") == 1
+    assert_no_overlapping_bookings(w)
+
+
+async def test_f15_stale_cells_finalized_by_another_contacts_recovery() -> None:
+    """The owner created and died; the event is hidden from busy time (e.g. a
+    transparent copy) so another contact reaches step 6: recovery finalizes
+    the owner's cells and the other contact gets `taken`, never a double booking."""
+    w = World()
+    gate = w.hooks.gate("before", "replace", w.cell(SLOT))
+    await _die(w, asyncio.create_task(w.book()), gate)
+    [event] = w.events()
+    event.transparency = "transparent"
+    w.clock.advance(STALE)
+    resp = await w.book(w.body(phone=OTHER_PHONE))
+    assert resp == {"status": "slot_unavailable", "detail": {"reason": "taken"}}
+    assert {(r.state, r.event_id) for r in w.records().values()} == {("booked", event.event_id)}
+    assert len(w.events()) == 1
+
+
+async def test_two_contacts_racing_to_recover_one_stale_slot_book_once() -> None:
+    w = World()
+    gate = w.hooks.gate("after", "try_claim", w.cell(SLOT + 5 * FIVE))
+    await _die(w, asyncio.create_task(w.book(w.body(phone=PHONES[0]))), gate)
+    w.clock.advance(STALE)
+    results = await asyncio.gather(
+        w.service.book(w.binding, w.body(phone=PHONES[1]), w.ctx()),
+        w.service.book(w.binding, w.body(phone=PHONES[2]), w.ctx()),
+    )
+    assert sorted(r["status"] for r in results) == ["booked", "slot_unavailable"]
+    assert len(w.events()) == 1
+    assert_no_overlapping_bookings(w)
+
+
+async def test_sf8_host_deletes_then_retry_is_cancelled_then_the_slot_books_again() -> None:
+    w = World()
+    first = await w.book()
+    [event] = w.events()
+    w.provider.cancel_event(w.binding.calendar_ref, event.event_id)
+    assert await w.book() == {"status": "slot_unavailable", "detail": {"reason": "cancelled"}}
+    again = await w.book()
+    assert again["status"] == "booked" and again["replayed"] is False
+    assert again["booking"]["booking_ref"] == first["booking"]["booking_ref"]
+    assert len(w.events()) == 1
+
+
+async def test_sf8_host_deletes_then_another_contact_books_the_freed_slot() -> None:
+    """No retry released the cells: verification at step 6 does."""
+    w = World()
+    await w.book()
+    [event] = w.events()
+    w.provider.cancel_event(w.binding.calendar_ref, event.event_id)
+    resp = await w.book(w.body(phone=OTHER_PHONE))
+    assert resp["status"] == "booked"
+    assert (w.last_ctx.diagnostic, w.last_ctx.reason) == ("stale_claim_recovered", "unverified_released")
+    assert len(w.events()) == 1
+    assert_no_overlapping_bookings(w)
+
+
+async def test_sf7_host_moves_a_booking_then_the_retry_replays_the_moved_times() -> None:
+    w = World()
+    await w.book()
+    [event] = w.events()
+    event.start, event.end = SLOT + timedelta(hours=2), SLOT + timedelta(hours=2, minutes=30)
+    # Another contact takes the old time: its cells fail verification (moved).
+    other = await w.book(w.body(phone=OTHER_PHONE))
+    assert other["status"] == "booked"
+    # The identical retry: our first cell is no longer ours; step 3 finds the event.
+    resp = await w.book()
+    assert resp["status"] == "booked" and resp["replayed"] is True
+    assert resp["booking"]["start"] == "2026-10-06T16:00:00-04:00"
+    assert len(w.events()) == 2
+    # The moved event no longer sits on its old claims, so only the events are compared.
+    a, b = w.events()
+    assert not (a.start < b.end and b.start < a.end)
+
+
+async def test_claim_store_failure_before_create_is_unavailable_after_is_booked() -> None:
+    """SF-3 / F14."""
+    w = World()
+    w.store.fail_next("try_claim")
+    assert (await w.book())["status"] == "calendar_unavailable"
+    assert w.events() == [] and w.records() == {}
+    w.store.fail_next("replace")
+    resp = await w.book()
+    assert resp["status"] == "booked"
+    assert (w.last_ctx.diagnostic, w.last_ctx.reason) == ("claim_finalize_failed", None)
+    assert len(w.events()) == 1
