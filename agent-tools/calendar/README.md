@@ -18,7 +18,9 @@ Built unit by unit (UC02a onward). As of UC02a this directory holds the package 
 | --- | --- |
 | `calendar_tools/core/` | Framework-free core (G1): `ports.py` (spec 6.2 types, `CalendarProvider`, core exceptions with their diagnostic codes), `bindings.py` (spec 4.1 loader and validation), `clock.py`, `deadline.py` (request budget and the P17 constants) |
 | `calendar_tools/providers/` | `base.py` (re-exports the port for adapter authors), `registry.py`, `fake.py` (`FakeCalendarProvider`) |
-| `calendar_tools/obs.py` | `mask_phone` and the one structured log line per request |
+| `calendar_tools/obs.py` | `mask_phone` and the one structured log line per request (identifiers are shape-checked before they are logged) |
+| `calendar_tools/config.py` | Startup configuration (the `CALENDAR_AUTH_*` settings below); fails closed, names the variable, never echoes the value |
+| `calendar_tools/http/` | `app.py` (framework-free dispatcher: routing, 404/405/413, auth, per-binding allowlist, JSON, the one log line), `auth.py` (Entra JWT validation and JWKS cache), `responses.py` (fixed protocol responses) |
 | `openapi/calendar-tools.openapi.yaml` | The canonical contract (spec section 5), with a placeholder `servers[0].url` |
 | `tools/render_openapi.py` | Renders one binding's copy; changes only `servers[0].url` (G3) |
 | `bindings.sample.json` | Two fictional bindings |
@@ -63,6 +65,8 @@ App settings, validated at startup (fail closed; errors name the variable or fie
 | `CALENDAR_CLAIMS_CONTAINER` | `claims` | UC06 | Default `claims` |
 | `CALENDAR_KEY_VAULT_URI` | `https://<vault>.vault.azure.net` | UC07 | |
 | `AZURE_CLIENT_ID` | `<client GUID>` | UC06 | The user-assigned identity's client ID |
+
+The two `CALENDAR_AUTH_*` GUIDs are required. The role and the principal claim take their defaults only when the variable is absent; a variable that is set but blank fails startup.
 
 Service keys (spec section 9.2) are Key Vault secrets with fixed names: `slot-token-key`, `slot-token-key-previous` (optional) and `fingerprint-key`, each the base64 of 32 random bytes (UC05, UC07).
 
