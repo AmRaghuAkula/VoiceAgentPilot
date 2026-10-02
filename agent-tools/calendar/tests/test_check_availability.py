@@ -196,7 +196,7 @@ async def test_bad_date_or_time_names_the_field(world, field, value) -> None:
     assert (world.ctx.diagnostic, world.ctx.reason) == ("invalid_request", field)
 
 
-@pytest.mark.parametrize("value", [60, 0, -30, "30", 30.0, True, [30]])
+@pytest.mark.parametrize("value", [60, 0, -30, "30", 30.5, 60.0, True, [30], float("inf")])
 async def test_duration_not_allowed(world, value) -> None:
     resp = await world.check({"duration_minutes": value})
     assert resp == {
@@ -499,4 +499,26 @@ async def test_every_slot_misaligned_is_calendar_unavailable(world, monkeypatch)
     monkeypatch.setattr(availability.tokens, "issue", always)
     resp = await world.check()
     assert resp == {"status": "calendar_unavailable", "retryable": True}
-    assert world.ctx.diagnostic == "slot_misaligned"
+    assert (world.ctx.diagnostic, world.ctx.reason) == ("slot_misaligned", None)
+
+
+async def test_key_load_capped_by_the_request_deadline(world, monkeypatch) -> None:
+    async def slow(_deadline):
+        await asyncio.sleep(5)
+
+    monkeypatch.setattr(world.keyring, "load", slow)
+    ctx = world.new_ctx()
+    world.clock.advance(8.0 - 0.01)  # 10 ms left: less than the 3 s key-load limit
+    resp = await world.check(ctx=ctx)
+    assert resp == {"status": "calendar_unavailable", "retryable": True}
+    assert (world.ctx.diagnostic, world.ctx.reason) == ("deadline_exceeded", None)
+    assert world.provider.calls == []
+
+
+@pytest.mark.parametrize("value", [30.0, 45.0])
+async def test_integral_float_duration_is_accepted(world, value) -> None:
+    # JSON Schema's `integer` accepts 30.0, so the contract does too.
+    resp = await world.check({"from_date": "2026-10-06", "to_date": "2026-10-06", "duration_minutes": value})
+    assert resp["status"] == "available"
+    assert resp["duration_minutes"] == int(value)
+    assert isinstance(resp["duration_minutes"], int)

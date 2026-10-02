@@ -20,7 +20,8 @@ def encode_time(value: datetime) -> str:
         raise ValueError("times must be tz-aware UTC")
     if value.second or value.microsecond:
         raise ValueError("times are encoded at minute precision")
-    return value.strftime("%Y-%m-%dT%H:%MZ")
+    # Built by hand: strftime pads years below 1000 differently across platforms.
+    return f"{value.year:04d}-{value.month:02d}-{value.day:02d}T{value.hour:02d}:{value.minute:02d}Z"
 
 
 def _field_bytes(value: object) -> bytes:

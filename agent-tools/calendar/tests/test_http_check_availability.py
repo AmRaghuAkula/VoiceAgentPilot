@@ -5,6 +5,7 @@ diagnostic and reason, and no slot token value anywhere in the logs."""
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from datetime import UTC, datetime
@@ -14,9 +15,18 @@ import jsonschema
 import pytest
 import yaml
 
+from calendar_tools.core import availability, tokens
 from calendar_tools.core.availability import make_check_availability
 from calendar_tools.core.bindings import load_bindings
-from calendar_tools.core.ports import ProviderUnavailable, SecretInvalid, SecretStoreUnavailable
+from calendar_tools.core.deadline import DeadlineExceeded
+from calendar_tools.core.ports import (
+    ProviderAuthError,
+    ProviderConfigError,
+    ProviderTimeout,
+    ProviderUnavailable,
+    SecretInvalid,
+    SecretStoreUnavailable,
+)
 from calendar_tools.http.app import CalendarService, Request
 from calendar_tools.http.auth import Authenticator, JwksCache
 from calendar_tools.providers.fake import FakeCalendarProvider
@@ -207,3 +217,81 @@ async def test_keys_loaded_once_per_request_through_the_service(svc, logs) -> No
     await svc.post()
     await svc.post()
     assert svc.keyring.load_calls == 2
+
+
+async def _slow(*_args: Any, **_kwargs: Any) -> None:
+    await asyncio.sleep(5)
+
+
+def _provider_timeout(svc: Service, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(availability, "PROVIDER_TIMEOUT", 0.01)
+    monkeypatch.setattr(svc.provider, "get_busy", _slow)
+
+
+def _provider_deadline(svc: Service, monkeypatch: pytest.MonkeyPatch) -> None:
+    # The fake clock jumps when the provider is called, so the request deadline
+    # (not the 3 s provider limit) caps the wait.
+    real = svc.keyring.load
+
+    async def load_then_jump(deadline):
+        keys = await real(deadline)
+        svc.clock.advance(8.0 - 0.01)
+        return keys
+
+    monkeypatch.setattr(svc.keyring, "load", load_then_jump)
+    monkeypatch.setattr(svc.provider, "get_busy", _slow)
+
+
+def _key_timeout(svc: Service, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(availability, "SECRET_TIMEOUT", 0.01)
+    monkeypatch.setattr(svc.keyring, "load", _slow)
+
+
+def _misaligned(svc: Service, monkeypatch: pytest.MonkeyPatch) -> None:
+    def refuse(*_args: Any) -> str:
+        raise tokens.SlotMisaligned()
+
+    monkeypatch.setattr(availability.tokens, "issue", refuse)
+
+
+def _fail(exc: Exception):
+    def setup(svc: Service, monkeypatch: pytest.MonkeyPatch) -> None:
+        svc.provider.fail_next("get_busy", exc)
+
+    return setup
+
+
+@pytest.mark.parametrize(
+    ("setup", "diagnostic", "reason"),
+    [
+        (_fail(ProviderAuthError("refresh_rejected")), "credential_rejected", "refresh_rejected"),
+        (_fail(ProviderConfigError("calendar_not_found")), "provider_config_error", "calendar_not_found"),
+        (_fail(ProviderTimeout(maybe_committed=False)), "provider_timeout", None),
+        (_provider_timeout, "provider_timeout", "timeout"),
+        (_provider_deadline, "deadline_exceeded", None),
+        (_key_timeout, "secret_store_unreachable", "timeout"),
+        (_misaligned, "slot_misaligned", None),
+    ],
+    ids=["auth", "config", "timeout_exc", "provider_slow", "deadline", "key_slow", "misaligned"],
+)
+async def test_each_unavailable_cause_is_logged(svc, logs, schema, monkeypatch, setup, diagnostic, reason) -> None:
+    setup(svc, monkeypatch)
+    status, body = await svc.post()
+    assert status == 200
+    assert body["status"] == "calendar_unavailable" and body["retryable"] is True
+    check_contract(body, schema)
+    line = one_line(logs)
+    assert (line["status"], line["diagnostic"], line["reason"]) == ("calendar_unavailable", diagnostic, reason)
+
+
+async def test_deadline_spent_before_the_operation_is_logged(svc, logs, schema, monkeypatch) -> None:
+    async def load_after_deadline(deadline):
+        svc.clock.advance(9)
+        raise DeadlineExceeded()
+
+    monkeypatch.setattr(svc.keyring, "load", load_after_deadline)
+    status, body = await svc.post()
+    assert body["status"] == "calendar_unavailable"
+    line = one_line(logs)
+    assert (line["diagnostic"], line["reason"]) == ("deadline_exceeded", None)
+    assert svc.provider.calls == []

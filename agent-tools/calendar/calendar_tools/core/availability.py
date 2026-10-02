@@ -86,6 +86,20 @@ def _parse_time(value: Any) -> time | None:
     return time(int(match.group(1)), int(match.group(2))) if match else None
 
 
+def _parse_duration(value: Any, binding: Binding) -> int | None:
+    """A JSON integer (JSON Schema's `integer` also admits an integral number
+    such as 30.0) that is one of the binding's allowed durations."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, float):
+        if not value.is_integer():
+            return None
+        value = int(value)
+    if not isinstance(value, int):
+        return None
+    return value if value in binding.allowed_durations_minutes else None
+
+
 def _parse(binding: Binding, body: Mapping[str, Any]) -> tuple[dict[str, Any], list[str]]:
     """Parsed values for the fields present (null means absent), and the names
     of the invalid ones in schema order."""
@@ -100,8 +114,7 @@ def _parse(binding: Binding, body: Mapping[str, Any]) -> tuple[dict[str, Any], l
         elif name in ("earliest_time", "latest_time"):
             parsed = _parse_time(raw)
         else:
-            ok = isinstance(raw, int) and not isinstance(raw, bool) and raw in binding.allowed_durations_minutes
-            parsed = raw if ok else None
+            parsed = _parse_duration(raw, binding)
         if parsed is None:
             bad.append(name)
         else:
