@@ -65,6 +65,7 @@ __all__ = [
 ]
 
 CLAIM_RECORD_VERSION = 1
+MAX_RECORD_BYTES = 16 * 1024
 OPERATIONS: tuple[str, ...] = ("try_claim", "replace", "release", "read")
 
 ClaimState = Literal["pending", "booked"]
@@ -221,6 +222,8 @@ class ClaimRecord:
             raise TypeError("buffer_minutes must be an int")
         if not isinstance(start, datetime) or not isinstance(end, datetime):
             raise TypeError("start and end must be datetimes")
+        # Bounded before `last_cell`'s arithmetic, as `__post_init__` does.
+        _check(0 <= buffer_minutes <= MAX_DURATION_PLUS_BUFFER, "buffer_minutes")
         return cls(
             calendar_key=calendar_key,
             first_cell=floor5(start),
@@ -254,10 +257,14 @@ class ClaimRecord:
     @classmethod
     def from_json(cls, raw: bytes | str) -> ClaimRecord:
         """Parse a stored record strictly: exactly the v1 fields, nothing else."""
+        if not isinstance(raw, (bytes, str)):
+            raise ClaimRecordInvalid("not_json")
+        # A v1 record is well under 8 KB; the cap also bounds parsing work.
+        _check(len(raw) <= MAX_RECORD_BYTES, "too_large")
         try:
             text = raw.decode("utf-8") if isinstance(raw, bytes) else raw
             doc = json.loads(text)
-        except (UnicodeDecodeError, ValueError):
+        except (UnicodeDecodeError, ValueError, RecursionError):
             raise ClaimRecordInvalid("not_json") from None
         _check(isinstance(doc, dict), "not_object")
         _check(set(doc) == set(_FIELDS), "fields")

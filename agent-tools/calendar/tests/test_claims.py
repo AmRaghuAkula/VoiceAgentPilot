@@ -277,6 +277,14 @@ def test_record_times_are_normalized_to_utc():
 def test_record_buffer_is_bounded():
     with pytest.raises(ClaimRecordInvalid):
         pending(end=T0 + timedelta(minutes=5), buffer_minutes=245)
+    with pytest.raises(ClaimRecordInvalid):
+        pending(buffer_minutes=10**13)
+
+
+def test_from_json_rejects_deep_nesting_and_oversize_input():
+    for raw in (b"[" * 100000 + b"]" * 100000, b"{" * 3000, b" " * (16 * 1024 + 1), 5):
+        with pytest.raises(ClaimRecordInvalid):
+            ClaimRecord.from_json(raw)  # type: ignore[arg-type]
 
 
 def test_record_span_is_capped_at_duration_plus_buffer_limit():

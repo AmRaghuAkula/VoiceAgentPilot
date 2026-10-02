@@ -282,6 +282,8 @@ CORRUPT = {
     "v2": b'{"v": 2}',
     "bytes": b"\xff\xfe",
     "huge-buffer": _corrupted(buffer_minutes=10**13),
+    "deep-nesting": b"[" * 5000 + b"]" * 5000,
+    "too-large": b'{"v": 1, "pad": "' + b"x" * 20000 + b'"}',
     "year-9999": _corrupted(
         start="9999-12-31T23:50Z", end="9999-12-31T23:55Z", first_cell="9999-12-31T23:50Z",
         last_cell="9999-12-31T23:55Z", buffer_minutes=5,
