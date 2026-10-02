@@ -22,18 +22,25 @@ so the code reads against the spec:
 7. `_step7_create`: `create_event`.
 8. `_step8_finalize`: compare-and-swap every cell to `booked` + `event_id`.
 
-**Conservative interim (plan UC04b scope boundary; UC04c replaces each):**
-- a `Held` cell of another fingerprint is always genuinely held (`taken`;
-  never recovered, however stale or unverified);
-- an own-fingerprint stale `pending` cell (first or later) answers
-  `booking_unconfirmed`;
-- an own-fingerprint cell on a later cell releases the acquired cells and
-  answers `booking_unconfirmed`;
-- an uncertain create (`ProviderTimeout`, `ProviderUnavailable`, or any other
-  `ProviderError` but the definitive refusals) leaves the claims `pending` and
-  answers `booking_unconfirmed`, with no lookup or retry.
-Each can refuse a bookable slot; none can double-book or report a booking
-that does not exist.
+**Recovery and the uncertain create (plan UC04c, `core/recovery.py`):**
+- step 2: our own **stale** `pending` first cell is recovered (finalized if
+  its event exists, else released), then step 2 is re-evaluated once; a
+  polled claim that turns `booked` answers through `_replay_booked` (the
+  event's current times; UC04b follow-up F3);
+- step 6: a cell held by **another** fingerprint that is stale `pending`, or
+  `booked` and failing verification, is recovered and `try_claim` retried
+  once; a live `pending` or a verified `booked` is `taken`. Our own
+  fingerprint on a **later** cell: a live one releases the acquired cells and
+  runs step 2's pending logic on that cell; a stale or `booked` one is
+  recovered (freed -> retry once; its event exists -> replay);
+- step 7: an uncertain create (anything but the definitive refusals) runs the
+  lookup, one retry, a second check and the duplicate clean-up; still unknown
+  -> `booking_unconfirmed` with the claims left `pending`.
+
+**Partner ruling F1 (UC04b follow-up; spec 7.4 step 2's text differs until the
+partner's next docs unit):** a `get_event` failure on our own `booked` claim
+answers `booking_unconfirmed`, not `calendar_unavailable`: an event of ours
+exists or existed, so "no event was created" would mislead the caller.
 
 Every outcome sets the context's `diagnostic` and `reason` for the request's
 one log line (plan section 1, "Reason codes"). Nothing from the request body,
@@ -46,7 +53,7 @@ from __future__ import annotations
 import asyncio
 import re
 from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol, TypeVar
 
@@ -82,6 +89,7 @@ from calendar_tools.core.identity import (
     floor5,
 )
 from calendar_tools.core.keys import KeyRing, KeySet
+from calendar_tools.core.recovery import CLAIM_TTL, Recoverer, RecoveryOutcome, cells_of
 from calendar_tools.core.ports import (
     BookingMeta,
     BookingRecord,
@@ -106,7 +114,7 @@ __all__ = [
     "make_book_appointment",
 ]
 
-CLAIM_TTL = timedelta(seconds=120)
+# CLAIM_TTL (120 s) lives in `core/recovery.py` and is re-exported here.
 POLL_INTERVAL = 0.25
 SERVICE_TAG = "cal-tools-v1"  # stamped on every event this service creates
 ATTEMPT_ID_BYTES = 16  # 32 hex characters (the record allows 16 to 64)
@@ -148,7 +156,20 @@ class _Again:
     """Sentinel: our own fingerprint turned up at step 5 or 6; go back to step 2."""
 
 
+class _Stale:
+    """Sentinel: the polled claim of ours went stale; step 2 recovers it."""
+
+
+class _Retry:
+    """Sentinel: recovery freed the cell; `try_claim` it once more."""
+
+
+# The vendor (or the credential source) definitively refused a write: no event.
+_DEFINITIVE = (ProviderAuthError, ProviderConfigError, SecretStoreUnavailable)
+
 _AGAIN = _Again()
+_STALE = _Stale()
+_RETRY = _Retry()
 Outcome = dict[str, Any]
 
 
@@ -176,6 +197,14 @@ class _Request:
     # that attempt's first cell released, which no path does after a create
     # that succeeded or may have succeeded.
     seen_own: bool = False
+    # `get_event` answers for this request, one per distinct event ID (recovery).
+    verify_cache: dict[str, BookingRecord | None] = field(default_factory=dict)
+    # The reason code of the last recovery write this request made, logged
+    # with the informational `stale_claim_recovered` on a `booked` answer.
+    recovered: str | None = None
+    # Set when step 7 found more than one event with our fingerprint:
+    # "removed", or "delete_failed" if a delete did not go through.
+    duplicates: str | None = None
 
     @property
     def deadline(self) -> Deadline:
@@ -286,12 +315,6 @@ def _within_bookable_hours(binding: Binding, start: datetime, end: datetime) -> 
     return False
 
 
-def _cells_of(record: ClaimRecord) -> list[CellKey]:
-    step = timedelta(minutes=CELL_MINUTES)
-    count = (record.last_cell - record.first_cell) // step + 1
-    return [CellKey(record.calendar_key, record.first_cell + i * step) for i in range(count)]
-
-
 # --- the service ---------------------------------------------------------------------
 
 
@@ -316,6 +339,15 @@ class BookingService:
         req = await self._step1_validate(binding, body, ctx)
         if isinstance(req, dict):
             return req
+        outcome = await self._run(req)
+        if outcome.get("status") == "booked" and ctx.diagnostic is None and req.recovered is not None:
+            # Informational (spec 10): this request recovered a stale or
+            # unverified claim on its way to `booked` (F15).
+            _set(ctx, "stale_claim_recovered", req.recovered)
+        return outcome
+
+    async def _run(self, req: _Request) -> Outcome:
+        ctx = req.ctx
         for _ in range(MAX_ROUNDS):
             outcome = await self._step2_replay_claims(req)
             if outcome is not None:
@@ -402,7 +434,7 @@ class BookingService:
         """The cells of `record`'s range that still carry its attempt in
         `state` (best effort: an unreadable cell is left alone)."""
         timeout = self._release_timeout(req.deadline)
-        cells = _cells_of(record)
+        cells = cells_of(record)
         results = await asyncio.gather(
             *(asyncio.wait_for(self._store.read(key), timeout) for key in cells), return_exceptions=True
         )
@@ -435,6 +467,22 @@ class BookingService:
             return_exceptions=True,
         )
         return bool(cells) and not any(isinstance(r, BaseException) for r in results)
+
+    def _recoverer(self, req: _Request, reserve: float = 0.0) -> Recoverer:
+        """Recovery for this request. `reserve` is budget recovery must leave
+        untouched (at step 6: the create and the finalize, as each claim does)."""
+
+        def add_ms(ms: int) -> None:
+            req.ctx.provider_ms = (req.ctx.provider_ms or 0) + ms
+
+        return Recoverer(
+            req.provider, self._store, self._clock, cal=req.cal, deadline=req.deadline,
+            reserve=reserve, claim_ttl=CLAIM_TTL, on_provider_ms=add_ms,
+        )
+
+    def _note_recovery(self, req: _Request, outcome: RecoveryOutcome) -> None:
+        if outcome.acted:
+            req.recovered = outcome.reason
 
     # --- step 1 ------------------------------------------------------------------------
 
@@ -504,21 +552,40 @@ class BookingService:
     # --- step 2 ------------------------------------------------------------------------
 
     async def _step2_replay_claims(self, req: _Request) -> Outcome | None:
-        try:
-            held = await self._claim_call(req, lambda: self._store.read(req.first_cell))
-        except (ClaimStoreUnavailable, DeadlineExceeded) as err:
-            if req.seen_own:
-                return _unconfirmed(req.ctx, err.diagnostic, getattr(err, "reason", None))
-            return _unavailable(req.ctx, err)  # nothing claimed or created yet
-        if held is None or held.record.fingerprint != req.fingerprint:
-            return None  # empty or another fingerprint: decided at step 6
-        record = held.record
-        if record.state == "booked":
-            return await self._replay_booked(req, record)
-        if held.age >= CLAIM_TTL:
-            # Interim (UC04c recovers it): our own stale attempt, outcome unknown.
-            return _unconfirmed(req.ctx, "create_unconfirmed", "stale_own_claim")
-        return await self._poll_own_pending(req, record)
+        recovered_once = False
+        for _ in range(MAX_ROUNDS):
+            try:
+                held = await self._claim_call(req, lambda: self._store.read(req.first_cell))
+            except (ClaimStoreUnavailable, DeadlineExceeded) as err:
+                if req.seen_own:
+                    return _unconfirmed(req.ctx, err.diagnostic, getattr(err, "reason", None))
+                return _unavailable(req.ctx, err)  # nothing claimed or created yet
+            if held is None or held.record.fingerprint != req.fingerprint:
+                return None  # empty or another fingerprint: decided at step 6
+            record = held.record
+            if record.state == "booked":
+                return await self._replay_booked(req, record)
+            if held.age >= CLAIM_TTL:
+                # Our own stale attempt: recover it, then re-evaluate this step once.
+                if recovered_once:
+                    return _unconfirmed(req.ctx, "create_unconfirmed", "stale_own_claim")
+                recovered_once = True
+                outcome = await self._recoverer(req).recover_cell(req.first_cell, held, req.verify_cache)
+                if outcome.action == "failed":
+                    # That attempt of ours may have created: never "nothing was created".
+                    return self._unconfirmed_by(req, outcome.error)
+                self._note_recovery(req, outcome)
+                continue
+            polled = await self._poll_own_pending(req, record, req.first_cell)
+            if polled is _STALE:
+                continue
+            return polled  # type: ignore[return-value]
+        return _unconfirmed(req.ctx, "create_unconfirmed", "stale_own_claim")
+
+    @staticmethod
+    def _unconfirmed_by(req: _Request, err: BaseException | None) -> Outcome:
+        diagnostic = getattr(err, "diagnostic", None) or "create_unconfirmed"
+        return _unconfirmed(req.ctx, diagnostic, getattr(err, "reason", None))
 
     async def _replay_booked(self, req: _Request, record: ClaimRecord) -> Outcome:
         event_id = record.event_id
@@ -526,7 +593,9 @@ class BookingService:
         try:
             event = await self._provider_call(req, lambda: req.provider.get_event(req.cal, event_id))
         except (ProviderError, DeadlineExceeded) as err:
-            return _unavailable(req.ctx, err)
+            # Partner ruling F1: an event of ours exists or existed, so this is
+            # "unknown", never `calendar_unavailable` ("no event was created").
+            return self._unconfirmed_by(req, err)
         if event is not None:
             return _booked(req, event.start, event.end, replayed=True)
         # The host deleted it: free our cells (this attempt's, this event's only).
@@ -534,7 +603,7 @@ class BookingService:
         await self._release_all(req, [(key, held.etag) for key, held in cells])
         return _refusal(req.ctx, "slot_unavailable", "cancelled")
 
-    async def _poll_own_pending(self, req: _Request, record: ClaimRecord) -> Outcome | None:
+    async def _poll_own_pending(self, req: _Request, record: ClaimRecord, cell: CellKey) -> Outcome | None | _Stale:
         """Another attempt of ours is in flight (the retry-during-create case).
         Poll until only the SF-7 lookup, one read and one compare-and-swap of
         the attempt's cells still fit (S3).
@@ -547,7 +616,7 @@ class BookingService:
         while req.deadline.remaining() - POLL_INTERVAL >= reserve:
             await self._clock.sleep(POLL_INTERVAL)
             try:
-                held = await self._claim_call(req, lambda: self._store.read(req.first_cell), reserve)
+                held = await self._claim_call(req, lambda: self._store.read(cell), reserve)
             except DeadlineExceeded:
                 break
             except ClaimStoreUnavailable as err:
@@ -555,9 +624,10 @@ class BookingService:
             if held is None or held.record.fingerprint != req.fingerprint:
                 return None  # it disappeared: continue at step 3
             if held.record.state == "booked":
-                return _booked(req, req.slot.start, req.slot.end, replayed=True)
+                # F3: answer with the event's current times (and F1 on failure).
+                return await self._replay_booked(req, held.record)
             if held.age >= CLAIM_TTL:
-                return _unconfirmed(ctx, "create_unconfirmed", "stale_own_claim")
+                return _STALE  # step 2 recovers it
             record = held.record
         # SF-7: the original may have created the event without finalizing.
         try:
@@ -677,33 +747,74 @@ class BookingService:
         )
         acquired: list[tuple[CellKey, str]] = []
         for index, key in enumerate(cells):
-            try:
-                # Each claim keeps the create's and the finalize's budget in
-                # reserve, so a slow store cannot starve the create (the step-5
-                # guard's invariant, held at run time).
-                result = await self._claim_call(
-                    req, lambda key=key: self._store.try_claim(key, record), PROVIDER_TIMEOUT + CLAIM_TIMEOUT
-                )
-            except (ClaimStoreUnavailable, DeadlineExceeded) as err:
-                await self._release_all(req, acquired)
-                return _unavailable(req.ctx, err)
-            if isinstance(result, Claimed):
-                acquired.append((key, result.etag))
-                continue
-            held = result
-            if held.record.fingerprint == req.fingerprint:
-                if index == 0:
-                    return _AGAIN  # another attempt of ours got there first
-                # A leftover of ours on a later cell (SF-3). Interim: UC04c
-                # recovers a stale one and waits on a live one.
-                await self._release_all(req, acquired)
-                stale = held.record.state == "pending" and held.age >= CLAIM_TTL
-                return _unconfirmed(req.ctx, "create_unconfirmed", "stale_own_claim" if stale else "own_claim_live")
-            # Interim: every other holder counts as genuine (UC04c recovers
-            # stale and unverified ones).
-            await self._release_all(req, acquired)
-            return _taken(req.ctx, "claim_held")
+            retried = False
+            while True:
+                try:
+                    # Each claim keeps the create's and the finalize's budget in
+                    # reserve, so a slow store cannot starve the create (the step-5
+                    # guard's invariant, held at run time).
+                    result = await self._claim_call(
+                        req, lambda key=key: self._store.try_claim(key, record), PROVIDER_TIMEOUT + CLAIM_TIMEOUT
+                    )
+                except (ClaimStoreUnavailable, DeadlineExceeded) as err:
+                    await self._release_all(req, acquired)
+                    return _unavailable(req.ctx, err)
+                if isinstance(result, Claimed):
+                    acquired.append((key, result.etag))
+                    break
+                verdict = await self._on_held(req, key, index, result, acquired, retried)
+                if verdict is _RETRY:
+                    retried = True
+                    continue
+                return verdict  # type: ignore[return-value]
         return record, acquired
+
+    async def _on_held(
+        self, req: _Request, key: CellKey, index: int, held: Held,
+        acquired: list[tuple[CellKey, str]], retried: bool,
+    ) -> Outcome | _Again | _Retry:
+        """Spec 7.4 step 6, a `Held` cell. Every exit but `_RETRY` releases the
+        cells this attempt acquired."""
+        record = held.record
+        ours = record.fingerprint == req.fingerprint
+        if ours and index == 0:
+            return _AGAIN  # another attempt of ours got there first (nothing acquired)
+        live = record.state == "pending" and held.age < CLAIM_TTL
+        if retried or live:
+            # A live claim, or still held after one recovery: no second recovery.
+            await self._release_all(req, acquired)
+            if not ours:
+                return _taken(req.ctx, "claim_held")
+            if retried:
+                return _AGAIN
+            # A live leftover of ours on a later cell (SF-3): step 2's pending
+            # logic on that cell.
+            req.seen_own = True
+            polled = await self._poll_own_pending(req, record, key)
+            if polled is None or polled is _STALE:
+                return _AGAIN
+            return polled  # type: ignore[return-value]
+        # Stale `pending`, or `booked` (verified before it may block): recover.
+        outcome = await self._recoverer(req, PROVIDER_TIMEOUT + CLAIM_TIMEOUT).recover_cell(
+            key, held, req.verify_cache
+        )
+        self._note_recovery(req, outcome)
+        if outcome.freed:
+            return _RETRY
+        await self._release_all(req, acquired)
+        if outcome.action == "failed":
+            if ours:
+                # An earlier attempt of ours may have created: unknown.
+                return self._unconfirmed_by(req, outcome.error)
+            return _unavailable(req.ctx, outcome.error)  # treated as held; nothing created
+        if ours:
+            if outcome.event is not None:
+                # That attempt of ours did create (finalized), or its booking is
+                # verified (kept): it is this booking.
+                return _booked(req, outcome.event.start, outcome.event.end, replayed=True)
+            req.seen_own = True
+            return _AGAIN
+        return _taken(req.ctx, "claim_held")
 
     # --- step 7 ------------------------------------------------------------------------
 
@@ -730,19 +841,78 @@ class BookingService:
             request_key=req.fingerprint,
         )
         try:
-            return await self._provider_call(req, lambda: req.provider.create_event(req.cal, event), write=True)
+            return await self._create(req, event)
         except DeadlineExceeded as err:
             # Raised before the call was made: nothing reached the vendor.
             await self._release_all(req, acquired)
             return _unavailable(req.ctx, err)
-        except (ProviderAuthError, ProviderConfigError, SecretStoreUnavailable) as err:
+        except _DEFINITIVE as err:
             # The vendor (or the credential source) definitively refused: no event.
             await self._release_all(req, acquired)
             return _unavailable(req.ctx, err)
         except ProviderError as err:
             # Uncertain (ProviderTimeout, ProviderUnavailable, anything else).
-            # Interim: the claims stay pending; UC04c adds the lookup and retry.
-            return _unconfirmed(req.ctx, "create_unconfirmed", err.diagnostic)
+            return await self._uncertain_create(req, event, err)
+
+    async def _create(self, req: _Request, event: NewEvent) -> BookingRecord:
+        return await self._provider_call(req, lambda: req.provider.create_event(req.cal, event), write=True)
+
+    async def _uncertain_create(self, req: _Request, event: NewEvent, first: ProviderError) -> BookingRecord | Outcome:
+        """Spec 7.4 step 7: the lookup, one retry, a second check, and the
+        duplicate clean-up. Still unknown -> `booking_unconfirmed`; the claims
+        stay `pending` (an identical retry resolves them at step 2 or 3,
+        recovery after `claim_ttl`). Never releases: an event may exist."""
+        found = await self._lookup_ours(req)
+        if found is None:
+            return _unconfirmed(req.ctx, "create_unconfirmed", "lookup_failed")
+        if found:
+            return await self._keep_one(req, found, None)
+        cause: BaseException = first
+        created: BookingRecord | None = None
+        try:
+            created = await self._create(req, event)
+        except _DEFINITIVE:
+            pass  # proves nothing about the first create: keep its cause
+        except (ProviderError, DeadlineExceeded) as err:
+            cause = err
+        found = await self._lookup_ours(req)
+        if created is not None:
+            return await self._keep_one(req, found or [], created)
+        if found is None:
+            return _unconfirmed(req.ctx, "create_unconfirmed", "lookup_failed")
+        if found:
+            return await self._keep_one(req, found, None)
+        return _unconfirmed(req.ctx, "create_unconfirmed", getattr(cause, "diagnostic", None))
+
+    async def _lookup_ours(self, req: _Request) -> list[BookingRecord] | None:
+        """Events carrying our fingerprint in `[start, end)` on this binding,
+        or None when the lookup failed."""
+        slot = req.slot
+        try:
+            found = await self._provider_call(
+                req, lambda: req.provider.find_bookings(req.cal, slot.start, slot.end, req.binding.binding_id)
+            )
+        except (ProviderError, DeadlineExceeded):
+            return None
+        return [r for r in found if r.meta.fingerprint == req.fingerprint]
+
+    async def _keep_one(self, req: _Request, found: list[BookingRecord], created: BookingRecord | None) -> BookingRecord:
+        """Keep one event with our fingerprint (the confirmed create if there
+        is one) and `delete_event` the rest: the vendor's retry dedupe failed.
+        Only events carrying our own fingerprint are ever deleted."""
+        keep = created if created is not None else found[0]
+        extras = [r for r in found if r.event_id != keep.event_id]
+        if extras:
+            failed = False
+            for extra in extras:
+                try:
+                    await self._provider_call(
+                        req, lambda extra=extra: req.provider.delete_event(req.cal, extra.event_id)
+                    )
+                except (ProviderError, DeadlineExceeded):
+                    failed = True
+            req.duplicates = "delete_failed" if failed else "removed"
+        return keep
 
     # --- step 8 ------------------------------------------------------------------------
 
@@ -753,8 +923,10 @@ class BookingService:
         outcome = _booked(req, created.start, created.end, replayed=False)
         if not finalized:
             # Still booked: the event exists and the pending claims keep the slot
-            # protected (spec 7.4 step 8, F14).
+            # protected (spec 7.4 step 8, F14). Alerted, so it wins the line.
             _set(req.ctx, "claim_finalize_failed", None)
+        elif req.duplicates is not None:
+            _set(req.ctx, "duplicate_event_removed", None if req.duplicates == "removed" else req.duplicates)
         return outcome
 
 

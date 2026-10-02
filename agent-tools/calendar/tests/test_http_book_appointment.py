@@ -190,7 +190,7 @@ def _token_for(w: HttpWorld) -> dict[str, Any]:
             "slot_unavailable", "claim_conflict", "busy",
         ),
         (lambda w, b: w.provider.fail_next("find_bookings", ProviderUnavailable()), "calendar_unavailable", "provider_unavailable", None),
-        (lambda w, b: w.provider.fail_next("create_event", ProviderTimeout(maybe_committed=True)), "booking_unconfirmed", "create_unconfirmed", "provider_timeout"),
+        (lambda w, b: [w.provider.fail_next("create_event", ProviderTimeout(maybe_committed=True)) for _ in range(2)], "booking_unconfirmed", "create_unconfirmed", "provider_timeout"),
         (lambda w, b: w.store.fail_next("try_claim"), "calendar_unavailable", "claim_store_unreachable", "injected"),
     ],
     ids=["malformed", "start_mismatch", "no_contact", "expired", "expired_late", "taken", "unavailable", "unconfirmed", "claim_store"],
