@@ -171,7 +171,10 @@ def cell_range(start: datetime, end: datetime, buffer_minutes: int) -> list[date
     ):
         raise ValueError("duration plus buffer exceeds the bindings limit")
     first = floor5(start)
-    stop = ceil5(end + timedelta(minutes=buffer_minutes))
+    try:
+        stop = ceil5(end + timedelta(minutes=buffer_minutes))
+    except OverflowError:  # a range at the very end of the calendar (UC04a cso r2)
+        raise ValueError("the range ends past the last representable time") from None
     count = (stop - first) // _CELL
     return [first + i * _CELL for i in range(count)]
 

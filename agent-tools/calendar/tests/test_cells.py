@@ -132,3 +132,10 @@ def test_cell_key_rejects_bad_parts(cal, start):
 def test_cell_key_repr_hides_nothing_sensitive_but_is_readable():
     # The calendar_key is an HMAC, not the calendar ID, so it is safe to show.
     assert "20261005T1400Z" in repr(CellKey(_cal_key(), T0))
+
+
+def test_range_ending_past_datetime_max_is_value_error() -> None:
+    """UC04a cso r2 follow-up (UC04b): never an OverflowError."""
+    start = datetime(9999, 12, 31, 23, 0, tzinfo=UTC)
+    with pytest.raises(ValueError):
+        cell_range(start, start + timedelta(minutes=30), 240 - 30)

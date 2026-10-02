@@ -25,6 +25,7 @@ from calendar_tools.core.bindings import Binding
 __all__ = ["MAX_NAME_CHARS", "Contact", "InvalidFields", "normalize"]
 
 MAX_NAME_CHARS = 80
+MAX_NAME_INPUT = 1024  # raw characters scanned at most
 MAX_PHONE_INPUT = 40
 MAX_EMAIL_CHARS = 254
 
@@ -77,6 +78,10 @@ def _blank(value: Any) -> bool:
 
 def _clean_name(value: Any) -> str | None:
     if not isinstance(value, str):
+        return None
+    if len(value) > MAX_NAME_INPUT:
+        # Bounded before the per-character scan (UC04a cso r2); a name this
+        # long could never be 80 characters after cleaning anyway.
         return None
     spaced = "".join(" " if ch in _AS_SPACE else ch for ch in value)
     kept = "".join(ch for ch in spaced if unicodedata.category(ch) not in _STRIP_CATEGORIES)
